@@ -80,6 +80,7 @@ class CPluginManager {
     bool        m_bNoNix             = false;
     bool        m_bExperimentalCache = false;
     std::string m_szCustomHlUrl, m_szUsername, m_szArgv0;
+    size_t      m_jobs = 0;
 
     // will delete recursively if exists!!
     bool createSafeDirectory(const std::string& path);
