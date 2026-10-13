@@ -2093,6 +2093,7 @@ float Render::tonemapShaderMaxLuminance(eTransferFunction srcTF, eTransferFuncti
     // PQ, HLG and linear content stays in absolute nits on its way to an HDR target, so the shader must see the same
     // peak that decided needsTonemap. Scaling it by the reference ratio lets a client with a high reference white
     // (e.g. Chromium following a raised SDR white) fall under dstMaxLuminance and get hard-clipped.
+    // Notice That this is just a temporary solution, with mininal change and no behavour change, the rootcause seem to be the pixel toNix function and hardcode SDR brightness 203, check KWin code for this.
     const bool absoluteSource = srcTF == CM_TRANSFER_FUNCTION_ST2084_PQ || srcTF == CM_TRANSFER_FUNCTION_HLG || srcTF == CM_TRANSFER_FUNCTION_EXT_LINEAR;
     // A linear target is an HDR output's work buffer only when it has headroom above reference white.
     const bool hdrTarget =
