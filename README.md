@@ -2,30 +2,14 @@
 
 <img src="https://raw.githubusercontent.com/hyprwm/Hyprland/main/assets/header.svg" width="750" height="300" alt="banner">
 
-<br>
-
-[![Badge Workflow]][Workflow]
-[![Badge License]][License] 
-![Badge Language] 
-[![Badge Pull Requests]][Pull Requests] 
-[![Badge Issues]][Issues] 
-![Badge Hi Mom]<br>
-
-<br>
-
 Hyprland is a 100% independent, dynamic tiling Wayland compositor that doesn't sacrifice on its looks.
 
 It provides the latest Wayland features, is highly customizable, has all the eyecandy, the most powerful plugins,
 easy IPC, much more QoL stuff than other compositors and more...
+
+This is my own experimental branch for HDR issue fix.
 <br>
 <br>
-
----
-
-**[<kbd> <br> Install <br> </kbd>][Install]** 
-**[<kbd> <br> Quick Start <br> </kbd>][Quick Start]** 
-**[<kbd> <br> Configure <br> </kbd>][Configure]** 
-**[<kbd> <br> Contribute <br> </kbd>][Contribute]**
 
 ---
 
