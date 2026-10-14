@@ -625,7 +625,7 @@ CColorManagementParametricCreator::CColorManagementParametricCreator(SP<CWpImage
             return;
         }
         if (!PROTO::colorManagement->m_debug) {
-            r->error(WP_COLOR_MANAGER_V1_ERROR_UNSUPPORTED_FEATURE, "TF power is not supported");
+            r->error(WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_UNSUPPORTED_FEATURE, "TF power is not supported");
             return;
         }
         m_settings.transferFunctionPower = eexp / 10000.0f;
