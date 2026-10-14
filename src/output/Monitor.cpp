@@ -604,7 +604,7 @@ void CMonitor::applyCMType(NCMType::eCMType cmType, NTransferFunction::eTF cmSdr
     if (cmType == NCMType::CM_HDR || cmType == NCMType::CM_HDR_EDID) {
         auto description                 = m_imageDescription->value();
         description.luminances.min       = minLuminance(HDR_MIN_LUMINANCE);
-        description.luminances.reference = HDR_REF_LUMINANCE;
+        description.luminances.reference = referenceLuminance();
         description.masteringLuminances  = {.min = minLuminance(HDR_MIN_LUMINANCE), .max = sc<uint32_t>(maxLuminance(HDR_MAX_LUMINANCE))};
         m_imageDescription               = CImageDescription::from(description);
     }
@@ -640,8 +640,9 @@ bool CMonitor::applyMonitorRuleSoft(Config::CMonitorRule&& pMonitorRule) {
 
         m_sdrEotf = m_activeMonitorRule.m_sdrEotf;
 
-        m_sdrMinLuminance = m_activeMonitorRule.m_sdrMinLuminance;
-        m_sdrMaxLuminance = m_activeMonitorRule.m_sdrMaxLuminance;
+        m_sdrMinLuminance    = m_activeMonitorRule.m_sdrMinLuminance;
+        m_sdrMaxLuminance    = m_activeMonitorRule.m_sdrMaxLuminance;
+        m_referenceLuminance = m_activeMonitorRule.m_referenceLuminance;
 
         m_minLuminance    = m_activeMonitorRule.m_minLuminance;
         m_maxLuminance    = m_activeMonitorRule.m_maxLuminance;
@@ -2374,6 +2375,10 @@ bool CMonitor::supportsHDR() {
 
 float CMonitor::minLuminance(float defaultValue) {
     return m_minLuminance >= 0 ? m_minLuminance : (m_output->parsedEDID.hdrMetadata.has_value() ? m_output->parsedEDID.hdrMetadata->desiredContentMinLuminance : defaultValue);
+}
+
+int CMonitor::referenceLuminance() const {
+    return m_referenceLuminance > 0 ? m_referenceLuminance : HDR_REF_LUMINANCE;
 }
 
 int CMonitor::maxLuminance(int defaultValue) {

@@ -104,17 +104,18 @@ namespace Monitor {
 
         CMonitorZoomController      m_zoomController;
 
-        bool                        m_dpmsStatus       = true;
-        bool                        m_vrrActive        = false; // this can be TRUE even if VRR is not active in the case that this display does not support it.
-        bool                        m_enabled10bit     = false; // as above, this can be TRUE even if 10 bit failed.
-        NCMType::eCMType            m_cmType           = NCMType::CM_SRGB;
-        NTransferFunction::eTF      m_sdrEotf          = NTransferFunction::TF_DEFAULT;
-        float                       m_sdrSaturation    = 1.0f;
-        float                       m_sdrBrightness    = 1.0f;
-        float                       m_sdrMinLuminance  = 0.2f;
-        int                         m_sdrMaxLuminance  = 80;
-        bool                        m_createdByUser    = false;
-        bool                        m_isUnsafeFallback = false;
+        bool                        m_dpmsStatus         = true;
+        bool                        m_vrrActive          = false; // this can be TRUE even if VRR is not active in the case that this display does not support it.
+        bool                        m_enabled10bit       = false; // as above, this can be TRUE even if 10 bit failed.
+        NCMType::eCMType            m_cmType             = NCMType::CM_SRGB;
+        NTransferFunction::eTF      m_sdrEotf            = NTransferFunction::TF_DEFAULT;
+        float                       m_sdrSaturation      = 1.0f;
+        float                       m_sdrBrightness      = 1.0f;
+        float                       m_sdrMinLuminance    = 0.2f;
+        int                         m_referenceLuminance = -1;
+        int                         m_sdrMaxLuminance    = 80;
+        bool                        m_createdByUser      = false;
+        bool                        m_isUnsafeFallback   = false;
 
         SP<CEventLoopTimer>         m_dpmsRetryTimer;
 
@@ -329,6 +330,7 @@ namespace Monitor {
         bool                                                        supportsWideColor();
         bool                                                        supportsHDR();
         float                                                       minLuminance(float defaultValue = 0);
+        int                                                         referenceLuminance() const;
         int                                                         maxLuminance(int defaultValue = 80);
         int                                                         maxAvgLuminance(int defaultValue = 80);
         float                                                       maxFALL();

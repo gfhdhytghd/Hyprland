@@ -1,3 +1,4 @@
+#include <limits>
 #include "LuaBindingsInternal.hpp"
 #include "Check.hpp"
 
@@ -168,6 +169,14 @@ namespace {
         {"max_luminance", []() -> ILuaConfigValue* { return new CLuaConfigInt(-1); },
          [](ILuaConfigValue* v, CMonitorRuleParser& p) {
              p.rule().m_maxLuminance = sc<int>(*sc<const Config::INTEGER*>(v->data()));
+             return true;
+         }},
+        {"reference_luminance", []() -> ILuaConfigValue* { return new CLuaConfigInt(-1, -1, std::numeric_limits<int>::max()); },
+         [](ILuaConfigValue* v, CMonitorRuleParser& p) {
+             const auto value = sc<int>(*sc<const Config::INTEGER*>(v->data()));
+             if (value == 0)
+                 return false;
+             p.rule().m_referenceLuminance = value;
              return true;
          }},
         {"max_avg_luminance", []() -> ILuaConfigValue* { return new CLuaConfigInt(-1); },

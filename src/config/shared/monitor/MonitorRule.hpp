@@ -55,10 +55,11 @@ namespace Config {
         Desktop::CReservedArea       m_reservedArea;
         std::string                  m_iccFile;
 
-        int                          m_supportsWideColor = 0;    // 0 - auto, 1 - force enable, -1 - force disable
-        int                          m_supportsHDR       = 0;    // 0 - auto, 1 - force enable, -1 - force disable
-        float                        m_sdrMinLuminance   = 0.2F; // SDR -> HDR
-        int                          m_sdrMaxLuminance   = 80;   // SDR -> HDR
+        int                          m_supportsWideColor  = 0;    // 0 - auto, 1 - force enable, -1 - force disable
+        int                          m_supportsHDR        = 0;    // 0 - auto, 1 - force enable, -1 - force disable
+        float                        m_sdrMinLuminance    = 0.2F; // SDR -> HDR
+        int                          m_referenceLuminance = -1;   // -1 preserves the default HDR reference white
+        int                          m_sdrMaxLuminance    = 80;   // SDR -> HDR
 
         // Incorrect values will result in reduced luminance range or incorrect tonemapping. Shouldn't damage the HW. Use with care in case of a faulty monitor firmware.
         float              m_minLuminance    = -1.F; // >= 0 overrides EDID
