@@ -21,9 +21,12 @@
 #define HDR_REF_LUMINANCE 203.0f
 #define HLG_MAX_LUMINANCE 1000.0f
 
+struct hdr_output_metadata;
+
 namespace Render {
     class ITexture;
     struct SCMSettings;
+    struct STFRange;
 }
 
 namespace NColorManagement {
@@ -144,9 +147,9 @@ namespace NColorManagement {
         };
 
         inline const auto GENERIC_FILM = SPCPRimaries{
-            .red   = {.x = 0.243, .y = 0.692},
-            .green = {.x = 0.145, .y = 0.049},
-            .blue  = {.x = 0.681, .y = 0.319}, // NOLINT(modernize-use-std-numbers)
+            .red   = {.x = 0.681, .y = 0.319}, // NOLINT(modernize-use-std-numbers)
+            .green = {.x = 0.243, .y = 0.692},
+            .blue  = {.x = 0.145, .y = 0.049},
             .white = {.x = 0.310, .y = 0.316},
         };
 
@@ -226,6 +229,7 @@ namespace NColorManagement {
         eTransferFunction    transferFunction      = CM_TRANSFER_FUNCTION_GAMMA22;
         float                transferFunctionPower = 1.0f;
         bool                 isWindows             = false;
+        bool                 isInternal            = false;
 
         bool                 primariesNameSet = false;
         ePrimaries           primariesNamed   = CM_PRIMARIES_SRGB;
@@ -268,7 +272,7 @@ namespace NColorManagement {
             if (icc.present || d2.icc.present)
                 return false;
 
-            return isWindows == d2.isWindows && transferFunction == d2.transferFunction && transferFunctionPower == d2.transferFunctionPower &&
+            return isWindows == d2.isWindows && isInternal == d2.isInternal && transferFunction == d2.transferFunction && transferFunctionPower == d2.transferFunctionPower &&
                 (primariesNameSet == d2.primariesNameSet && (primariesNameSet ? primariesNamed == d2.primariesNamed : primaries == d2.primaries)) &&
                 masteringPrimaries == d2.masteringPrimaries && luminances == d2.luminances && masteringLuminances == d2.masteringLuminances && maxCLL == d2.maxCLL &&
                 maxFALL == d2.maxFALL;
@@ -280,9 +284,12 @@ namespace NColorManagement {
             return primaries;
         }
 
+        float encodingMinLuminance() const;
+        float encodingMaxLuminance() const;
+
         float getTFMinLuminance(float sdrMinLuminance = -1.0f) const {
             switch (transferFunction) {
-                case CM_TRANSFER_FUNCTION_EXT_LINEAR: return 0;
+                case CM_TRANSFER_FUNCTION_EXT_LINEAR: return isWindows || isInternal ? 0.0f : SDR_MIN_LUMINANCE;
                 case CM_TRANSFER_FUNCTION_ST2084_PQ:
                 case CM_TRANSFER_FUNCTION_HLG: return HDR_MIN_LUMINANCE;
                 case CM_TRANSFER_FUNCTION_BT1886: return 0.01;
@@ -321,7 +328,7 @@ namespace NColorManagement {
 
         float getTFRefLuminance(int sdrRefLuminance = -1) const {
             switch (transferFunction) {
-                case CM_TRANSFER_FUNCTION_EXT_LINEAR:
+                case CM_TRANSFER_FUNCTION_EXT_LINEAR: return isWindows ? HDR_REF_LUMINANCE : SDR_REF_LUMINANCE;
                 case CM_TRANSFER_FUNCTION_ST2084_PQ:
                 case CM_TRANSFER_FUNCTION_HLG: return HDR_REF_LUMINANCE;
                 case CM_TRANSFER_FUNCTION_BT1886: return 100;
@@ -382,12 +389,23 @@ namespace NColorManagement {
 
     using PImageDescription = WP<const CImageDescription>;
 
-    RGBAColor         convertColor(RGBAColor color, PImageDescription srcDesc, PImageDescription dstDesc, const Render::SCMSettings& settings);
-    CHyprColor        convertColor(const CHyprColor& color, PImageDescription srcDesc, PImageDescription dstDesc, const Render::SCMSettings& settings);
+    hdr_output_metadata createHDRMetadata(const SImageDescription& settings);
 
-    PImageDescription getDefaultImageDescription();
+    float               referenceLuminanceScale(const SImageDescription& source, const SImageDescription& target);
 
-    inline const auto DEFAULT_GAMMA22_IMAGE_DESCRIPTION = CImageDescription::from(SImageDescription{
+    bool                isHDR(const SImageDescription& description);
+    bool                isWindowsScRGB(const SImageDescription& description);
+
+    RGBAColor           convertColor(RGBAColor color, PImageDescription srcDesc, PImageDescription dstDesc, const Render::SCMSettings& settings);
+
+    // Single channel transfer functions in absolute luminance for display hardware LUTs. HLG mixes channels and has no such form.
+    double              decodeChannel(double signal, eTransferFunction tf, Render::STFRange range);
+    double              encodeChannel(double luminance, eTransferFunction tf, Render::STFRange range);
+    CHyprColor          convertColor(const CHyprColor& color, PImageDescription srcDesc, PImageDescription dstDesc, const Render::SCMSettings& settings);
+
+    PImageDescription   getDefaultImageDescription();
+
+    inline const auto   DEFAULT_GAMMA22_IMAGE_DESCRIPTION = CImageDescription::from(SImageDescription{
         .transferFunction = NColorManagement::CM_TRANSFER_FUNCTION_GAMMA22,
         .primariesNameSet = true,
         .primariesNamed   = NColorManagement::CM_PRIMARIES_SRGB,
@@ -395,7 +413,7 @@ namespace NColorManagement {
         .luminances       = {.min = SDR_MIN_LUMINANCE, .max = 80, .reference = 80},
     });
 
-    inline const auto DEFAULT_SRGB_IMAGE_DESCRIPTION = CImageDescription::from(SImageDescription{
+    inline const auto   DEFAULT_SRGB_IMAGE_DESCRIPTION = CImageDescription::from(SImageDescription{
         .transferFunction = NColorManagement::CM_TRANSFER_FUNCTION_SRGB,
         .primariesNameSet = true,
         .primariesNamed   = NColorManagement::CM_PRIMARIES_SRGB,
@@ -403,7 +421,7 @@ namespace NColorManagement {
         .luminances       = {.min = SDR_MIN_LUMINANCE, .max = 80, .reference = 80},
     });
 
-    inline const auto DEFAULT_HDR_IMAGE_DESCRIPTION = CImageDescription::from(SImageDescription{
+    inline const auto   DEFAULT_HDR_IMAGE_DESCRIPTION = CImageDescription::from(SImageDescription{
         .transferFunction = NColorManagement::CM_TRANSFER_FUNCTION_ST2084_PQ,
         .primariesNameSet = true,
         .primariesNamed   = NColorManagement::CM_PRIMARIES_BT2020,
@@ -411,26 +429,27 @@ namespace NColorManagement {
         .luminances       = {.min = HDR_MIN_LUMINANCE, .max = 10000, .reference = 203},
     });
 
-    inline const auto SCRGB_IMAGE_DESCRIPTION = CImageDescription::from(SImageDescription{
+    inline const auto   SCRGB_IMAGE_DESCRIPTION = CImageDescription::from(SImageDescription{
         .transferFunction = NColorManagement::CM_TRANSFER_FUNCTION_EXT_LINEAR,
         .isWindows        = true,
         .primariesNameSet = true,
         .primariesNamed   = NColorManagement::CM_PRIMARIES_SRGB,
         .primaries        = NColorPrimaries::BT709,
-        .luminances       = {.reference = 203},
+        .luminances       = {.min = 0, .max = 10000, .reference = 203},
     });
 
-    inline const auto BT2100_IMAGE_DESCRIPTION = CImageDescription::from(SImageDescription{
+    inline const auto   BT2100_IMAGE_DESCRIPTION = CImageDescription::from(SImageDescription{
         .transferFunction = NColorManagement::CM_TRANSFER_FUNCTION_ST2084_PQ,
         .isWindows        = true,
         .primariesNameSet = true,
         .primariesNamed   = NColorManagement::CM_PRIMARIES_BT2020,
         .primaries        = NColorPrimaries::BT2020,
-        .luminances       = {.reference = 203},
+        .luminances       = {.min = 0, .max = 10000, .reference = 203},
     });
 
-    inline const auto LINEAR_IMAGE_DESCRIPTION = CImageDescription::from(SImageDescription{
+    inline const auto   LINEAR_IMAGE_DESCRIPTION = CImageDescription::from(SImageDescription{
         .transferFunction = NColorManagement::CM_TRANSFER_FUNCTION_EXT_LINEAR,
+        .isInternal       = true,
         .primariesNameSet = true,
         .primariesNamed   = NColorManagement::CM_PRIMARIES_SRGB,
         .primaries        = NColorPrimaries::BT709,

@@ -16,8 +16,15 @@ static SCMSettings blurIntermediateCMSettings(CRenderContext& ctx, bool toInterm
     const auto INTERMEDIATE = getDefaultImageDescription();
 
     auto       settings = toIntermediate ? g_pHyprRenderer->getCMSettings(ctx, WORKBUFFER, INTERMEDIATE) : g_pHyprRenderer->getCMSettings(ctx, INTERMEDIATE, WORKBUFFER);
-    auto&      range    = toIntermediate ? settings.dstTFRange : settings.srcTFRange;
-    range.max           = std::max(range.max, sc<float>(WORKBUFFER->value().luminances.max));
+
+    // The intermediate stores work buffer highlights by stretching its encoding range up to the work buffer peak.
+    // The source range of the way back already carries the reference white scale, so it is stretched by the same ratio to stay the exact inverse.
+    const float INTERMEDIATE_MAX = INTERMEDIATE->value().encodingMaxLuminance();
+    const float STORAGE_MAX      = std::max(INTERMEDIATE_MAX, sc<float>(WORKBUFFER->value().luminances.max));
+    if (toIntermediate)
+        settings.dstTFRange.max = STORAGE_MAX;
+    else
+        settings.srcTFRange.max *= STORAGE_MAX / INTERMEDIATE_MAX;
     return settings;
 }
 
@@ -129,17 +136,11 @@ SP<CGLFramebuffer> CDualKawaseBlurProvider::blurGL(CRenderContext& ctx, SP<CGLFr
             const auto settings = blurIntermediateCMSettings(ctx, /* toIntermediate */ true);
             shader              = m_impl.useShader(m_impl.getShaderVariant(SH_FRAG_BLURPREPARE, SH_FEAT_CM, settings.sourceTF, settings.targetTF));
 
-            m_impl.passCMUniforms(shader, g_pHyprRenderer->workBufferImageDescription(ctx), getDefaultImageDescription(), false, -1.F, -1, settings);
+            m_impl.passCMUniforms(shader, g_pHyprRenderer->workBufferImageDescription(ctx), getDefaultImageDescription(), false, -1.F, settings);
             shader->setUniformFloat(SHADER_SDR_SATURATION,
-                                    m_renderData.pMonitor->m_sdrSaturation > 0 &&
-                                            g_pHyprRenderer->workBufferImageDescription(ctx)->value().transferFunction == CM_TRANSFER_FUNCTION_ST2084_PQ ?
-                                        m_renderData.pMonitor->m_sdrSaturation :
-                                        1.0f);
+                                    m_renderData.pMonitor->m_sdrSaturation > 0 && m_renderData.pMonitor->inHDR() ? m_renderData.pMonitor->m_sdrSaturation : 1.0f);
             shader->setUniformFloat(SHADER_SDR_BRIGHTNESS,
-                                    m_renderData.pMonitor->m_sdrBrightness > 0 &&
-                                            g_pHyprRenderer->workBufferImageDescription(ctx)->value().transferFunction == CM_TRANSFER_FUNCTION_ST2084_PQ ?
-                                        m_renderData.pMonitor->m_sdrBrightness :
-                                        1.0f);
+                                    m_renderData.pMonitor->m_sdrBrightness > 0 && m_renderData.pMonitor->inHDR() ? m_renderData.pMonitor->m_sdrBrightness : 1.0f);
         } else
             shader = m_impl.useShader(m_impl.getShaderVariant(SH_FRAG_BLURPREPARE));
 
@@ -247,19 +248,13 @@ SP<CGLFramebuffer> CDualKawaseBlurProvider::blurGL(CRenderContext& ctx, SP<CGLFr
         const bool skipCM = !m_impl.m_cmSupported || !g_pHyprRenderer->workBufferImageDescription(ctx)->needsCM(getDefaultImageDescription());
         if (!skipCM) {
             const auto settings = blurIntermediateCMSettings(ctx, /* toIntermediate */ false);
-            shader              = m_impl.useShader(m_impl.getShaderVariant(MATERIAL_REQUIREMENTS.finishFragment, SH_FEAT_CM, settings.sourceTF, settings.targetTF));
+            shader = m_impl.useShader(m_impl.getShaderVariant(MATERIAL_REQUIREMENTS.finishFragment, SH_FEAT_CM | SH_FEAT_SDR_MOD, settings.sourceTF, settings.targetTF));
 
-            m_impl.passCMUniforms(shader, getDefaultImageDescription(), g_pHyprRenderer->workBufferImageDescription(ctx), false, -1.F, -1, settings);
+            m_impl.passCMUniforms(shader, getDefaultImageDescription(), g_pHyprRenderer->workBufferImageDescription(ctx), false, -1.F, settings);
             shader->setUniformFloat(SHADER_SDR_SATURATION,
-                                    m_renderData.pMonitor->m_sdrSaturation > 0 &&
-                                            g_pHyprRenderer->workBufferImageDescription(ctx)->value().transferFunction == CM_TRANSFER_FUNCTION_ST2084_PQ ?
-                                        m_renderData.pMonitor->m_sdrSaturation :
-                                        1.0f);
+                                    m_renderData.pMonitor->m_sdrSaturation > 0 && m_renderData.pMonitor->inHDR() ? m_renderData.pMonitor->m_sdrSaturation : 1.0f);
             shader->setUniformFloat(SHADER_SDR_BRIGHTNESS,
-                                    m_renderData.pMonitor->m_sdrBrightness > 0 &&
-                                            g_pHyprRenderer->workBufferImageDescription(ctx)->value().transferFunction == CM_TRANSFER_FUNCTION_ST2084_PQ ?
-                                        m_renderData.pMonitor->m_sdrBrightness :
-                                        1.0f);
+                                    m_renderData.pMonitor->m_sdrBrightness > 0 && m_renderData.pMonitor->inHDR() ? m_renderData.pMonitor->m_sdrBrightness : 1.0f);
         } else
             shader = m_impl.useShader(m_impl.getShaderVariant(MATERIAL_REQUIREMENTS.finishFragment));
 

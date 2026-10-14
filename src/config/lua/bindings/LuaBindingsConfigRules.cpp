@@ -1,3 +1,4 @@
+#include <limits>
 #include "LuaBindingsInternal.hpp"
 #include "Check.hpp"
 
@@ -155,11 +156,6 @@ namespace {
              p.rule().m_sdrMinLuminance = *sc<const Config::FLOAT*>(v->data());
              return true;
          }},
-        {"sdr_max_luminance", []() -> ILuaConfigValue* { return new CLuaConfigInt(80); },
-         [](ILuaConfigValue* v, CMonitorRuleParser& p) {
-             p.rule().m_sdrMaxLuminance = sc<int>(*sc<const Config::INTEGER*>(v->data()));
-             return true;
-         }},
         {"min_luminance", []() -> ILuaConfigValue* { return new CLuaConfigFloat(-1.F); },
          [](ILuaConfigValue* v, CMonitorRuleParser& p) {
              p.rule().m_minLuminance = *sc<const Config::FLOAT*>(v->data());
@@ -168,6 +164,14 @@ namespace {
         {"max_luminance", []() -> ILuaConfigValue* { return new CLuaConfigInt(-1); },
          [](ILuaConfigValue* v, CMonitorRuleParser& p) {
              p.rule().m_maxLuminance = sc<int>(*sc<const Config::INTEGER*>(v->data()));
+             return true;
+         }},
+        {"reference_luminance", []() -> ILuaConfigValue* { return new CLuaConfigInt(-1, -1, std::numeric_limits<int>::max()); },
+         [](ILuaConfigValue* v, CMonitorRuleParser& p) {
+             const auto value = sc<int>(*sc<const Config::INTEGER*>(v->data()));
+             if (value == 0)
+                 return false;
+             p.rule().m_referenceLuminance = value;
              return true;
          }},
         {"max_avg_luminance", []() -> ILuaConfigValue* { return new CLuaConfigInt(-1); },
@@ -1142,6 +1146,12 @@ static int hlMonitor(lua_State* L) {
         const char* key = lua_tostring(L, -2);
 
         if (std::string_view{key} == "output") {
+            lua_pop(L, 1);
+            continue;
+        }
+
+        if (std::string_view{key} == "sdr_max_luminance") {
+            self->addError(std::format("{}: hl.monitor: 'sdr_max_luminance' was removed, SDR white follows 'reference_luminance'", sourceInfo));
             lua_pop(L, 1);
             continue;
         }

@@ -5,6 +5,7 @@
 #include "../../managers/eventLoop/EventLoopTimer.hpp"
 #include "../WaylandProtocol.hpp"
 #include "./Buffer.hpp"
+#include "../../helpers/cm/ColorManagement.hpp"
 
 namespace Render {
     class ITexture;
@@ -62,10 +63,13 @@ struct SSurfaceState {
             bool alphaModifier : 1;
             bool hyprlandSurface : 1;
             bool backgroundEffect : 1;
+            bool colorManagement : 1;
         } bits;
     } updated;
 
-    bool rejected = false;
+    bool                                rejected = false;
+
+    NColorManagement::PImageDescription imageDescription;
 
     // initial values, copied from protocol text
     CHLBufferReference  buffer = {};                                  // The initial surface contents are void

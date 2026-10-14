@@ -2080,28 +2080,19 @@ static bool isSDR2HDR(CRenderContext& ctx, const NColorManagement::SImageDescrip
           ctx.m_data.pMonitor->m_imageDescription->value().transferFunction == NColorManagement::CM_TRANSFER_FUNCTION_ST2084_PQ));
 }
 
-static bool isHDR2SDR(const NColorManagement::SImageDescription& imageDescription, const NColorManagement::SImageDescription& targetImageDescription) {
-    // might be too strict
-    return (imageDescription.transferFunction == NColorManagement::CM_TRANSFER_FUNCTION_ST2084_PQ ||
-            imageDescription.transferFunction == NColorManagement::CM_TRANSFER_FUNCTION_HLG) &&
-        (targetImageDescription.transferFunction == NColorManagement::CM_TRANSFER_FUNCTION_SRGB ||
-         targetImageDescription.transferFunction == NColorManagement::CM_TRANSFER_FUNCTION_GAMMA22);
-}
-
 void IHyprRenderer::clearCMSettingsCache(CRenderContext& ctx) {
     ctx.m_cmSettingsCache.clear();
 }
 
 SCMSettings IHyprRenderer::getCMSettings(CRenderContext& ctx, const NColorManagement::PImageDescription imageDescription,
                                          const NColorManagement::PImageDescription targetImageDescription, SP<CWLSurfaceResource> surface, bool modifySDR, float sdrMinLuminance,
-                                         int sdrMaxLuminance, bool shouldUseSurface) {
+                                         bool shouldUseSurface) {
     const auto srcId = imageDescription->id();
     const auto dstId = targetImageDescription->id();
     void*      sPtr  = shouldUseSurface ? ctx.m_data.surface.get() : nullptr;
 
     for (auto const& entry : ctx.m_cmSettingsCache) {
-        if (entry.srcDescId == srcId && entry.dstDescId == dstId && entry.surfacePtr == sPtr && entry.modifySDR == modifySDR && entry.sdrMinLuminance == sdrMinLuminance &&
-            entry.sdrMaxLuminance == sdrMaxLuminance)
+        if (entry.srcDescId == srcId && entry.dstDescId == dstId && entry.surfacePtr == sPtr && entry.modifySDR == modifySDR && entry.sdrMinLuminance == sdrMinLuminance)
             return entry.settings;
     }
 
@@ -2126,15 +2117,18 @@ SCMSettings IHyprRenderer::getCMSettings(CRenderContext& ctx, const NColorManage
     } else
         srcTF = imageDescription->value().transferFunction;
 
-    const bool  needsSDRmod     = modifySDR && isSDR2HDR(ctx, imageDescription->value(), targetImageDescription->value());
-    const bool  needsHDRmod     = !needsSDRmod && isHDR2SDR(imageDescription->value(), targetImageDescription->value());
-    const float maxLuminance    = needsHDRmod ?
-        imageDescription->value().getTFMaxLuminance(-1) :
-        (imageDescription->value().luminances.max > 0 ? imageDescription->value().luminances.max : imageDescription->value().luminances.reference);
-    const auto  dstMaxLuminance = targetImageDescription->value().luminances.max > 0 ? targetImageDescription->value().luminances.max : 10000;
+    const bool  needsSDRmod = modifySDR && isSDR2HDR(ctx, imageDescription->value(), targetImageDescription->value());
+    const auto& source      = imageDescription->value();
+    const auto& target      = targetImageDescription->value();
+    // Reference whites are anchored for every conversion, including SDR content on HDR outputs.
+    const float referenceScale  = referenceLuminanceScale(source, target);
+    const float sdrBrightness   = needsSDRmod && ctx.m_data.pMonitor->m_sdrBrightness > 0 ? ctx.m_data.pMonitor->m_sdrBrightness : 1.0f;
+    const float sourcePeak      = source.maxCLL > 0 ? source.maxCLL : (source.masteringLuminances.max > 0 ? source.masteringLuminances.max : source.luminances.max);
+    const float maxLuminance    = referenceScale * sourcePeak * sdrBrightness;
+    const auto  dstMaxLuminance = target.masteringLuminances.max > 0 ? target.masteringLuminances.max : (target.luminances.max > 0 ? target.luminances.max : 10000);
 
     auto        matrix = imageDescription->getPrimaries()->convertMatrix(targetImageDescription->getPrimaries());
-    auto        toXYZ  = targetImageDescription->getPrimaries()->value().toXYZ();
+    auto        toXYZ  = targetImageDescription->getPrimaries()->toXYZ();
 
     const bool  needsMod = needsSDRmod &&
         ((ctx.m_data.pMonitor->m_sdrSaturation > 0 && ctx.m_data.pMonitor->m_sdrSaturation != 1.0f) ||
@@ -2143,26 +2137,38 @@ SCMSettings IHyprRenderer::getCMSettings(CRenderContext& ctx, const NColorManage
     const bool needsTonemap = maxLuminance >= dstMaxLuminance * 1.01;
 
     auto       result = SCMSettings{
-        .sourceTF        = srcTF,
-        .targetTF        = targetImageDescription->value().transferFunction,
-        .srcTFRange      = {.min = imageDescription->value().getTFMinLuminance(needsSDRmod ? sdrMinLuminance : -1),
-                            .max = imageDescription->value().getTFMaxLuminance(needsSDRmod ? sdrMaxLuminance : -1)},
-        .dstTFRange      = {.min = targetImageDescription->value().getTFMinLuminance(needsSDRmod ? sdrMinLuminance : -1),
-                            .max = targetImageDescription->value().getTFMaxLuminance(needsSDRmod ? sdrMaxLuminance : -1)},
-        .srcRefLuminance = imageDescription->value().luminances.reference,
-        .dstRefLuminance = targetImageDescription->value().luminances.reference,
-        .convertMatrix   = matrix.mat(),
+        .sourceTF          = srcTF,
+        .targetTF          = targetImageDescription->value().transferFunction,
+        .srcTFRange        = {.min = source.encodingMinLuminance() * referenceScale, .max = source.encodingMaxLuminance() * referenceScale},
+        .dstTFRange        = {.min = target.encodingMinLuminance(), .max = target.encodingMaxLuminance()},
+        .srcReferenceScale = referenceScale,
+        .srcRefLuminance   = imageDescription->value().luminances.reference,
+        .dstRefLuminance   = targetImageDescription->value().luminances.reference,
+        .convertMatrix     = matrix.mat(),
 
         .needsTonemap            = tonemapMode != 0 && needsTonemap,
         .tonemapMode             = tonemapMode,
-        .maxLuminance            = needsTonemap && tonemapMode == 2 ? dstMaxLuminance :
-                                                                      maxLuminance * targetImageDescription->value().luminances.reference / imageDescription->value().luminances.reference,
+        .maxLuminance            = needsTonemap && tonemapMode == 2 ? dstMaxLuminance : maxLuminance,
         .dstMaxLuminance         = dstMaxLuminance,
+        .srcMaxLuminance         = referenceScale * sourcePeak,
+        .srcMinLuminance         = referenceScale * (source.masteringLuminances.max > 0 ? source.masteringLuminances.min : source.encodingMinLuminance()),
         .dstPrimaries2XYZ        = toXYZ.mat(),
         .needsSDRmod             = needsMod,
         .sdrSaturation           = needsSDRmod && ctx.m_data.pMonitor->m_sdrSaturation > 0 ? ctx.m_data.pMonitor->m_sdrSaturation : 1.0f,
-        .sdrBrightnessMultiplier = needsSDRmod && ctx.m_data.pMonitor->m_sdrBrightness > 0 ? ctx.m_data.pMonitor->m_sdrBrightness : 1.0f,
+        .sdrBrightnessMultiplier = sdrBrightness,
     };
+
+    // sdr_min_luminance sets the absolute SDR black level on HDR outputs.
+    if (needsSDRmod && sdrMinLuminance >= 0) {
+        result.srcTFRange.min  = sdrMinLuminance;
+        result.srcMinLuminance = sdrMinLuminance;
+    }
+
+    // Linear sources skip toNit, so their pixels take the reference-white ratio through the conversion matrix.
+    if (srcTF == CM_TRANSFER_FUNCTION_LINEAR)
+        for (auto& row : result.convertMatrix)
+            for (auto& value : row)
+                value *= referenceScale;
 
     ctx.m_cmSettingsCache.push_back({
         .srcDescId       = srcId,
@@ -2170,7 +2176,6 @@ SCMSettings IHyprRenderer::getCMSettings(CRenderContext& ctx, const NColorManage
         .surfacePtr      = sPtr,
         .modifySDR       = modifySDR,
         .sdrMinLuminance = sdrMinLuminance,
-        .sdrMaxLuminance = sdrMaxLuminance,
         .settings        = result,
     });
 
@@ -2259,15 +2264,15 @@ void IHyprRenderer::renderMonitor(PHLMONITOR pMonitor, bool commit) {
             pMonitor->m_activeWorkspace->space()->recalculate(Layout::RECALCULATE_REASON_RENDER_MONITOR);
     }
 
-    // needsFrame can be cleared by commits that didnt consume our damage like a
-    // commit while a pageflip was in flight, so pending damage must keep the frame alive.
-    if (!pMonitor->m_output->needsFrame && pMonitor->m_forceFullFrames == 0 && !pMonitor->m_damage.hasChanged())
-        return;
-
     if (!pMonitor->m_commitCoordinator->canBeginFrame()) {
         pMonitor->m_pendingFrame = true;
         return;
     }
+
+    // Resolve output color state before the damage gate and before choosing render resources.
+    handleFullscreenSettings(pMonitor);
+    if (!pMonitor->m_output->needsFrame && pMonitor->m_forceFullFrames == 0 && !pMonitor->m_damage.hasChanged())
+        return;
 
     // tearing and DS first
     bool       shouldTear              = pMonitor->updateTearing();
@@ -2278,11 +2283,12 @@ void IHyprRenderer::renderMonitor(PHLMONITOR pMonitor, bool commit) {
         pMonitor->m_output->state->setPresentationMode(presentationMode);
 
     if (canAttemptDirectScanout) {
-        handleFullscreenSettings(pMonitor);
         if (pMonitor->attemptDirectScanout()) {
             return;
-        } else if (!pMonitor->m_lastScanout.expired() || pMonitor->m_directScanoutIsActive)
+        } else if (!pMonitor->m_lastScanout.expired() || pMonitor->m_directScanoutIsActive) {
             pMonitor->handleDSleave();
+            handleFullscreenSettings(pMonitor);
+        }
     }
 
     Event::bus()->m_events.render.pre.emit(pMonitor);
@@ -2473,53 +2479,7 @@ void IHyprRenderer::renderMonitor(PHLMONITOR pMonitor, bool commit) {
 
 static const hdr_output_metadata NO_HDR_METADATA = {.hdmi_metadata_type1 = hdr_metadata_infoframe{.eotf = 0}};
 
-static hdr_output_metadata       createHDRMetadata(SImageDescription settings, PHLMONITOR monitor) {
-    uint8_t eotf = 0;
-    switch (settings.transferFunction) {
-        case CM_TRANSFER_FUNCTION_GAMMA22:
-        case CM_TRANSFER_FUNCTION_SRGB: eotf = 0; break; // used to send primaries and luminances to AQ. ignored for now
-        case CM_TRANSFER_FUNCTION_ST2084_PQ: eotf = 2; break;
-        case CM_TRANSFER_FUNCTION_EXT_LINEAR:
-            eotf = 2;
-            break; // should be Windows scRGB
-        // case CM_TRANSFER_FUNCTION_HLG: eotf = 3; break; TODO check display capabilities first
-        default: return NO_HDR_METADATA; // empty metadata for SDR
-    }
-
-    const auto toNits  = [](uint32_t value) { return sc<uint16_t>(std::round(value)); };
-    const auto to16Bit = [](float value) { return sc<uint16_t>(std::round(value * 50000)); };
-
-    auto       colorimetry = settings.getPrimaries();
-    auto       luminances  = settings.masteringLuminances.max > 0 ? settings.masteringLuminances :
-                                                                    (settings.luminances != SImageDescription::SPCLuminances{} ?
-                                                                         SImageDescription::SPCMasteringLuminances{.min = settings.luminances.min, .max = settings.luminances.max} :
-                                                                         SImageDescription::SPCMasteringLuminances{.min = monitor->minLuminance(), .max = monitor->maxLuminance(10000)});
-
-    LOG(Log::TRACE, "ColorManagement primaries {},{} {},{} {},{} {},{}", colorimetry.red.x, colorimetry.red.y, colorimetry.green.x, colorimetry.green.y, colorimetry.blue.x,
-        colorimetry.blue.y, colorimetry.white.x, colorimetry.white.y);
-    LOG(Log::TRACE, "ColorManagement min {}, max {}, cll {}, fall {}", luminances.min, luminances.max, settings.maxCLL, settings.maxFALL);
-    return hdr_output_metadata{
-        .metadata_type = 0,
-        .hdmi_metadata_type1 =
-            hdr_metadata_infoframe{
-                .eotf          = eotf,
-                .metadata_type = 0,
-                .display_primaries =
-                    {
-                        {.x = to16Bit(colorimetry.red.x), .y = to16Bit(colorimetry.red.y)},
-                        {.x = to16Bit(colorimetry.green.x), .y = to16Bit(colorimetry.green.y)},
-                        {.x = to16Bit(colorimetry.blue.x), .y = to16Bit(colorimetry.blue.y)},
-                    },
-                .white_point                     = {.x = to16Bit(colorimetry.white.x), .y = to16Bit(colorimetry.white.y)},
-                .max_display_mastering_luminance = toNits(luminances.max),
-                .min_display_mastering_luminance = toNits(luminances.min * 10000),
-                .max_cll                         = toNits(settings.maxCLL > 0 ? settings.maxCLL : monitor->maxCLL()),
-                .max_fall                        = toNits(settings.maxFALL > 0 ? settings.maxFALL : monitor->maxFALL()),
-            },
-    };
-}
-
-static bool hdrMetadataEqual(const hdr_output_metadata& a, const hdr_output_metadata& b) {
+static bool                      hdrMetadataEqual(const hdr_output_metadata& a, const hdr_output_metadata& b) {
     if (a.metadata_type != b.metadata_type)
         return false;
 
@@ -2528,10 +2488,11 @@ static bool hdrMetadataEqual(const hdr_output_metadata& a, const hdr_output_meta
 }
 
 void IHyprRenderer::handleFullscreenSettings(PHLMONITOR pMonitor) {
-    static auto PCT        = CConfigValue<Config::INTEGER>("render:send_content_type");
-    static auto PAUTOHDR   = CConfigValue<Config::INTEGER>("render:cm_auto_hdr");
-    static auto PNONSHADER = CConfigValue<Config::INTEGER>("render:non_shader_cm");
-    static auto PNSINTEROP = CConfigValue<Config::INTEGER>("render:non_shader_cm_interop");
+    const auto  oldMetadata = pMonitor->m_output->state->state().hdrMetadata;
+    static auto PCT         = CConfigValue<Config::INTEGER>("render:send_content_type");
+    static auto PAUTOHDR    = CConfigValue<Config::INTEGER>("render:cm_auto_hdr");
+    static auto PNONSHADER  = CConfigValue<Config::INTEGER>("render:non_shader_cm");
+    static auto PNSINTEROP  = CConfigValue<Config::INTEGER>("render:non_shader_cm_interop");
 
     const bool  configuredHDR = (pMonitor->m_cmType == NCMType::CM_HDR_EDID || pMonitor->m_cmType == NCMType::CM_HDR);
     bool        wantHDR       = configuredHDR;
@@ -2549,22 +2510,19 @@ void IHyprRenderer::handleFullscreenSettings(PHLMONITOR pMonitor) {
             const auto SURF      = ROOT_SURF->findWithCM();
 
             // we have a surface with image description
-            if (SURF && SURF->m_colorManagement.valid() && SURF->m_colorManagement->hasImageDescription()) {
-                const bool surfaceIsHDR = SURF->m_colorManagement->isHDR();
+            if (SURF) {
+                const auto& surfaceDescription = SURF->m_current.imageDescription->value();
+                const bool  surfaceIsHDR       = isHDR(surfaceDescription);
                 wantHDR                 = *PAUTOHDR && surfaceIsHDR;
                 if (FULLSCREEN_WINDOW && FULLSCREEN_WINDOW->m_ruleApplicator->noAutoHDR().valueOrDefault())
                     wantHDR = configuredHDR;
-                if (surfaceIsHDR && !SURF->m_colorManagement->isWindowsScRGB() && !pMonitor->m_lastScanout.expired()) {
-                    // DS HDR
-                    bool needsHdrMetadataUpdate =
-                        SURF->m_colorManagement->needsHdrMetadataUpdate() || pMonitor->m_previousFSWindow != FULLSCREEN_WINDOW || pMonitor->m_needsHDRupdate;
-                    if (SURF->m_colorManagement->needsHdrMetadataUpdate()) {
-                        LOG(Log::INFO, "[CM] Recreating HDR metadata for surface");
-                        SURF->m_colorManagement->setHDRMetadata(createHDRMetadata(SURF->m_colorManagement->imageDescription(), pMonitor));
-                    }
-                    if (needsHdrMetadataUpdate) {
+                if (surfaceIsHDR && !isWindowsScRGB(surfaceDescription) && !pMonitor->m_lastScanout.expired()) {
+                    // DS HDR: the client's buffer is sent unmodified, so its own metadata describes it.
+                    const auto surfaceMetadata = createHDRMetadata(surfaceDescription);
+                    if (!hdrMetadataEqual(surfaceMetadata, pMonitor->m_output->state->state().hdrMetadata) || pMonitor->m_previousFSWindow != FULLSCREEN_WINDOW ||
+                        pMonitor->m_needsHDRupdate) {
                         LOG(Log::INFO, "[CM] Updating HDR metadata from surface");
-                        pMonitor->m_output->state->setHDRMetadata(SURF->m_colorManagement->hdrMetadata());
+                        pMonitor->m_output->state->setHDRMetadata(surfaceMetadata);
                         pMonitor->m_hdrMetadataFromSurface = true;
                     }
                     hdrIsHandled               = true;
@@ -2588,7 +2546,11 @@ void IHyprRenderer::handleFullscreenSettings(PHLMONITOR pMonitor) {
                 pMonitor->m_previousFSWindow.reset(); // trigger CTM update
             }
 
-            const auto WANTED  = wantHDR ? createHDRMetadata(pMonitor->m_imageDescription->value(), pMonitor) : NO_HDR_METADATA;
+            // Composited frames have no known content light levels (CTA-861.3: 0 = unknown).
+            auto composited    = pMonitor->m_imageDescription->value();
+            composited.maxCLL  = 0;
+            composited.maxFALL = 0;
+            const auto WANTED  = wantHDR ? createHDRMetadata(composited) : NO_HDR_METADATA;
             const auto CURRENT = pMonitor->m_output->state->state().hdrMetadata;
 
             // Required in order to clear stale HDR metadata
@@ -2625,7 +2587,8 @@ void IHyprRenderer::handleFullscreenSettings(PHLMONITOR pMonitor) {
     if (*PCT)
         pMonitor->m_output->state->setContentType(NContentType::toDRM(FULLSCREEN_WINDOW ? FULLSCREEN_WINDOW->getContentType() : CONTENT_TYPE_NONE));
 
-    if (FULLSCREEN_WINDOW != pMonitor->m_previousFSWindow || (!FULLSCREEN_WINDOW && pMonitor->m_noShaderCTM) || pMonitor->m_ctmUpdated) {
+    // A direct scanout converted by the display hardware owns the CTM, see CMonitor::attemptDirectScanout.
+    if (!pMonitor->usesHardwareCM() && (FULLSCREEN_WINDOW != pMonitor->m_previousFSWindow || (!FULLSCREEN_WINDOW && pMonitor->m_noShaderCTM) || pMonitor->m_ctmUpdated)) {
         const bool INTEROP  = (*PNSINTEROP == 1 || (*PNSINTEROP == 2 && FULLSCREEN_WINDOW && FULLSCREEN_WINDOW->getContentType() == CONTENT_TYPE_NONE));
         bool       resetCTM = !FULLSCREEN_WINDOW;
         if (FULLSCREEN_WINDOW) {
@@ -2654,13 +2617,13 @@ void IHyprRenderer::handleFullscreenSettings(PHLMONITOR pMonitor) {
                     mat[1][0], mat[1][1], mat[1][2], //
                     mat[2][0], mat[2][1], mat[2][2], //
                 };
-                pMonitor->m_output->state->setCTM(CTM);
+                pMonitor->stageCTM(CTM);
             } else if (!INTEROP && pMonitor->m_ctm != Mat3x3::identity()) {
                 LOG(Log::INFO, "[CM] Setting identity CTM");
                 pMonitor->m_noShaderCTM = true;
                 pMonitor->m_ctmUpdated  = false;
 
-                pMonitor->m_output->state->setCTM(Mat3x3::identity());
+                pMonitor->stageCTM(Mat3x3::identity());
             } else
                 resetCTM = true;
         }
@@ -2672,17 +2635,17 @@ void IHyprRenderer::handleFullscreenSettings(PHLMONITOR pMonitor) {
         }
     }
 
-    if (pMonitor->m_ctmUpdated && !pMonitor->m_noShaderCTM) {
+    if (pMonitor->m_ctmUpdated && !pMonitor->m_noShaderCTM && !pMonitor->usesHardwareCM()) {
         pMonitor->m_ctmUpdated = false;
-        pMonitor->m_output->state->setCTM(pMonitor->m_ctm);
+        pMonitor->stageCTM(pMonitor->m_ctm);
     }
 
     pMonitor->m_previousFSWindow = FULLSCREEN_WINDOW;
+    if (!hdrMetadataEqual(oldMetadata, pMonitor->m_output->state->state().hdrMetadata))
+        damageMonitor(pMonitor);
 }
 
 bool IHyprRenderer::commitPendingAndDoExplicitSync(PHLMONITOR pMonitor, std::optional<Monitor::CDamageRing::CTransaction> damage, const CRegion& renderedDamage) {
-    handleFullscreenSettings(pMonitor);
-
     const auto                                staged = renderedDamage.empty() ? pMonitor->m_commitCoordinator->takeStagedRender() : std::nullopt;
 
     Monitor::COutputCommitCoordinator::SFrame frame{
@@ -3664,8 +3627,7 @@ CHyprColor IHyprRenderer::getConvertedColor(CRenderContext& ctx, const CHyprColo
     if (const auto IT = colorConversionCache.find(key); IT != colorConversionCache.end())
         return IT->second;
 
-    const auto settings  = getCMSettings(ctx, DEFAULT_SRGB_IMAGE_DESCRIPTION, DESCR, nullptr, true, ctx.m_data.pMonitor ? ctx.m_data.pMonitor->m_sdrMinLuminance : -1,
-                                         ctx.m_data.pMonitor ? ctx.m_data.pMonitor->m_sdrMaxLuminance : -1);
+    const auto settings  = getCMSettings(ctx, DEFAULT_SRGB_IMAGE_DESCRIPTION, DESCR, nullptr, true, ctx.m_data.pMonitor ? ctx.m_data.pMonitor->m_sdrMinLuminance : -1);
     const auto converted = convertColor(color, DEFAULT_SRGB_IMAGE_DESCRIPTION, DESCR, settings);
     colorConversionCache.emplace(key, converted);
 

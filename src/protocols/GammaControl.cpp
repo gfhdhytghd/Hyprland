@@ -130,8 +130,8 @@ CGammaControl::~CGammaControl() {
     if (!m_gammaTableSet || !m_monitor || !m_monitor->m_output)
         return;
 
-    // reset the LUT if the client dies for whatever reason and doesn't unset the gamma
-    m_monitor->m_output->state->setGammaLut({});
+    // reset the ramp if the client dies for whatever reason and doesn't unset the gamma, keeping the monitor's own LUTs
+    m_monitor->setClientGammaRamp({});
 }
 
 bool CGammaControl::good() {
@@ -145,15 +145,15 @@ void CGammaControl::applyToMonitor() {
     LOG(Log::DEBUG, "setting to monitor {}", m_monitor->m_name);
 
     if (!m_gammaTableSet) {
-        m_monitor->m_output->state->setGammaLut({});
+        m_monitor->setClientGammaRamp({});
         return;
     }
 
-    m_monitor->m_output->state->setGammaLut(m_gammaTable);
+    m_monitor->setClientGammaRamp(m_gammaTable);
 
     if (!m_monitor->m_state.test()) {
         LOG(Log::DEBUG, "setting to monitor {} failed", m_monitor->m_name);
-        m_monitor->m_output->state->setGammaLut({});
+        m_monitor->setClientGammaRamp({});
     }
 
     g_pHyprRenderer->damageMonitor(m_monitor.lock());

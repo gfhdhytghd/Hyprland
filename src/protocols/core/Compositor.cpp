@@ -521,7 +521,7 @@ SP<CWLSurfaceResource> CWLSurfaceResource::findFirstPreorder(std::function<bool(
 }
 
 SP<CWLSurfaceResource> CWLSurfaceResource::findWithCM() {
-    return findFirstPreorder([this](SP<CWLSurfaceResource> surf) { return surf->m_colorManagement.valid() && surf->extends() == extends(); });
+    return findFirstPreorder([this](SP<CWLSurfaceResource> surf) { return surf->m_current.imageDescription && surf->extends() == extends(); });
 }
 
 std::pair<SP<CWLSurfaceResource>, Vector2D> CWLSurfaceResource::at(const Vector2D& localCoords, bool allowsInput) {

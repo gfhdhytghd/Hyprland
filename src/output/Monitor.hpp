@@ -35,6 +35,9 @@
 #include "../config/shared/monitor/MonitorRule.hpp"
 
 class CSyncTimeline;
+namespace NColorManagement {
+    struct SHardwareCM;
+}
 class CEventLoopTimer;
 
 namespace Monitor {
@@ -104,17 +107,17 @@ namespace Monitor {
 
         CMonitorZoomController      m_zoomController;
 
-        bool                        m_dpmsStatus       = true;
-        bool                        m_vrrActive        = false; // this can be TRUE even if VRR is not active in the case that this display does not support it.
-        bool                        m_enabled10bit     = false; // as above, this can be TRUE even if 10 bit failed.
-        NCMType::eCMType            m_cmType           = NCMType::CM_SRGB;
-        NTransferFunction::eTF      m_sdrEotf          = NTransferFunction::TF_DEFAULT;
-        float                       m_sdrSaturation    = 1.0f;
-        float                       m_sdrBrightness    = 1.0f;
-        float                       m_sdrMinLuminance  = 0.2f;
-        int                         m_sdrMaxLuminance  = 80;
-        bool                        m_createdByUser    = false;
-        bool                        m_isUnsafeFallback = false;
+        bool                        m_dpmsStatus         = true;
+        bool                        m_vrrActive          = false; // this can be TRUE even if VRR is not active in the case that this display does not support it.
+        bool                        m_enabled10bit       = false; // as above, this can be TRUE even if 10 bit failed.
+        NCMType::eCMType            m_cmType             = NCMType::CM_SRGB;
+        NTransferFunction::eTF      m_sdrEotf            = NTransferFunction::TF_DEFAULT;
+        float                       m_sdrSaturation      = 1.0f;
+        float                       m_sdrBrightness      = 1.0f;
+        float                       m_sdrMinLuminance    = 0.2f;
+        int                         m_referenceLuminance = -1;
+        bool                        m_createdByUser      = false;
+        bool                        m_isUnsafeFallback   = false;
 
         SP<CEventLoopTimer>         m_dpmsRetryTimer;
 
@@ -329,6 +332,7 @@ namespace Monitor {
         bool                                                        supportsWideColor();
         bool                                                        supportsHDR();
         float                                                       minLuminance(float defaultValue = 0);
+        int                                                         referenceLuminance() const;
         int                                                         maxLuminance(int defaultValue = 80);
         int                                                         maxAvgLuminance(int defaultValue = 80);
         float                                                       maxFALL();
@@ -339,6 +343,17 @@ namespace Monitor {
 
         bool                                                        inHDR();
         bool                                                        gammaRampsInUse();
+
+        // The KMS gamma LUT is shared by gamma-control ramps, ICC VCGT ramps and hardware CM of direct scanout buffers.
+        void setClientGammaRamp(const std::vector<uint16_t>& ramp);
+        void applyColorLuts();
+        /// Hardware DEGAMMA -> CTM -> GAMMA conversion of a direct scanout buffer to the output, when it reproduces the shader exactly
+        WP<NColorManagement::SHardwareCM> hardwareCMFor(const NColorManagement::SImageDescription& source);
+        bool                              usesHardwareCM() const;
+        bool                              supportsColorspace(const std::string& name) const;
+        bool                              canSignalBT2020() const;
+        /// Stages a CTM, refusing a non-identity one the hardware can't apply
+        bool                                                        stageCTM(const Mat3x3& ctm);
 
         std::optional<NColorManagement::PImageDescription>          getFSImageDescription();
 
@@ -397,6 +412,25 @@ namespace Monitor {
 
         bool                m_doneScheduled  = false;
         bool                m_vcgtRampsSet   = false;
+
+        bool                                              stageScanoutCM(const NColorManagement::SImageDescription& source, bool& changed);
+        bool                                              scanoutCMNeedsUpdate(SP<CWLSurfaceResource> surface);
+        static const NColorManagement::SImageDescription& scanoutDescription(SP<CWLSurfaceResource> surface);
+        void                                              clearScanoutCM();
+
+        std::vector<uint16_t>                             m_clientGammaRamp;
+        std::vector<uint16_t>                             m_vcgtRamp;
+        UP<NColorManagement::SHardwareCM>                 m_hardwareCM;               // active for the current direct scanout
+        bool                                              m_hardwareCMFailed = false; // the driver rejected it, stop trying until reconfigured
+        struct {
+            uint64_t                          sourceId = 0, targetId = 0;
+            size_t                            degammaSize = 0, gammaSize = 0;
+            bool                              supportsCTM   = false;
+            std::array<float, 3>              outputGain    = {};
+            float                             sdrBrightness = 0, sdrSaturation = 0, sdrBlack = 0;
+            int64_t                           mode = -1;
+            UP<NColorManagement::SHardwareCM> result;
+        } m_hardwareCMCache;
         int                 m_modeRetryCount = 0;
         SP<CEventLoopTimer> m_modeRetryTimer;
 

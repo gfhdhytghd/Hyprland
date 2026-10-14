@@ -142,6 +142,9 @@ void SSurfaceState::mergeFrom(SSurfaceState& ref) {
         inputIsInfinite = ref.inputIsInfinite;
     }
 
+    if (ref.updated.bits.colorManagement)
+        imageDescription = ref.imageDescription;
+
     if (ref.updated.bits.opaque)
         opaque = ref.opaque;
 
@@ -210,6 +213,9 @@ void SSurfaceState::updateFrom(SSurfaceState& ref) {
         input           = ref.input;
         inputIsInfinite = ref.inputIsInfinite;
     }
+
+    if (ref.updated.bits.colorManagement)
+        imageDescription = ref.imageDescription;
 
     if (ref.updated.bits.opaque)
         opaque = ref.opaque;

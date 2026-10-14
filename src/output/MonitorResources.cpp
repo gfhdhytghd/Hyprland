@@ -56,8 +56,6 @@ void CMonitorResources::setImageDescription(NColorManagement::PImageDescription 
     m_blurFB->setImageDescription(imageDescription);
     m_workBuffers.setImageDescription(imageDescription);
     m_sizedWorkBuffers.setImageDescription(imageDescription);
-    if (m_monitorMirrorFB)
-        m_monitorMirrorFB->setImageDescription(getMirrorTexImageDescription());
     if (m_mirrorTex)
         m_mirrorTex->m_imageDescription = getMirrorTexImageDescription();
     invalidateMirrorFB();
@@ -136,9 +134,14 @@ SP<Render::IFramebuffer> CMonitorResources::mirrorFB() {
     if (!m_monitorMirrorFB)
         m_monitorMirrorFB = g_pHyprRenderer->createFB(std::format("Monitor {} mirror FB", m_monitor->m_name));
 
-    if (!m_monitorMirrorFB->isAllocated()) {
-        m_monitorMirrorFB->alloc(m_size.x, m_size.y, m_monitor->m_activeMonitorRule.m_enable10bit ? DRM_FORMAT_XRGB2101010 : DRM_FORMAT_XRGB8888);
-        m_monitorMirrorFB->setImageDescription(getMirrorTexImageDescription());
+    // Copy the unmodified SDR texture when it exists; otherwise keep the work buffer's format and HDR range.
+    const auto FORMAT      = m_mirrorTex ? m_mirrorTex->m_drmFormat : m_drmFormat;
+    const auto DESCRIPTION = m_mirrorTex ? m_mirrorTex->m_imageDescription : m_imageDescription;
+
+    if (!m_monitorMirrorFB->isAllocated() || m_monitorMirrorFB->m_drmFormat != FORMAT || m_monitorMirrorFB->imageDescription() != DESCRIPTION) {
+        m_monitorMirrorFB->alloc(m_size.x, m_size.y, FORMAT);
+        m_monitorMirrorFB->setImageDescription(DESCRIPTION);
+        invalidateMirrorFB();
     }
 
     return m_monitorMirrorFB;
@@ -149,10 +152,7 @@ SP<Render::ITexture> CMonitorResources::getMirrorTexture() {
 }
 
 NColorManagement::PImageDescription CMonitorResources::getMirrorTexImageDescription() {
-    const auto TF = m_imageDescription->value().transferFunction;
-    if (TF == CM_TRANSFER_FUNCTION_GAMMA22 || TF == CM_TRANSFER_FUNCTION_SRGB)
-        return m_imageDescription;
-
+    // The unmodified copy is BT.709 SDR with the sRGB encoding, see the mirror output of doColorManagement.
     return DEFAULT_SRGB_IMAGE_DESCRIPTION;
 }
 
@@ -167,12 +167,16 @@ void CMonitorResources::enableMirror() {
     m_mirrorTex->allocate({m_size.x, m_size.y}, m_monitor->m_activeMonitorRule.m_enable10bit ? DRM_FORMAT_XRGB2101010 : DRM_FORMAT_XRGB8888);
     m_mirrorTex->m_imageDescription = getMirrorTexImageDescription();
     m_monitor->m_blurFBDirty        = true;
+    // The mirror FB switches to this texture's encoding and needs a full copy.
+    g_pHyprRenderer->damageMonitor(m_monitor.lock());
 }
 
 void CMonitorResources::disableMirror() {
-    if (m_mirrorTex)
-        m_monitor->m_blurFBDirty = true;
+    if (!m_mirrorTex)
+        return;
+    m_monitor->m_blurFBDirty = true;
     m_mirrorTex.reset();
+    g_pHyprRenderer->damageMonitor(m_monitor.lock());
 }
 
 void CMonitorResources::refreshBlurFB() {
