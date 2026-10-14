@@ -597,6 +597,12 @@ CColorManagementParametricCreator::CColorManagementParametricCreator(SP<CWpImage
             return;
         }
 
+        if ((r->version() == 1 && tf == WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_COMPOUND_POWER_2_4) ||
+            (r->version() >= 2 && (tf == WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_SRGB || tf == WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_EXT_SRGB))) {
+            r->error(WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_INVALID_TF, "Transfer function was not advertised for this version");
+            return;
+        }
+
         switch (tf) {
             case WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_SRGB: break;
             case WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_ST2084_PQ: break;
