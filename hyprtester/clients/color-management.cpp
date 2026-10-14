@@ -55,6 +55,24 @@ static int run(wl_display* display, const std::string& mode) {
     uint32_t                                            expectedError = 0;
     bool                                                ready = false, failed = false;
 
+    if (mode.starts_with("output-reference=")) {
+        const auto expected = std::stoul(mode.substr(17));
+        uint32_t   actual   = 0;
+        description         = makeShared<CCWpImageDescriptionV1>(cmOutput->sendGetImageDescription());
+        description->setReady([&](CCWpImageDescriptionV1*, uint32_t) { ready = true; });
+        if (wl_display_roundtrip(display) < 0 || !ready)
+            return 10;
+        information = makeShared<CCWpImageDescriptionInfoV1>(description->sendGetInformation());
+        information->setLuminances([&](CCWpImageDescriptionInfoV1*, uint32_t, uint32_t max, uint32_t reference) {
+            actual = reference;
+            if (max != 10000)
+                actual = 0;
+        });
+        if (wl_display_roundtrip(display) < 0 || actual != expected)
+            return 11;
+        return 0;
+    }
+
     if (mode == "feedback-inert" || mode == "surface-inert") {
         surface->sendDestroy();
         surface.reset();
@@ -122,10 +140,12 @@ static int run(wl_display* display, const std::string& mode) {
         } else if (mode == "tf-power") {
             creator->sendSetTfPower(22000);
             expectedError = WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_UNSUPPORTED_FEATURE;
-        } else if (mode == "valid-copy")
+        } else if (mode == "valid-copy" || mode == "pq-ignored-max")
             expectedInterface.clear();
         else
             return 6;
+        if (mode == "pq-ignored-max")
+            creator->sendSetLuminances(50, 0, 203);
         description = makeShared<CCWpImageDescriptionV1>(creator->sendCreate());
         description->setReady([&](CCWpImageDescriptionV1*, uint32_t) { ready = true; });
     }
