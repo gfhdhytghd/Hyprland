@@ -280,6 +280,9 @@ namespace NColorManagement {
             return primaries;
         }
 
+        float encodingMinLuminance() const;
+        float encodingMaxLuminance() const;
+
         float getTFMinLuminance(float sdrMinLuminance = -1.0f) const {
             switch (transferFunction) {
                 case CM_TRANSFER_FUNCTION_EXT_LINEAR: return 0;

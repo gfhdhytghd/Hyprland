@@ -2145,10 +2145,9 @@ SCMSettings IHyprRenderer::getCMSettings(CRenderContext& ctx, const NColorManage
     auto       result = SCMSettings{
         .sourceTF        = srcTF,
         .targetTF        = targetImageDescription->value().transferFunction,
-        .srcTFRange      = {.min = imageDescription->value().getTFMinLuminance(needsSDRmod ? sdrMinLuminance : -1),
-                            .max = imageDescription->value().getTFMaxLuminance(needsSDRmod ? sdrMaxLuminance : -1)},
-        .dstTFRange      = {.min = targetImageDescription->value().getTFMinLuminance(needsSDRmod ? sdrMinLuminance : -1),
-                            .max = targetImageDescription->value().getTFMaxLuminance(needsSDRmod ? sdrMaxLuminance : -1)},
+        .srcTFRange      = {.min = needsSDRmod && sdrMinLuminance >= 0 ? sdrMinLuminance : source.encodingMinLuminance(),
+                            .max = needsSDRmod && sdrMaxLuminance > 0 ? sdrMaxLuminance : source.encodingMaxLuminance()},
+        .dstTFRange      = {.min = target.encodingMinLuminance(), .max = target.encodingMaxLuminance()},
         .srcRefLuminance = imageDescription->value().luminances.reference,
         .dstRefLuminance = targetImageDescription->value().luminances.reference,
         .convertMatrix   = matrix.mat(),

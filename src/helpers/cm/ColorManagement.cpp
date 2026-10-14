@@ -227,6 +227,18 @@ Mat3x3 NColorManagement::adaptBradford(Hyprgraphics::CColor::xy srcW, Hyprgraphi
     return result;
 }
 
+float SImageDescription::encodingMinLuminance() const {
+    return transferFunction == CM_TRANSFER_FUNCTION_EXT_LINEAR || transferFunction == CM_TRANSFER_FUNCTION_LINEAR ? 0.0f : luminances.min;
+}
+
+float SImageDescription::encodingMaxLuminance() const {
+    if (transferFunction == CM_TRANSFER_FUNCTION_ST2084_PQ)
+        return luminances.min + HDR_MAX_LUMINANCE;
+    if (transferFunction == CM_TRANSFER_FUNCTION_EXT_LINEAR)
+        return SDR_MAX_LUMINANCE;
+    return luminances.max;
+}
+
 // sRGB constants
 #define SRGB_POW   2.4
 #define SRGB_CUT   0.0031308

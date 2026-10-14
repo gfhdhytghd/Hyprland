@@ -73,3 +73,14 @@ TEST(ColorManagement, HLGReferenceDisplayOOTF) {
     const auto encoded  = convertColor(result, linear, hlg, settings);
     EXPECT_NEAR(encoded.c.r, 0.75, 1e-6);
 }
+
+TEST(ColorManagement, EncodingRangeHonorsBlackAndRelativePeak) {
+    SImageDescription d{.transferFunction = CM_TRANSFER_FUNCTION_GAMMA22, .luminances = {.min = 0.4f, .max = 120, .reference = 100}};
+    EXPECT_FLOAT_EQ(d.encodingMinLuminance(), 0.4f);
+    EXPECT_FLOAT_EQ(d.encodingMaxLuminance(), 120);
+    d.transferFunction = CM_TRANSFER_FUNCTION_ST2084_PQ;
+    EXPECT_FLOAT_EQ(d.encodingMaxLuminance(), 10000.4f);
+    d.transferFunction = CM_TRANSFER_FUNCTION_EXT_LINEAR;
+    EXPECT_FLOAT_EQ(d.encodingMinLuminance(), 0);
+    EXPECT_FLOAT_EQ(d.encodingMaxLuminance(), 80);
+}
