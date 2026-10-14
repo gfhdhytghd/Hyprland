@@ -276,11 +276,14 @@ static RGBAColor tfInvPQ(RGBAColor color) {
     return color;
 }
 
-static RGBAColor tfInvHLG(RGBAColor color) {
+static RGBAColor tfInvHLG(RGBAColor color, const std::array<double, 3>& coefficients = {0.2627, 0.6780, 0.0593}) {
     for (uint i = 0; i <= 2; i++) {
         const bool isLow = color.v[i] <= HLG_E_CUT;
         color.v[i]       = isLow ? color.v[i] * color.v[i] / 3.0 : (exp((color.v[i] - HLG_C) / HLG_A) + HLG_B) / 12.0;
     }
+    // BT.2100 HLG OOTF for the protocol's 1000 cd/m² reference display.
+    const double luminance = std::max(coefficients[0] * color.c.r + coefficients[1] * color.c.g + coefficients[2] * color.c.b, 0.0);
+    color *= std::pow(luminance, 0.2);
     return color;
 }
 
@@ -344,7 +347,10 @@ static RGBAColor tfPQ(RGBAColor color) {
     return color;
 }
 
-static RGBAColor tfHLG(RGBAColor color) {
+static RGBAColor tfHLG(RGBAColor color, const std::array<double, 3>& coefficients = {0.2627, 0.6780, 0.0593}) {
+    const double luminance = std::max(coefficients[0] * color.c.r + coefficients[1] * color.c.g + coefficients[2] * color.c.b, 0.0);
+    if (luminance > 0)
+        color *= std::pow(luminance, 1.0 / 1.2 - 1.0);
     for (uint i = 0; i <= 2; i++) {
         const bool isLow = color.v[i] <= HLG_D_CUT;
         color.v[i]       = isLow ? sqrt(std::max(color.v[i], 0.0) * 3.0) : HLG_A * log(std::max(12.0 * color.v[i] - HLG_B, 0.0001)) + HLG_C;
@@ -480,7 +486,7 @@ static RGBAColor toNit(RGBAColor color, Render::STFRange range) {
     return color;
 }
 
-static RGBAColor fromLinearNit(RGBAColor color, eTransferFunction tf, Render::STFRange range) {
+static RGBAColor fromLinearNit(RGBAColor color, eTransferFunction tf, Render::STFRange range, const std::array<double, 3>& coefficients) {
     if (tf == CM_TRANSFER_FUNCTION_LINEAR)
         return color;
 
@@ -488,7 +494,7 @@ static RGBAColor fromLinearNit(RGBAColor color, eTransferFunction tf, Render::ST
         color.v[i] = (color.v[i] - range.min * color.c.a) / (range.max - range.min);
     }
     color /= std::max(color.c.a, 0.001);
-    color = tf == CM_TRANSFER_FUNCTION_BT1886 ? tfBT1886(color, range) : fromLinearRGB(color, tf);
+    color = tf == CM_TRANSFER_FUNCTION_BT1886 ? tfBT1886(color, range) : (tf == CM_TRANSFER_FUNCTION_HLG ? tfHLG(color, coefficients) : fromLinearRGB(color, tf));
     color *= color.c.a;
     return color;
 }
@@ -513,7 +519,10 @@ static RGBAColor tonemap(RGBAColor color, std::array<std::array<double, 3>, 3> d
 
 RGBAColor NColorManagement::convertColor(RGBAColor color, PImageDescription srcDesc, PImageDescription dstDesc, const Render::SCMSettings& settings) {
     color /= std::max(color.c.a, 0.001);
-    color = srcDesc->value().transferFunction == CM_TRANSFER_FUNCTION_BT1886 ? tfInvBT1886(color, settings.srcTFRange) : toLinearRGB(color, srcDesc->value().transferFunction);
+    color = srcDesc->value().transferFunction == CM_TRANSFER_FUNCTION_BT1886 ?
+        tfInvBT1886(color, settings.srcTFRange) :
+        (srcDesc->value().transferFunction == CM_TRANSFER_FUNCTION_HLG ? tfInvHLG(color, srcDesc->getPrimaries()->toXYZ().mat()[1]) :
+                                                                         toLinearRGB(color, srcDesc->value().transferFunction));
     if (dstDesc->value().icc.present) {
         // color.rgb = applyIcc3DLut(color.rgb, iccLut3D, iccLutSize);
         color *= color.c.a;
@@ -529,7 +538,7 @@ RGBAColor NColorManagement::convertColor(RGBAColor color, PImageDescription srcD
         if (settings.needsTonemap)
             color = tonemap(color, settings.dstPrimaries2XYZ, settings.maxLuminance, settings.dstMaxLuminance, settings.dstRefLuminance, settings.srcRefLuminance);
 
-        color = fromLinearNit(color, dstDesc->value().transferFunction, settings.dstTFRange);
+        color = fromLinearNit(color, dstDesc->value().transferFunction, settings.dstTFRange, dstDesc->getPrimaries()->toXYZ().mat()[1]);
         if (settings.needsSDRmod) {
             color = saturate(color, settings.dstPrimaries2XYZ, settings.sdrSaturation);
             color *= settings.sdrBrightnessMultiplier;

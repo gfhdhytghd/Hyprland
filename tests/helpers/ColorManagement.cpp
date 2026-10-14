@@ -60,3 +60,16 @@ TEST(ColorManagement, WindowsPresetsCarryHDRHeadroom) {
     }
     EXPECT_EQ(SCRGB_IMAGE_DESCRIPTION->value().getTFMaxLuminance(), 80);
 }
+
+TEST(ColorManagement, HLGReferenceDisplayOOTF) {
+    const auto hlg = CImageDescription::from(SImageDescription{.transferFunction = CM_TRANSFER_FUNCTION_HLG, .primariesNameSet = true, .primariesNamed = CM_PRIMARIES_BT2020});
+    const auto linear =
+        CImageDescription::from(SImageDescription{.transferFunction = CM_TRANSFER_FUNCTION_LINEAR, .primariesNameSet = true, .primariesNamed = CM_PRIMARIES_BT2020});
+    Render::SCMSettings settings{.srcTFRange = {.min = 0, .max = 1000}};
+    const auto          result = convertColor(RGBAColor{{.r = 0.75, .g = 0.75, .b = 0.75, .a = 1}}, hlg, linear, settings);
+    EXPECT_NEAR(result.c.r, 203.152, 0.01);
+    EXPECT_NEAR(result.c.g, result.c.r, 1e-6);
+    settings.dstTFRange = settings.srcTFRange;
+    const auto encoded  = convertColor(result, linear, hlg, settings);
+    EXPECT_NEAR(encoded.c.r, 0.75, 1e-6);
+}

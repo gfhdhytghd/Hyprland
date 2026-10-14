@@ -130,6 +130,9 @@ void CShader::getUniformLocations() {
     m_uniformLocations[SHADER_ALPHA_MATTE] = getUniform("texMatte");
     m_uniformLocations[SHADER_TEX_TYPE]    = getUniform("texType");
 
+    m_uniformLocations[SHADER_SOURCE_LUMINANCE_COEFFICIENTS] = getUniform("sourceLuminanceCoefficients");
+    m_uniformLocations[SHADER_TARGET_LUMINANCE_COEFFICIENTS] = getUniform("targetLuminanceCoefficients");
+
     // shader has #include "CM.glsl"
     m_uniformLocations[SHADER_SRC_TF_RANGE]         = getUniform("srcTFRange");
     m_uniformLocations[SHADER_DST_TF_RANGE]         = getUniform("dstTFRange");

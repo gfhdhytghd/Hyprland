@@ -8,6 +8,9 @@
 #include "defines.h"
 #include "constants.h"
 
+uniform vec3 sourceLuminanceCoefficients;
+uniform vec3 targetLuminanceCoefficients;
+
 #if USE_SDR_MOD
 vec4 saturate(vec4 color, mat3 primaries, float saturation) {
     if (saturation == 1.0)
@@ -42,10 +45,12 @@ vec3 tfInvPQ(vec3 color) {
 }
 
 vec3 tfInvHLG(vec3 color) {
-    bvec3 isLow = lessThanEqual(color.rgb, vec3(HLG_E_CUT));
-    vec3  lo    = color.rgb * color.rgb / 3.0;
-    vec3  hi    = (exp((color.rgb - HLG_C) / HLG_A) + HLG_B) / 12.0;
-    return mix(hi, lo, isLow);
+    bvec3 isLow     = lessThanEqual(color.rgb, vec3(HLG_E_CUT));
+    vec3  lo        = color.rgb * color.rgb / 3.0;
+    vec3  hi        = (exp((color.rgb - HLG_C) / HLG_A) + HLG_B) / 12.0;
+    vec3  scene     = mix(hi, lo, isLow);
+    float luminance = max(dot(scene, sourceLuminanceCoefficients), 0.0);
+    return scene * pow(luminance, 0.2);
 }
 
 // Many transfer functions (including sRGB) follow the same pattern: a linear
@@ -91,6 +96,9 @@ vec3 tfPQ(vec3 color) {
 }
 
 vec3 tfHLG(vec3 color) {
+    float luminance = max(dot(color, targetLuminanceCoefficients), 0.0);
+    if (luminance > 0.0)
+        color *= pow(luminance, 1.0 / 1.2 - 1.0);
     bvec3 isLow = lessThanEqual(color.rgb, vec3(HLG_D_CUT));
     vec3  lo    = sqrt(max(color.rgb, vec3(0.0)) * 3.0);
     vec3  hi    = HLG_A * log(max(12.0 * color.rgb - HLG_B, vec3(0.0001))) + HLG_C;
