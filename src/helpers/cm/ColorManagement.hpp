@@ -144,9 +144,9 @@ namespace NColorManagement {
         };
 
         inline const auto GENERIC_FILM = SPCPRimaries{
-            .red   = {.x = 0.243, .y = 0.692},
-            .green = {.x = 0.145, .y = 0.049},
-            .blue  = {.x = 0.681, .y = 0.319}, // NOLINT(modernize-use-std-numbers)
+            .red   = {.x = 0.681, .y = 0.319}, // NOLINT(modernize-use-std-numbers)
+            .green = {.x = 0.243, .y = 0.692},
+            .blue  = {.x = 0.145, .y = 0.049},
             .white = {.x = 0.310, .y = 0.316},
         };
 
