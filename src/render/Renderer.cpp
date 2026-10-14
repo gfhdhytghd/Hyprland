@@ -2080,14 +2080,6 @@ static bool isSDR2HDR(CRenderContext& ctx, const NColorManagement::SImageDescrip
           ctx.m_data.pMonitor->m_imageDescription->value().transferFunction == NColorManagement::CM_TRANSFER_FUNCTION_ST2084_PQ));
 }
 
-static bool isHDR2SDR(const NColorManagement::SImageDescription& imageDescription, const NColorManagement::SImageDescription& targetImageDescription) {
-    // might be too strict
-    return (imageDescription.transferFunction == NColorManagement::CM_TRANSFER_FUNCTION_ST2084_PQ ||
-            imageDescription.transferFunction == NColorManagement::CM_TRANSFER_FUNCTION_HLG) &&
-        (targetImageDescription.transferFunction == NColorManagement::CM_TRANSFER_FUNCTION_SRGB ||
-         targetImageDescription.transferFunction == NColorManagement::CM_TRANSFER_FUNCTION_GAMMA22);
-}
-
 void IHyprRenderer::clearCMSettingsCache(CRenderContext& ctx) {
     ctx.m_cmSettingsCache.clear();
 }
@@ -2127,10 +2119,9 @@ SCMSettings IHyprRenderer::getCMSettings(CRenderContext& ctx, const NColorManage
         srcTF = imageDescription->value().transferFunction;
 
     const bool  needsSDRmod     = modifySDR && isSDR2HDR(ctx, imageDescription->value(), targetImageDescription->value());
-    const bool  needsHDRmod     = !needsSDRmod && isHDR2SDR(imageDescription->value(), targetImageDescription->value());
     const auto& source          = imageDescription->value();
     const auto& target          = targetImageDescription->value();
-    const float maxLuminance    = needsHDRmod ? source.getTFMaxLuminance(-1) : (source.masteringLuminances.max > 0 ? source.masteringLuminances.max : source.luminances.max);
+    const float maxLuminance    = source.maxCLL > 0 ? source.maxCLL : (source.masteringLuminances.max > 0 ? source.masteringLuminances.max : source.luminances.max);
     const auto  dstMaxLuminance = target.masteringLuminances.max > 0 ? target.masteringLuminances.max : (target.luminances.max > 0 ? target.luminances.max : 10000);
 
     auto        matrix = imageDescription->getPrimaries()->convertMatrix(targetImageDescription->getPrimaries());
