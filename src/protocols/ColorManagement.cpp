@@ -567,6 +567,9 @@ CColorManagementParametricCreator::CColorManagementParametricCreator(SP<CWpImage
             };
         }
 
+        if (m_settings.transferFunction == CM_TRANSFER_FUNCTION_ST2084_PQ)
+            m_settings.luminances.max = std::round(m_settings.luminances.min + HDR_MAX_LUMINANCE);
+
         if (m_settings.luminances.max <= m_settings.luminances.min) {
             r->error(WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_INVALID_LUMINANCE, "Invalid primary luminance range");
             return;
