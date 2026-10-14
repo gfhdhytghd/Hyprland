@@ -303,6 +303,11 @@ CColorManagementSurface::CColorManagementSurface(SP<CWpColorManagementSurfaceV1>
     m_resource->setSetImageDescription([this](CWpColorManagementSurfaceV1* r, wl_resource* image_description, uint32_t render_intent) {
         LOG(Log::TRACE, "Set image description for surface={}, desc={}, intent={}", (uintptr_t)r, (uintptr_t)image_description, render_intent);
 
+        if (!m_surface) {
+            r->error(WP_COLOR_MANAGEMENT_SURFACE_V1_ERROR_INERT, "Surface is inert");
+            return;
+        }
+
         const auto PO = sc<CWpImageDescriptionV1*>(wl_resource_get_user_data(image_description));
         if (!PO) { // FIXME check validity
             r->error(WP_COLOR_MANAGEMENT_SURFACE_V1_ERROR_IMAGE_DESCRIPTION, "Image description creation failed");
@@ -325,9 +330,15 @@ CColorManagementSurface::CColorManagementSurface(SP<CWpColorManagementSurfaceV1>
     });
     m_resource->setUnsetImageDescription([this](CWpColorManagementSurfaceV1* r) {
         LOG(Log::TRACE, "Unset image description for surface={}", (uintptr_t)r);
+        if (!m_surface) {
+            r->error(WP_COLOR_MANAGEMENT_SURFACE_V1_ERROR_INERT, "Surface is inert");
+            return;
+        }
+
         m_imageDescription = getDefaultImageDescription();
         setHasImageDescription(false);
     });
+    m_destroyListener = m_surface->m_events.destroy.listen([this] { m_surface.reset(); });
 }
 
 bool CColorManagementSurface::good() {

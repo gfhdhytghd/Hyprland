@@ -70,7 +70,8 @@ class CColorManagementSurface {
     NColorManagement::PImageDescription m_lastImageDescription;
     bool                                m_hasImageDescription = false;
     bool                                m_needsNewMetadata    = false;
-    hdr_output_metadata                 m_hdrMetadata;
+    hdr_output_metadata                 m_hdrMetadata{};
+    CHyprSignalListener                 m_destroyListener;
 };
 
 class CColorManagementFeedbackSurface {
