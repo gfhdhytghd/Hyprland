@@ -131,15 +131,9 @@ SP<CGLFramebuffer> CDualKawaseBlurProvider::blurGL(CRenderContext& ctx, SP<CGLFr
 
             m_impl.passCMUniforms(shader, g_pHyprRenderer->workBufferImageDescription(ctx), getDefaultImageDescription(), false, -1.F, -1, settings);
             shader->setUniformFloat(SHADER_SDR_SATURATION,
-                                    m_renderData.pMonitor->m_sdrSaturation > 0 &&
-                                            g_pHyprRenderer->workBufferImageDescription(ctx)->value().transferFunction == CM_TRANSFER_FUNCTION_ST2084_PQ ?
-                                        m_renderData.pMonitor->m_sdrSaturation :
-                                        1.0f);
+                                    m_renderData.pMonitor->m_sdrSaturation > 0 && m_renderData.pMonitor->inHDR() ? m_renderData.pMonitor->m_sdrSaturation : 1.0f);
             shader->setUniformFloat(SHADER_SDR_BRIGHTNESS,
-                                    m_renderData.pMonitor->m_sdrBrightness > 0 &&
-                                            g_pHyprRenderer->workBufferImageDescription(ctx)->value().transferFunction == CM_TRANSFER_FUNCTION_ST2084_PQ ?
-                                        m_renderData.pMonitor->m_sdrBrightness :
-                                        1.0f);
+                                    m_renderData.pMonitor->m_sdrBrightness > 0 && m_renderData.pMonitor->inHDR() ? m_renderData.pMonitor->m_sdrBrightness : 1.0f);
         } else
             shader = m_impl.useShader(m_impl.getShaderVariant(SH_FRAG_BLURPREPARE));
 
@@ -247,19 +241,13 @@ SP<CGLFramebuffer> CDualKawaseBlurProvider::blurGL(CRenderContext& ctx, SP<CGLFr
         const bool skipCM = !m_impl.m_cmSupported || !g_pHyprRenderer->workBufferImageDescription(ctx)->needsCM(getDefaultImageDescription());
         if (!skipCM) {
             const auto settings = blurIntermediateCMSettings(ctx, /* toIntermediate */ false);
-            shader              = m_impl.useShader(m_impl.getShaderVariant(MATERIAL_REQUIREMENTS.finishFragment, SH_FEAT_CM, settings.sourceTF, settings.targetTF));
+            shader = m_impl.useShader(m_impl.getShaderVariant(MATERIAL_REQUIREMENTS.finishFragment, SH_FEAT_CM | SH_FEAT_SDR_MOD, settings.sourceTF, settings.targetTF));
 
             m_impl.passCMUniforms(shader, getDefaultImageDescription(), g_pHyprRenderer->workBufferImageDescription(ctx), false, -1.F, -1, settings);
             shader->setUniformFloat(SHADER_SDR_SATURATION,
-                                    m_renderData.pMonitor->m_sdrSaturation > 0 &&
-                                            g_pHyprRenderer->workBufferImageDescription(ctx)->value().transferFunction == CM_TRANSFER_FUNCTION_ST2084_PQ ?
-                                        m_renderData.pMonitor->m_sdrSaturation :
-                                        1.0f);
+                                    m_renderData.pMonitor->m_sdrSaturation > 0 && m_renderData.pMonitor->inHDR() ? m_renderData.pMonitor->m_sdrSaturation : 1.0f);
             shader->setUniformFloat(SHADER_SDR_BRIGHTNESS,
-                                    m_renderData.pMonitor->m_sdrBrightness > 0 &&
-                                            g_pHyprRenderer->workBufferImageDescription(ctx)->value().transferFunction == CM_TRANSFER_FUNCTION_ST2084_PQ ?
-                                        m_renderData.pMonitor->m_sdrBrightness :
-                                        1.0f);
+                                    m_renderData.pMonitor->m_sdrBrightness > 0 && m_renderData.pMonitor->inHDR() ? m_renderData.pMonitor->m_sdrBrightness : 1.0f);
         } else
             shader = m_impl.useShader(m_impl.getShaderVariant(MATERIAL_REQUIREMENTS.finishFragment));
 

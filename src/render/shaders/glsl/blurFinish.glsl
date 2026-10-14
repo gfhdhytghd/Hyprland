@@ -7,6 +7,9 @@
 
 #if USE_CM
 #include "cm_helpers.glsl"
+#if USE_SDR_MOD
+uniform mat3 targetPrimariesXYZ;
+#endif
 #endif
 
 float hash(vec2 p) {
@@ -29,8 +32,7 @@ vec4 blurFinish(vec4 pixColor, vec2 v_texcoord, float noise, float brightness
 #if USE_CM
     // Preserve the configured SDR strength while adding noise in source-linear light.
     float sdrNoise    = noiseAmount * noise * brightnessMultiplier;
-    float linearNoise = sign(sdrNoise) * toLinearRGB(vec3(abs(sdrNoise)), sourceTF).r * (SDR_MAX_LUMINANCE - SDR_MIN_LUMINANCE) /
-        max(srcTFRange.y - srcTFRange.x, 0.001);
+    float linearNoise = sign(sdrNoise) * toLinearRGB(vec3(abs(sdrNoise)), sourceTF).r * (SDR_MAX_LUMINANCE - SDR_MIN_LUMINANCE) / max(srcTFRange.y - srcTFRange.x, 0.001);
 #else
     pixColor.rgb += noiseAmount * noise;
 #endif
@@ -39,7 +41,12 @@ vec4 blurFinish(vec4 pixColor, vec2 v_texcoord, float noise, float brightness
     pixColor.rgb *= brightnessMultiplier;
 
 #if USE_CM
-    pixColor = doColorManagement(pixColor, 1.0, sourceTF, targetTF, convertMatrix, srcTFRange, dstTFRange, linearNoise);
+    pixColor = doColorManagement(pixColor, 1.0, sourceTF, targetTF, convertMatrix, srcTFRange, dstTFRange, linearNoise
+#if USE_SDR_MOD
+                                 ,
+                                 targetPrimariesXYZ, sdrSaturation, sdrBrightnessMultiplier
+#endif
+    );
 #endif
 
     return pixColor;
