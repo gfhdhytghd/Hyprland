@@ -253,9 +253,6 @@ CColorManagementOutput::CColorManagementOutput(SP<CWpColorManagementOutputV1> re
     m_resource->setGetImageDescription([this](CWpColorManagementOutputV1* r, uint32_t id) {
         LOG(Log::TRACE, "Get image description for output={}, id={}", (uintptr_t)r, id);
 
-        if (m_imageDescription.valid())
-            PROTO::colorManagement->destroyResource(m_imageDescription.get());
-
         const auto RESOURCE = PROTO::colorManagement->m_imageDescriptions.emplace_back(
             makeShared<CColorManagementImageDescription>(makeShared<CWpImageDescriptionV1>(r->client(), r->version(), id), true));
 
@@ -788,6 +785,7 @@ CColorManagementImageDescription::CColorManagementImageDescription(SP<CWpImageDe
         return;
 
     m_client = m_resource->client();
+    m_resource->setData(this);
 
     m_resource->setDestroy([this](CWpImageDescriptionV1* r) { PROTO::colorManagement->destroyResource(this); });
     m_resource->setOnDestroy([this](CWpImageDescriptionV1* r) { PROTO::colorManagement->destroyResource(this); });
@@ -900,10 +898,10 @@ CColorManagementImageDescriptionInfo::CColorManagementImageDescriptionInfo(SP<CW
     else
         m_resource->sendTargetLuminance(std::round(m_settings.luminances.min * 10000), m_settings.luminances.max);
 
-    if (m_settings.maxCLL > 0 || m_settings.maxFALL > 0) {
+    if (m_settings.maxCLL > 0)
         m_resource->sendTargetMaxCll(m_settings.maxCLL);
+    if (m_settings.maxFALL > 0)
         m_resource->sendTargetMaxFall(m_settings.maxFALL);
-    }
 
     m_resource->sendDone();
 }
