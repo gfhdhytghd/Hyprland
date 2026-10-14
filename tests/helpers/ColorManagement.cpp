@@ -1,6 +1,7 @@
 #include <helpers/cm/ColorManagement.hpp>
 #include <render/types.hpp>
 #include <gtest/gtest.h>
+#include <drm_mode.h>
 
 using namespace NColorManagement;
 
@@ -94,4 +95,21 @@ TEST(ColorManagement, ReferenceWhiteScaleAndWindowsException) {
     source.isWindows            = false;
     source.luminances.reference = 0;
     EXPECT_FLOAT_EQ(referenceLuminanceScale(source, target), 1);
+}
+
+TEST(ColorManagement, HDRMetadataUsesMasteringGamutAndPreservesUnknownLightLevels) {
+    SImageDescription d{.transferFunction    = CM_TRANSFER_FUNCTION_ST2084_PQ,
+                        .primariesNameSet    = true,
+                        .primariesNamed      = CM_PRIMARIES_BT2020,
+                        .masteringPrimaries  = NColorPrimaries::DISPLAY_P3,
+                        .masteringLuminances = {.min = 0.005f, .max = 1000}};
+    const auto        metadata = createHDRMetadata(d).hdmi_metadata_type1;
+    EXPECT_EQ(metadata.eotf, 2);
+    EXPECT_EQ(metadata.display_primaries[0].x, 34000);
+    EXPECT_EQ(metadata.max_display_mastering_luminance, 1000);
+    EXPECT_EQ(metadata.min_display_mastering_luminance, 50);
+    EXPECT_EQ(metadata.max_cll, 0);
+    EXPECT_EQ(metadata.max_fall, 0);
+    d.maxCLL = 100000;
+    EXPECT_EQ(createHDRMetadata(d).hdmi_metadata_type1.max_cll, 65535);
 }

@@ -21,6 +21,8 @@
 #define HDR_REF_LUMINANCE 203.0f
 #define HLG_MAX_LUMINANCE 1000.0f
 
+struct hdr_output_metadata;
+
 namespace Render {
     class ITexture;
     struct SCMSettings;
@@ -385,14 +387,16 @@ namespace NColorManagement {
 
     using PImageDescription = WP<const CImageDescription>;
 
-    float             referenceLuminanceScale(const SImageDescription& source, const SImageDescription& target);
+    hdr_output_metadata createHDRMetadata(const SImageDescription& settings);
 
-    RGBAColor         convertColor(RGBAColor color, PImageDescription srcDesc, PImageDescription dstDesc, const Render::SCMSettings& settings);
-    CHyprColor        convertColor(const CHyprColor& color, PImageDescription srcDesc, PImageDescription dstDesc, const Render::SCMSettings& settings);
+    float               referenceLuminanceScale(const SImageDescription& source, const SImageDescription& target);
 
-    PImageDescription getDefaultImageDescription();
+    RGBAColor           convertColor(RGBAColor color, PImageDescription srcDesc, PImageDescription dstDesc, const Render::SCMSettings& settings);
+    CHyprColor          convertColor(const CHyprColor& color, PImageDescription srcDesc, PImageDescription dstDesc, const Render::SCMSettings& settings);
 
-    inline const auto DEFAULT_GAMMA22_IMAGE_DESCRIPTION = CImageDescription::from(SImageDescription{
+    PImageDescription   getDefaultImageDescription();
+
+    inline const auto   DEFAULT_GAMMA22_IMAGE_DESCRIPTION = CImageDescription::from(SImageDescription{
         .transferFunction = NColorManagement::CM_TRANSFER_FUNCTION_GAMMA22,
         .primariesNameSet = true,
         .primariesNamed   = NColorManagement::CM_PRIMARIES_SRGB,
@@ -400,7 +404,7 @@ namespace NColorManagement {
         .luminances       = {.min = SDR_MIN_LUMINANCE, .max = 80, .reference = 80},
     });
 
-    inline const auto DEFAULT_SRGB_IMAGE_DESCRIPTION = CImageDescription::from(SImageDescription{
+    inline const auto   DEFAULT_SRGB_IMAGE_DESCRIPTION = CImageDescription::from(SImageDescription{
         .transferFunction = NColorManagement::CM_TRANSFER_FUNCTION_SRGB,
         .primariesNameSet = true,
         .primariesNamed   = NColorManagement::CM_PRIMARIES_SRGB,
@@ -408,7 +412,7 @@ namespace NColorManagement {
         .luminances       = {.min = SDR_MIN_LUMINANCE, .max = 80, .reference = 80},
     });
 
-    inline const auto DEFAULT_HDR_IMAGE_DESCRIPTION = CImageDescription::from(SImageDescription{
+    inline const auto   DEFAULT_HDR_IMAGE_DESCRIPTION = CImageDescription::from(SImageDescription{
         .transferFunction = NColorManagement::CM_TRANSFER_FUNCTION_ST2084_PQ,
         .primariesNameSet = true,
         .primariesNamed   = NColorManagement::CM_PRIMARIES_BT2020,
@@ -416,7 +420,7 @@ namespace NColorManagement {
         .luminances       = {.min = HDR_MIN_LUMINANCE, .max = 10000, .reference = 203},
     });
 
-    inline const auto SCRGB_IMAGE_DESCRIPTION = CImageDescription::from(SImageDescription{
+    inline const auto   SCRGB_IMAGE_DESCRIPTION = CImageDescription::from(SImageDescription{
         .transferFunction = NColorManagement::CM_TRANSFER_FUNCTION_EXT_LINEAR,
         .isWindows        = true,
         .primariesNameSet = true,
@@ -425,7 +429,7 @@ namespace NColorManagement {
         .luminances       = {.min = 0, .max = 10000, .reference = 203},
     });
 
-    inline const auto BT2100_IMAGE_DESCRIPTION = CImageDescription::from(SImageDescription{
+    inline const auto   BT2100_IMAGE_DESCRIPTION = CImageDescription::from(SImageDescription{
         .transferFunction = NColorManagement::CM_TRANSFER_FUNCTION_ST2084_PQ,
         .isWindows        = true,
         .primariesNameSet = true,
@@ -434,7 +438,7 @@ namespace NColorManagement {
         .luminances       = {.min = 0, .max = 10000, .reference = 203},
     });
 
-    inline const auto LINEAR_IMAGE_DESCRIPTION = CImageDescription::from(SImageDescription{
+    inline const auto   LINEAR_IMAGE_DESCRIPTION = CImageDescription::from(SImageDescription{
         .transferFunction = NColorManagement::CM_TRANSFER_FUNCTION_EXT_LINEAR,
         .primariesNameSet = true,
         .primariesNamed   = NColorManagement::CM_PRIMARIES_SRGB,

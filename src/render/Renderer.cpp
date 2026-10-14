@@ -2471,53 +2471,7 @@ void IHyprRenderer::renderMonitor(PHLMONITOR pMonitor, bool commit) {
 
 static const hdr_output_metadata NO_HDR_METADATA = {.hdmi_metadata_type1 = hdr_metadata_infoframe{.eotf = 0}};
 
-static hdr_output_metadata       createHDRMetadata(SImageDescription settings, PHLMONITOR monitor) {
-    uint8_t eotf = 0;
-    switch (settings.transferFunction) {
-        case CM_TRANSFER_FUNCTION_GAMMA22:
-        case CM_TRANSFER_FUNCTION_SRGB: eotf = 0; break; // used to send primaries and luminances to AQ. ignored for now
-        case CM_TRANSFER_FUNCTION_ST2084_PQ: eotf = 2; break;
-        case CM_TRANSFER_FUNCTION_EXT_LINEAR:
-            eotf = 2;
-            break; // should be Windows scRGB
-        // case CM_TRANSFER_FUNCTION_HLG: eotf = 3; break; TODO check display capabilities first
-        default: return NO_HDR_METADATA; // empty metadata for SDR
-    }
-
-    const auto toNits  = [](uint32_t value) { return sc<uint16_t>(std::round(value)); };
-    const auto to16Bit = [](float value) { return sc<uint16_t>(std::round(value * 50000)); };
-
-    auto       colorimetry = settings.getPrimaries();
-    auto       luminances  = settings.masteringLuminances.max > 0 ? settings.masteringLuminances :
-                                                                    (settings.luminances != SImageDescription::SPCLuminances{} ?
-                                                                         SImageDescription::SPCMasteringLuminances{.min = settings.luminances.min, .max = settings.luminances.max} :
-                                                                         SImageDescription::SPCMasteringLuminances{.min = monitor->minLuminance(), .max = monitor->maxLuminance(10000)});
-
-    LOG(Log::TRACE, "ColorManagement primaries {},{} {},{} {},{} {},{}", colorimetry.red.x, colorimetry.red.y, colorimetry.green.x, colorimetry.green.y, colorimetry.blue.x,
-        colorimetry.blue.y, colorimetry.white.x, colorimetry.white.y);
-    LOG(Log::TRACE, "ColorManagement min {}, max {}, cll {}, fall {}", luminances.min, luminances.max, settings.maxCLL, settings.maxFALL);
-    return hdr_output_metadata{
-        .metadata_type = 0,
-        .hdmi_metadata_type1 =
-            hdr_metadata_infoframe{
-                .eotf          = eotf,
-                .metadata_type = 0,
-                .display_primaries =
-                    {
-                        {.x = to16Bit(colorimetry.red.x), .y = to16Bit(colorimetry.red.y)},
-                        {.x = to16Bit(colorimetry.green.x), .y = to16Bit(colorimetry.green.y)},
-                        {.x = to16Bit(colorimetry.blue.x), .y = to16Bit(colorimetry.blue.y)},
-                    },
-                .white_point                     = {.x = to16Bit(colorimetry.white.x), .y = to16Bit(colorimetry.white.y)},
-                .max_display_mastering_luminance = toNits(luminances.max),
-                .min_display_mastering_luminance = toNits(luminances.min * 10000),
-                .max_cll                         = toNits(settings.maxCLL > 0 ? settings.maxCLL : monitor->maxCLL()),
-                .max_fall                        = toNits(settings.maxFALL > 0 ? settings.maxFALL : monitor->maxFALL()),
-            },
-    };
-}
-
-static bool hdrMetadataEqual(const hdr_output_metadata& a, const hdr_output_metadata& b) {
+static bool                      hdrMetadataEqual(const hdr_output_metadata& a, const hdr_output_metadata& b) {
     if (a.metadata_type != b.metadata_type)
         return false;
 
@@ -2558,7 +2512,7 @@ void IHyprRenderer::handleFullscreenSettings(PHLMONITOR pMonitor) {
                         SURF->m_colorManagement->needsHdrMetadataUpdate() || pMonitor->m_previousFSWindow != FULLSCREEN_WINDOW || pMonitor->m_needsHDRupdate;
                     if (SURF->m_colorManagement->needsHdrMetadataUpdate()) {
                         LOG(Log::INFO, "[CM] Recreating HDR metadata for surface");
-                        SURF->m_colorManagement->setHDRMetadata(createHDRMetadata(SURF->m_colorManagement->imageDescription(), pMonitor));
+                        SURF->m_colorManagement->setHDRMetadata(createHDRMetadata(SURF->m_colorManagement->imageDescription()));
                     }
                     if (needsHdrMetadataUpdate) {
                         LOG(Log::INFO, "[CM] Updating HDR metadata from surface");
@@ -2586,7 +2540,7 @@ void IHyprRenderer::handleFullscreenSettings(PHLMONITOR pMonitor) {
                 pMonitor->m_previousFSWindow.reset(); // trigger CTM update
             }
 
-            const auto WANTED  = wantHDR ? createHDRMetadata(pMonitor->m_imageDescription->value(), pMonitor) : NO_HDR_METADATA;
+            const auto WANTED  = wantHDR ? createHDRMetadata(pMonitor->m_imageDescription->value()) : NO_HDR_METADATA;
             const auto CURRENT = pMonitor->m_output->state->state().hdrMetadata;
 
             // Required in order to clear stale HDR metadata
