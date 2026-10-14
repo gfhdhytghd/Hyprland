@@ -565,6 +565,11 @@ CColorManagementParametricCreator::CColorManagementParametricCreator(SP<CWpImage
             };
         }
 
+        if (m_settings.luminances.max <= m_settings.luminances.min) {
+            r->error(WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_INVALID_LUMINANCE, "Invalid primary luminance range");
+            return;
+        }
+
         const auto mastering        = m_valuesSet & PC_MASTERING_LUMINANCES ?
             m_settings.masteringLuminances :
             SImageDescription::SPCMasteringLuminances{.min = m_settings.luminances.min, .max = m_settings.luminances.max};
@@ -575,7 +580,12 @@ CColorManagementParametricCreator::CColorManagementParametricCreator(SP<CWpImage
             return;
         }
 
-        RESOURCE->m_self     = RESOURCE;
+        RESOURCE->m_self = RESOURCE;
+        if (!rgbToXYZFromPrimaries(m_settings.getPrimaries())) {
+            RESOURCE->resource()->sendFailed(WP_IMAGE_DESCRIPTION_V1_CAUSE_UNSUPPORTED, "Primaries do not define an invertible color space");
+            PROTO::colorManagement->destroyResource(this);
+            return;
+        }
         RESOURCE->m_settings = CImageDescription::from(m_settings);
 
         RESOURCE->sendMaybeReady();
@@ -665,7 +675,7 @@ CColorManagementParametricCreator::CColorManagementParametricCreator(SP<CWpImage
             r->error(WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_ALREADY_SET, "Luminances already set");
             return;
         }
-        if (max_lum <= min || reference_lum <= min) {
+        if (reference_lum <= min || ((m_valuesSet & PC_TF) && m_settings.transferFunction != CM_TRANSFER_FUNCTION_ST2084_PQ && max_lum <= min)) {
             r->error(WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_INVALID_LUMINANCE, "Invalid luminances");
             return;
         }
