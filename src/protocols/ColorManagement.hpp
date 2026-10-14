@@ -90,6 +90,7 @@ class CColorManagementFeedbackSurface {
     uint64_t                                m_currentPreferredId = 0;
 
     struct {
+        CHyprSignalListener destroy;
         CHyprSignalListener enter;
         CHyprSignalListener leave;
     } m_listeners;

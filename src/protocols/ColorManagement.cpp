@@ -452,11 +452,15 @@ CColorManagementFeedbackSurface::CColorManagementFeedbackSurface(SP<CWpColorMana
         RESOURCE->sendMaybeReady();
     });
 
-    m_listeners.enter = m_surface->m_events.enter.listen([this](const auto& monitor) { onPreferredChanged(); });
-    m_listeners.leave = m_surface->m_events.leave.listen([this](const auto& monitor) { onPreferredChanged(); });
+    m_listeners.destroy = m_surface->m_events.destroy.listen([this] { m_surface.reset(); });
+    m_listeners.enter   = m_surface->m_events.enter.listen([this](const auto& monitor) { onPreferredChanged(); });
+    m_listeners.leave   = m_surface->m_events.leave.listen([this](const auto& monitor) { onPreferredChanged(); });
 }
 
 void CColorManagementFeedbackSurface::onPreferredChanged() {
+    if (!m_surface)
+        return;
+
     if (m_surface->m_enteredOutputs.size() == 1) {
         const auto newId = m_surface->getPreferredImageDescription()->id();
         if (m_currentPreferredId != newId) {
@@ -888,7 +892,8 @@ void CColorManagementProtocol::bindManager(wl_client* client, void* data, uint32
 
 void CColorManagementProtocol::onImagePreferredChanged(uint32_t preferredId) {
     for (auto const& feedback : m_feedbackSurfaces) {
-        feedback->m_resource->sendPreferredChanged(preferredId);
+        if (feedback->m_surface)
+            feedback->m_resource->sendPreferredChanged(preferredId);
     }
 }
 
