@@ -24,11 +24,6 @@ CColorManager::CColorManager(SP<CWpColorManagerV1> resource) : m_resource(resour
     if (m_resource->version() >= 3)
         m_resource->sendSupportedFeature(WP_COLOR_MANAGER_V1_FEATURE_WINDOWS_BT2100);
 
-    if (PROTO::colorManagement->m_debug) {
-        m_resource->sendSupportedFeature(WP_COLOR_MANAGER_V1_FEATURE_ICC_V2_V4);
-        m_resource->sendSupportedFeature(WP_COLOR_MANAGER_V1_FEATURE_SET_TF_POWER);
-    }
-
     m_resource->sendSupportedPrimariesNamed(WP_COLOR_MANAGER_V1_PRIMARIES_SRGB);
     m_resource->sendSupportedPrimariesNamed(WP_COLOR_MANAGER_V1_PRIMARIES_BT2020);
     m_resource->sendSupportedPrimariesNamed(WP_COLOR_MANAGER_V1_PRIMARIES_PAL_M);
@@ -59,14 +54,6 @@ CColorManager::CColorManager(SP<CWpColorManagerV1> resource) : m_resource(resour
     m_resource->sendSupportedTfNamed(WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_ST428);
 
     m_resource->sendSupportedIntent(WP_COLOR_MANAGER_V1_RENDER_INTENT_PERCEPTUAL);
-    if (PROTO::colorManagement->m_debug) {
-        m_resource->sendSupportedIntent(WP_COLOR_MANAGER_V1_RENDER_INTENT_RELATIVE);
-        m_resource->sendSupportedIntent(WP_COLOR_MANAGER_V1_RENDER_INTENT_SATURATION);
-        m_resource->sendSupportedIntent(WP_COLOR_MANAGER_V1_RENDER_INTENT_ABSOLUTE);
-        m_resource->sendSupportedIntent(WP_COLOR_MANAGER_V1_RENDER_INTENT_RELATIVE_BPC);
-        if (m_resource->version() > 1)
-            m_resource->sendSupportedIntent(WP_COLOR_MANAGER_V1_RENDER_INTENT_ABSOLUTE_NO_ADAPTATION);
-    }
 
     m_resource->setDestroy([](CWpColorManagerV1* r) { LOG(Log::TRACE, "Destroy WP_color_manager at {:x} (generated default)", (uintptr_t)r); });
     m_resource->setGetOutput([](CWpColorManagerV1* r, uint32_t id, wl_resource* output) {
@@ -133,24 +120,8 @@ CColorManager::CColorManager(SP<CWpColorManagerV1> resource) : m_resource(resour
 
         RESOURCE->m_self = RESOURCE;
     });
-    m_resource->setCreateIccCreator([](CWpColorManagerV1* r, uint32_t id) {
-        LOG(Log::WARN, "New ICC creator for id={} (unsupported)", id);
-        if (!PROTO::colorManagement->m_debug) {
-            r->error(WP_COLOR_MANAGER_V1_ERROR_UNSUPPORTED_FEATURE, "ICC profiles are not supported");
-            return;
-        }
-
-        const auto RESOURCE =
-            PROTO::colorManagement->m_iccCreators.emplace_back(makeShared<CColorManagementIccCreator>(makeShared<CWpImageDescriptionCreatorIccV1>(r->client(), r->version(), id)));
-
-        if UNLIKELY (!RESOURCE->good()) {
-            r->noMemory();
-            PROTO::colorManagement->m_iccCreators.pop_back();
-            return;
-        }
-
-        RESOURCE->m_self = RESOURCE;
-    });
+    m_resource->setCreateIccCreator(
+        [](CWpColorManagerV1* r, uint32_t id) { r->error(WP_COLOR_MANAGER_V1_ERROR_UNSUPPORTED_FEATURE, "ICC surface descriptions are not supported"); });
     m_resource->setCreateParametricCreator([](CWpColorManagerV1* r, uint32_t id) {
         LOG(Log::TRACE, "New parametric creator for id={}", id);
 
@@ -642,23 +613,8 @@ CColorManagementParametricCreator::CColorManagementParametricCreator(SP<CWpImage
         m_settings.transferFunction = convertTransferFunction(sc<wpColorManagerV1TransferFunction>(tf));
         m_valuesSet |= PC_TF;
     });
-    m_resource->setSetTfPower([this](CWpImageDescriptionCreatorParamsV1* r, uint32_t eexp) {
-        LOG(Log::TRACE, "Set image description tf power to {}", eexp);
-        if (m_valuesSet & (PC_TF | PC_TF_POWER)) {
-            r->error(WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_ALREADY_SET, "Transfer function power already set");
-            return;
-        }
-        if (!PROTO::colorManagement->m_debug) {
-            r->error(WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_UNSUPPORTED_FEATURE, "TF power is not supported");
-            return;
-        }
-        m_settings.transferFunctionPower = eexp / 10000.0f;
-        if (m_settings.transferFunctionPower < 1.0 || m_settings.transferFunctionPower > 10.0) {
-            r->error(WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_INVALID_TF, "Power should be between 1.0 and 10.0");
-            return;
-        }
-        m_valuesSet |= PC_TF_POWER;
-    });
+    m_resource->setSetTfPower(
+        [](CWpImageDescriptionCreatorParamsV1* r, uint32_t eexp) { r->error(WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_UNSUPPORTED_FEATURE, "TF power is not supported"); });
     m_resource->setSetPrimariesNamed([this](CWpImageDescriptionCreatorParamsV1* r, uint32_t primaries) {
         LOG(Log::TRACE, "Set image description primaries by name {}", primaries);
         if (m_valuesSet & PC_PRIMARIES) {
@@ -677,11 +633,7 @@ CColorManagementParametricCreator::CColorManagementParametricCreator(SP<CWpImage
             case WP_COLOR_MANAGER_V1_PRIMARIES_DCI_P3:
             case WP_COLOR_MANAGER_V1_PRIMARIES_DISPLAY_P3:
             case WP_COLOR_MANAGER_V1_PRIMARIES_ADOBE_RGB: break;
-            default:
-                if (!PROTO::colorManagement->m_debug) {
-                    r->error(WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_INVALID_PRIMARIES_NAMED, "Unsupported primaries");
-                    return;
-                }
+            default: r->error(WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_INVALID_PRIMARIES_NAMED, "Unsupported primaries"); return;
         }
 
         m_settings.primariesNameSet = true;
