@@ -51,3 +51,12 @@ TEST(ColorManagement, PQPrimaryRangeDoesNotAdvertiseDisplayPeak) {
     description.luminances.max = 4000;
     EXPECT_EQ(CImageDescription::from(description), pq);
 }
+
+TEST(ColorManagement, WindowsPresetsCarryHDRHeadroom) {
+    for (const auto description : {SCRGB_IMAGE_DESCRIPTION, BT2100_IMAGE_DESCRIPTION}) {
+        EXPECT_EQ(description->value().luminances.min, 0);
+        EXPECT_EQ(description->value().luminances.max, 10000U);
+        EXPECT_EQ(description->value().luminances.reference, 203U);
+    }
+    EXPECT_EQ(SCRGB_IMAGE_DESCRIPTION->value().getTFMaxLuminance(), 80);
+}
