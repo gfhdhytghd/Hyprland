@@ -11,7 +11,14 @@
 
 using namespace NColorManagement;
 
-const auto PRIMARIES_SCALE = 1000000.0f;
+const auto  PRIMARIES_SCALE = 1000000.0f;
+
+static void setPendingImageDescription(SP<CWLSurfaceResource> surface, PImageDescription description) {
+    surface->m_pending.imageDescription             = description;
+    surface->m_pending.updated.bits.colorManagement = true;
+    surface->m_pending.updated.bits.damage          = true;
+    surface->m_pending.damage.add(CBox{{}, surface->m_pending.size});
+}
 
 CColorManager::CColorManager(SP<CWpColorManagerV1> resource) : m_resource(resource) {
     if UNLIKELY (!good())
@@ -266,8 +273,7 @@ CColorManagementSurface::CColorManagementSurface(SP<CWpColorManagementSurfaceV1>
     m_resource->setOnDestroy([this](CWpColorManagementSurfaceV1* r) {
         LOG(Log::TRACE, "Destroy wp cm surface {}", (uintptr_t)m_surface.get());
         if (m_surface) {
-            m_surface->m_pending.imageDescription             = {};
-            m_surface->m_pending.updated.bits.colorManagement = true;
+            setPendingImageDescription(m_surface.lock(), {});
         }
         PROTO::colorManagement->destroyResource(this);
     });
@@ -297,8 +303,7 @@ CColorManagementSurface::CColorManagementSurface(SP<CWpColorManagementSurfaceV1>
             return;
         }
 
-        m_surface->m_pending.imageDescription             = (*imageDescription)->m_settings;
-        m_surface->m_pending.updated.bits.colorManagement = true;
+        setPendingImageDescription(m_surface.lock(), (*imageDescription)->m_settings);
     });
     m_resource->setUnsetImageDescription([this](CWpColorManagementSurfaceV1* r) {
         LOG(Log::TRACE, "Unset image description for surface={}", (uintptr_t)r);
@@ -307,8 +312,7 @@ CColorManagementSurface::CColorManagementSurface(SP<CWpColorManagementSurfaceV1>
             return;
         }
 
-        m_surface->m_pending.imageDescription             = {};
-        m_surface->m_pending.updated.bits.colorManagement = true;
+        setPendingImageDescription(m_surface.lock(), {});
     });
     m_destroyListener = m_surface->m_events.destroy.listen([this] { m_surface.reset(); });
 }
