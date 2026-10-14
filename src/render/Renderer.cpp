@@ -2257,15 +2257,15 @@ void IHyprRenderer::renderMonitor(PHLMONITOR pMonitor, bool commit) {
             pMonitor->m_activeWorkspace->space()->recalculate(Layout::RECALCULATE_REASON_RENDER_MONITOR);
     }
 
-    // needsFrame can be cleared by commits that didnt consume our damage like a
-    // commit while a pageflip was in flight, so pending damage must keep the frame alive.
-    if (!pMonitor->m_output->needsFrame && pMonitor->m_forceFullFrames == 0 && !pMonitor->m_damage.hasChanged())
-        return;
-
     if (!pMonitor->m_commitCoordinator->canBeginFrame()) {
         pMonitor->m_pendingFrame = true;
         return;
     }
+
+    // Resolve output color state before the damage gate and before choosing render resources.
+    handleFullscreenSettings(pMonitor);
+    if (!pMonitor->m_output->needsFrame && pMonitor->m_forceFullFrames == 0 && !pMonitor->m_damage.hasChanged())
+        return;
 
     // tearing and DS first
     bool       shouldTear              = pMonitor->updateTearing();
@@ -2276,11 +2276,12 @@ void IHyprRenderer::renderMonitor(PHLMONITOR pMonitor, bool commit) {
         pMonitor->m_output->state->setPresentationMode(presentationMode);
 
     if (canAttemptDirectScanout) {
-        handleFullscreenSettings(pMonitor);
         if (pMonitor->attemptDirectScanout()) {
             return;
-        } else if (!pMonitor->m_lastScanout.expired() || pMonitor->m_directScanoutIsActive)
+        } else if (!pMonitor->m_lastScanout.expired() || pMonitor->m_directScanoutIsActive) {
             pMonitor->handleDSleave();
+            handleFullscreenSettings(pMonitor);
+        }
     }
 
     Event::bus()->m_events.render.pre.emit(pMonitor);
@@ -2480,10 +2481,11 @@ static bool                      hdrMetadataEqual(const hdr_output_metadata& a, 
 }
 
 void IHyprRenderer::handleFullscreenSettings(PHLMONITOR pMonitor) {
-    static auto PCT        = CConfigValue<Config::INTEGER>("render:send_content_type");
-    static auto PAUTOHDR   = CConfigValue<Config::INTEGER>("render:cm_auto_hdr");
-    static auto PNONSHADER = CConfigValue<Config::INTEGER>("render:non_shader_cm");
-    static auto PNSINTEROP = CConfigValue<Config::INTEGER>("render:non_shader_cm_interop");
+    const auto  oldMetadata = pMonitor->m_output->state->state().hdrMetadata;
+    static auto PCT         = CConfigValue<Config::INTEGER>("render:send_content_type");
+    static auto PAUTOHDR    = CConfigValue<Config::INTEGER>("render:cm_auto_hdr");
+    static auto PNONSHADER  = CConfigValue<Config::INTEGER>("render:non_shader_cm");
+    static auto PNSINTEROP  = CConfigValue<Config::INTEGER>("render:non_shader_cm_interop");
 
     const bool  configuredHDR = (pMonitor->m_cmType == NCMType::CM_HDR_EDID || pMonitor->m_cmType == NCMType::CM_HDR);
     bool        wantHDR       = configuredHDR;
@@ -2630,11 +2632,11 @@ void IHyprRenderer::handleFullscreenSettings(PHLMONITOR pMonitor) {
     }
 
     pMonitor->m_previousFSWindow = FULLSCREEN_WINDOW;
+    if (!hdrMetadataEqual(oldMetadata, pMonitor->m_output->state->state().hdrMetadata))
+        damageMonitor(pMonitor);
 }
 
 bool IHyprRenderer::commitPendingAndDoExplicitSync(PHLMONITOR pMonitor, std::optional<Monitor::CDamageRing::CTransaction> damage, const CRegion& renderedDamage) {
-    handleFullscreenSettings(pMonitor);
-
     const auto                                staged = renderedDamage.empty() ? pMonitor->m_commitCoordinator->takeStagedRender() : std::nullopt;
 
     Monitor::COutputCommitCoordinator::SFrame frame{
