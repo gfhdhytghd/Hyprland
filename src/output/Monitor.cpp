@@ -601,12 +601,12 @@ void CMonitor::applyCMType(NCMType::eCMType cmType, NTransferFunction::eTF cmSdr
             break;
         default: UNREACHABLE();
     }
-    if ((minLuminance() >= 0 || maxLuminance() > 0) && (cmType == NCMType::CM_HDR || cmType == NCMType::CM_HDR_EDID))
-        m_imageDescription = m_imageDescription->with({
-            .min       = minLuminance() >= 0 ? minLuminance() : m_imageDescription->value().luminances.min, //
-            .max       = maxLuminance() > 0 ? maxLuminance() : m_imageDescription->value().luminances.max,  //
-            .reference = m_imageDescription->value().luminances.reference                                   //
-        });
+    if (cmType == NCMType::CM_HDR || cmType == NCMType::CM_HDR_EDID) {
+        auto description                = m_imageDescription->value();
+        description.luminances.min      = minLuminance(HDR_MIN_LUMINANCE);
+        description.masteringLuminances = {.min = minLuminance(HDR_MIN_LUMINANCE), .max = sc<uint32_t>(maxLuminance(HDR_MAX_LUMINANCE))};
+        m_imageDescription              = CImageDescription::from(description);
+    }
 
     if (oldImageDescription != m_imageDescription) {
         if (PROTO::colorManagement)
@@ -2704,8 +2704,10 @@ PImageDescription CMonitor::workBufferImageDescription() {
 
     // HDR
     if (isHDRLikeTF || *PFP16TF != 0) {
-        if (cached.transferFunction != LINEAR_IMAGE_DESCRIPTION->value().transferFunction || cached.luminances != value.luminances)
-            m_cachedInternalDescription = LINEAR_IMAGE_DESCRIPTION->with(value.luminances);
+        const auto peak  = value.masteringLuminances.max > 0 ? value.masteringLuminances.max : value.luminances.max;
+        const auto range = SImageDescription::SPCLuminances{.min = value.luminances.min, .max = peak, .reference = value.luminances.reference};
+        if (cached.transferFunction != LINEAR_IMAGE_DESCRIPTION->value().transferFunction || cached.luminances != range)
+            m_cachedInternalDescription = LINEAR_IMAGE_DESCRIPTION->with(range);
         return m_cachedInternalDescription;
     }
 

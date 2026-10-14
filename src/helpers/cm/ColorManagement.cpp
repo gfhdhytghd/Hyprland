@@ -91,12 +91,16 @@ CImageDescription::CImageDescription(const SImageDescription& imageDescription, 
 }
 
 PImageDescription CImageDescription::from(const SImageDescription& imageDescription) {
+    auto description = imageDescription;
+    // PQ's primary volume is its encoding range, not the mastering display peak.
+    if (description.transferFunction == CM_TRANSFER_FUNCTION_ST2084_PQ)
+        description.luminances.max = std::round(description.luminances.min + HDR_MAX_LUMINANCE);
     for (const auto& known : knownDescriptions) {
-        if (known->value() == imageDescription)
+        if (known->value() == description)
             return known;
     }
 
-    knownDescriptions.emplace_back(UP<CImageDescription>(new CImageDescription(imageDescription, knownDescriptions.size() + 1)));
+    knownDescriptions.emplace_back(UP<CImageDescription>(new CImageDescription(description, knownDescriptions.size() + 1)));
     return knownDescriptions.back();
 }
 

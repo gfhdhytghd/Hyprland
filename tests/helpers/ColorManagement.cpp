@@ -41,3 +41,13 @@ TEST(ColorManagement, BT1886DisplayCharacteristic) {
     EXPECT_NEAR(encoded.c.g, 0.0, 1e-6);
     EXPECT_NEAR(encoded.c.b, 1.0, 1e-6);
 }
+
+TEST(ColorManagement, PQPrimaryRangeDoesNotAdvertiseDisplayPeak) {
+    SImageDescription description{
+        .transferFunction = CM_TRANSFER_FUNCTION_ST2084_PQ, .luminances = {.min = 0, .max = 630, .reference = 203}, .masteringLuminances = {.min = 0, .max = 630}};
+    const auto pq = CImageDescription::from(description);
+    EXPECT_EQ(pq->value().luminances.max, 10000U);
+    EXPECT_EQ(pq->value().masteringLuminances.max, 630U);
+    description.luminances.max = 4000;
+    EXPECT_EQ(CImageDescription::from(description), pq);
+}

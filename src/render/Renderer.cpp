@@ -2128,10 +2128,10 @@ SCMSettings IHyprRenderer::getCMSettings(CRenderContext& ctx, const NColorManage
 
     const bool  needsSDRmod     = modifySDR && isSDR2HDR(ctx, imageDescription->value(), targetImageDescription->value());
     const bool  needsHDRmod     = !needsSDRmod && isHDR2SDR(imageDescription->value(), targetImageDescription->value());
-    const float maxLuminance    = needsHDRmod ?
-        imageDescription->value().getTFMaxLuminance(-1) :
-        (imageDescription->value().luminances.max > 0 ? imageDescription->value().luminances.max : imageDescription->value().luminances.reference);
-    const auto  dstMaxLuminance = targetImageDescription->value().luminances.max > 0 ? targetImageDescription->value().luminances.max : 10000;
+    const auto& source          = imageDescription->value();
+    const auto& target          = targetImageDescription->value();
+    const float maxLuminance    = needsHDRmod ? source.getTFMaxLuminance(-1) : (source.masteringLuminances.max > 0 ? source.masteringLuminances.max : source.luminances.max);
+    const auto  dstMaxLuminance = target.masteringLuminances.max > 0 ? target.masteringLuminances.max : (target.luminances.max > 0 ? target.luminances.max : 10000);
 
     auto        matrix = imageDescription->getPrimaries()->convertMatrix(targetImageDescription->getPrimaries());
     auto        toXYZ  = targetImageDescription->getPrimaries()->toXYZ();
