@@ -33,13 +33,7 @@ const mat3 ICtCpPQInv = mat3(                                                //
     0.11102962500302595656, -0.11102962500302595656, -0.32062717498731885185 //
 );
 
-// unused for now
-// const mat3 ICtCpHLG = transpose(mat3(
-//     2048.0, 2048.0, 0.0,
-//     3625.0, -7465.0, 3840.0,
-//     9500.0, -9212.0, -288.0
-// ) / 4096.0);
-// const mat3 ICtCpHLGInv = inverse(ICtCpHLG);
+// Tone mapping uses PQ ICtCp after conversion to absolute display light, including for HLG sources.
 
 vec4 limitLuminance(vec4 color, mat3 dstXYZ, float peak) {
     float luminance = (dstXYZ * color.rgb).y;
@@ -48,7 +42,7 @@ vec4 limitLuminance(vec4 color, mat3 dstXYZ, float peak) {
     return color;
 }
 
-vec4 tonemap(vec4 color, mat3 dstXYZ, float maxLuminance, float dstMaxLuminance, float dstRefLuminance, float srcRefLuminance, int tonemapMode) {
+vec4 tonemap(vec4 color, mat3 dstXYZ, float maxLuminance, float dstMaxLuminance, float dstRefLuminance, int tonemapMode) {
     if (maxLuminance < dstMaxLuminance * 1.01 || tonemapMode == 2)
         return limitLuminance(color, dstXYZ, dstMaxLuminance);
 
