@@ -929,12 +929,20 @@ void CColorManagementProtocol::onImagePreferredChanged() {
 }
 
 void CColorManagementProtocol::onMonitorImageDescriptionChanged(PHLMONITORREF monitor) {
-    for (auto const& output : m_outputs) {
-        if (output->m_output && output->m_output->m_monitor == monitor)
-            output->m_resource->sendImageDescriptionChanged();
+    std::vector<SP<CWLOutputResource>> changedOutputs;
+    for (const auto& output : m_outputs) {
+        if (!output->m_output || output->m_output->m_monitor != monitor)
+            continue;
+        output->m_resource->sendImageDescriptionChanged();
+        const auto resource = output->m_output.lock();
+        if (std::ranges::find(changedOutputs, resource) == changedOutputs.end())
+            changedOutputs.push_back(resource);
     }
-    // recheck feedbacks
-    for (auto const& feedback : m_feedbackSurfaces)
+    for (const auto& output : changedOutputs)
+        if (output->getResource()->version() >= 2)
+            output->getResource()->sendDone();
+
+    for (const auto& feedback : m_feedbackSurfaces)
         feedback->onPreferredChanged();
 }
 
