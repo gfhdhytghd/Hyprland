@@ -5,6 +5,9 @@
 #include "core/Output.hpp"
 #include "../helpers/cm/ColorManagement.hpp"
 #include <cstdint>
+#include "../helpers/MiscFunctions.hpp"
+#include <cerrno>
+#include <unistd.h>
 
 using namespace NColorManagement;
 
@@ -813,9 +816,27 @@ CColorManagementImageDescriptionInfo::CColorManagementImageDescriptionInfo(SP<CW
 
     const auto toProto = [](float value) { return sc<int32_t>(std::round(value * PRIMARIES_SCALE)); };
 
-    // FIXME:
-    // if (m_icc.fd >= 0)
-    //    m_resource->sendIccFile(m_icc.fd, m_icc.length);
+    if (m_settings.icc.present) {
+        Hyprutils::OS::CFileDescriptor writable, readonly;
+        if (m_settings.rawICC.empty() || !allocateSHMFilePair(m_settings.rawICC.size(), writable, readonly)) {
+            m_resource->noMemory();
+            return;
+        }
+        size_t offset = 0;
+        while (offset < m_settings.rawICC.size()) {
+            const auto written = pwrite(writable.get(), m_settings.rawICC.data() + offset, m_settings.rawICC.size() - offset, offset);
+            if (written < 0 && errno == EINTR)
+                continue;
+            if (written <= 0) {
+                m_resource->noMemory();
+                return;
+            }
+            offset += written;
+        }
+        m_resource->sendIccFile(readonly.get(), m_settings.rawICC.size());
+        m_resource->sendDone();
+        return;
+    }
 
     // send preferred client paramateres
     m_resource->sendPrimaries(toProto(m_settings.primaries.red.x), toProto(m_settings.primaries.red.y), toProto(m_settings.primaries.green.x),
