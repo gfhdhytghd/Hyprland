@@ -258,14 +258,13 @@ vec4
 #if USE_TONEMAP
     pixColor = tonemap(pixColor, dstxyz, maxLuminance, dstMaxLuminance, dstRefLuminance, srcRefLuminance, tonemapMode);
 #endif
-    pixColor.a = finalAlpha;
-    pixColor.rgb *= finalAlpha;
-
-    pixColor = fromLinearNit(pixColor, dstTF, dstTFRange);
 #if USE_SDR_MOD
     pixColor = saturate(pixColor, dstxyz, sdrSaturation);
     pixColor.rgb *= sdrBrightnessMultiplier;
 #endif
+    pixColor.a = finalAlpha;
+    pixColor.rgb *= finalAlpha;
+    pixColor = fromLinearNit(pixColor, dstTF, dstTFRange);
 #endif
 
 #if USE_MIRROR

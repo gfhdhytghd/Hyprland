@@ -113,3 +113,10 @@ TEST(ColorManagement, HDRMetadataUsesMasteringGamutAndPreservesUnknownLightLevel
     d.maxCLL = 100000;
     EXPECT_EQ(createHDRMetadata(d).hdmi_metadata_type1.max_cll, 65535);
 }
+
+TEST(ColorManagement, SDRBrightnessIsAppliedInLinearLight) {
+    const auto          source = DEFAULT_SRGB_IMAGE_DESCRIPTION;
+    Render::SCMSettings settings{.srcTFRange = {.min = 0, .max = 80}, .dstTFRange = {.min = 0, .max = 80}, .needsSDRmod = true, .sdrBrightnessMultiplier = 0.5f};
+    const auto          result = convertColor(RGBAColor{{.r = 1, .g = 1, .b = 1, .a = 1}}, source, source, settings);
+    EXPECT_NEAR(result.c.r, 0.735356983, 1e-6);
+}
