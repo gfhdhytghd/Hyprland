@@ -719,7 +719,7 @@ CColorManagementParametricCreator::CColorManagementParametricCreator(SP<CWpImage
         //     r->error(WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_ALREADY_SET, "Mastering luminances already set");
         //     return;
         // }
-        if (min > 0 && max_lum > 0 && max_lum <= min) {
+        if (max_lum <= min) {
             r->error(WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_INVALID_LUMINANCE, "Invalid luminances");
             return;
         }
