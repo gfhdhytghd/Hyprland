@@ -2382,7 +2382,11 @@ int CMonitor::referenceLuminance() const {
 }
 
 int CMonitor::maxLuminance(int defaultValue) {
-    return m_maxLuminance >= 0 ? m_maxLuminance : (m_output->parsedEDID.hdrMetadata.has_value() ? m_output->parsedEDID.hdrMetadata->desiredContentMaxLuminance : defaultValue);
+    if (m_maxLuminance > 0)
+        return m_maxLuminance;
+    if (m_output->parsedEDID.hdrMetadata && m_output->parsedEDID.hdrMetadata->desiredContentMaxLuminance > 0)
+        return m_output->parsedEDID.hdrMetadata->desiredContentMaxLuminance;
+    return defaultValue;
 }
 
 int CMonitor::maxAvgLuminance(int defaultValue) {
