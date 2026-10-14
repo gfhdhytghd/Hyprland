@@ -2025,8 +2025,9 @@ uint16_t CMonitor::isDSBlocked(bool full) {
     const bool surfaceIsHDR   = PSURFACE->m_colorManagement && PSURFACE->m_colorManagement->isHDR();
     const bool surfaceIsScRGB = surfaceIsHDR && PSURFACE->m_colorManagement->isWindowsScRGB();
 
-    if (surfaceIsScRGB)
-        reasons |= DS_BLOCK_CM; // block scRGB
+    const bool surfaceIsHLG = surfaceIsHDR && PSURFACE->m_colorManagement->imageDescription().transferFunction == CM_TRANSFER_FUNCTION_HLG;
+    if (surfaceIsScRGB || surfaceIsHLG)
+        reasons |= DS_BLOCK_CM; // These encodings require conversion to the output's PQ signalling.
     else if (*PNONSHADER != CM_NS_IGNORE) {
         if (!surfaceIsHDR && needsCM() && !canNoShaderCM(true))
             reasons |= DS_BLOCK_CM; // block SDR that needs CM while non-shader CM isn't available
