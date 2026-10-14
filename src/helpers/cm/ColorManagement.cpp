@@ -131,7 +131,13 @@ bool CImageDescription::needsCM(WP<const CImageDescription> target) const {
     if (m_id == target->m_id)
         return false;
 
-    return m_imageDescription.icc.present || target->m_imageDescription.icc.present // TODO compare ICC
+    const auto  sourcePeak      = m_imageDescription.maxCLL > 0 ?
+        m_imageDescription.maxCLL :
+        (m_imageDescription.masteringLuminances.max > 0 ? m_imageDescription.masteringLuminances.max : m_imageDescription.luminances.max);
+    const auto& destination     = target->m_imageDescription;
+    const auto  destinationPeak = destination.masteringLuminances.max > 0 ? destination.masteringLuminances.max : destination.luminances.max;
+
+    return sourcePeak >= destinationPeak * 1.01f || m_imageDescription.icc.present || target->m_imageDescription.icc.present // TODO compare ICC
         || m_imageDescription.isWindows != target->m_imageDescription.isWindows || m_imageDescription.isInternal != target->m_imageDescription.isInternal ||
         m_imageDescription.transferFunction != target->m_imageDescription.transferFunction //
         //|| m_imageDescription.transferFunctionPower != target->m_imageDescription.transferFunctionPower // TODO unsupported

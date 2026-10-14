@@ -127,3 +127,14 @@ TEST(ColorManagement, SDRBrightnessIsAppliedInLinearLight) {
     const auto          result = convertColor(RGBAColor{{.r = 1, .g = 1, .b = 1, .a = 1}}, source, source, settings);
     EXPECT_NEAR(result.c.r, 0.735356983, 1e-6);
 }
+
+TEST(ColorManagement, MatchingPQEncodingsStillNeedPeakCompression) {
+    SImageDescription source{
+        .transferFunction = CM_TRANSFER_FUNCTION_ST2084_PQ, .luminances = {.min = 0, .max = 10000, .reference = 203}, .masteringLuminances = {.min = 0, .max = 1000}};
+    auto target                    = source;
+    target.masteringLuminances.max = 630;
+    const auto destination         = CImageDescription::from(target);
+    EXPECT_TRUE(CImageDescription::from(source)->needsCM(destination));
+    source.maxCLL = 400;
+    EXPECT_FALSE(CImageDescription::from(source)->needsCM(destination));
+}
