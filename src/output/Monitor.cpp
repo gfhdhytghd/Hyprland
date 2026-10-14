@@ -2031,8 +2031,13 @@ uint16_t CMonitor::isDSBlocked(bool full) {
     else if (*PNONSHADER != CM_NS_IGNORE) {
         if (!surfaceIsHDR && needsCM() && !canNoShaderCM(true))
             reasons |= DS_BLOCK_CM; // block SDR that needs CM while non-shader CM isn't available
-        else if (surfaceIsHDR && !inHDR())
-            reasons |= DS_BLOCK_CM; // block HDR while monitor isn't in HDR mode
+        else if (surfaceIsHDR) {
+            const auto& source = PSURFACE->m_colorManagement->imageDescription();
+            const auto& target = m_imageDescription->value();
+            if (!inHDR() || source.transferFunction != target.transferFunction || source.luminances.reference != target.luminances.reference ||
+                (source.getPrimaries() != target.getPrimaries() && !canNoShaderCM(true)))
+                reasons |= DS_BLOCK_CM;
+        }
     }
 
     return reasons;
