@@ -993,8 +993,7 @@ PImageDescription CCompositor::getHDRImageDescription() {
         return getDefaultImageDescription();
     }
 
-    return State::monitorState()->monitors().size() == 1 && State::monitorState()->monitors()[0]->m_output &&
-            State::monitorState()->monitors()[0]->m_output->parsedEDID.hdrMetadata.has_value() ?
+    return State::monitorState()->monitors().size() == 1 && State::monitorState()->monitors()[0]->m_output ?
         CImageDescription::from(SImageDescription{.transferFunction    = NColorManagement::CM_TRANSFER_FUNCTION_ST2084_PQ,
                                                   .primariesNameSet    = true,
                                                   .primariesNamed      = NColorManagement::CM_PRIMARIES_BT2020,
