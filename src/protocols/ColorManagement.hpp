@@ -57,6 +57,7 @@ class CColorManagementSurface {
     const NColorManagement::SImageDescription& imageDescription();
     bool                                       hasImageDescription();
     void                                       setHasImageDescription(bool has);
+    void                                       commitImageDescription(NColorManagement::PImageDescription description);
     const hdr_output_metadata&                 hdrMetadata();
     void                                       setHDRMetadata(const hdr_output_metadata& metadata);
     bool                                       needsHdrMetadataUpdate();

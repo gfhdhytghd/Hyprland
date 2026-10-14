@@ -95,7 +95,7 @@ CColorManager::CColorManager(SP<CWpColorManagerV1> resource) : m_resource(resour
             return;
         }
 
-        if (SURF->m_colorManagement) {
+        if (SURF->m_colorManagement && SURF->m_colorManagement->good()) {
             r->error(WP_COLOR_MANAGER_V1_ERROR_SURFACE_EXISTS, "CM Surface already exists");
             return;
         }
@@ -288,15 +288,16 @@ CColorManagementSurface::CColorManagementSurface(SP<CWpColorManagementSurfaceV1>
     if UNLIKELY (!good())
         return;
 
-    m_client           = m_resource->client();
-    m_imageDescription = getDefaultImageDescription();
+    m_client = m_resource->client();
+    commitImageDescription(m_surface->m_current.imageDescription);
 
-    m_resource->setDestroy([this](CWpColorManagementSurfaceV1* r) {
-        LOG(Log::TRACE, "Destroy wp cm surface {}", (uintptr_t)m_surface.get());
-        PROTO::colorManagement->destroyResource(this);
-    });
+    m_resource->setDestroy([](CWpColorManagementSurfaceV1* r) { wl_resource_destroy(r->resource()); });
     m_resource->setOnDestroy([this](CWpColorManagementSurfaceV1* r) {
         LOG(Log::TRACE, "Destroy wp cm surface {}", (uintptr_t)m_surface.get());
+        if (m_surface) {
+            m_surface->m_pending.imageDescription             = {};
+            m_surface->m_pending.updated.bits.colorManagement = true;
+        }
         PROTO::colorManagement->destroyResource(this);
     });
 
@@ -325,8 +326,8 @@ CColorManagementSurface::CColorManagementSurface(SP<CWpColorManagementSurfaceV1>
             return;
         }
 
-        setHasImageDescription(true);
-        m_imageDescription = imageDescription->get()->m_settings;
+        m_surface->m_pending.imageDescription             = (*imageDescription)->m_settings;
+        m_surface->m_pending.updated.bits.colorManagement = true;
     });
     m_resource->setUnsetImageDescription([this](CWpColorManagementSurfaceV1* r) {
         LOG(Log::TRACE, "Unset image description for surface={}", (uintptr_t)r);
@@ -335,8 +336,8 @@ CColorManagementSurface::CColorManagementSurface(SP<CWpColorManagementSurfaceV1>
             return;
         }
 
-        m_imageDescription = getDefaultImageDescription();
-        setHasImageDescription(false);
+        m_surface->m_pending.imageDescription             = {};
+        m_surface->m_pending.updated.bits.colorManagement = true;
     });
     m_destroyListener = m_surface->m_events.destroy.listen([this] { m_surface.reset(); });
 }
@@ -356,6 +357,15 @@ const SImageDescription& CColorManagementSurface::imageDescription() {
     }
 
     return m_imageDescription->value();
+}
+
+void CColorManagementSurface::commitImageDescription(PImageDescription description) {
+    const auto effective = description ? description : getDefaultImageDescription();
+    if (m_imageDescription == effective && m_hasImageDescription == bool(description))
+        return;
+
+    m_imageDescription = effective;
+    setHasImageDescription(bool(description));
 }
 
 bool CColorManagementSurface::hasImageDescription() {

@@ -116,7 +116,7 @@ class CWLSurfaceResource {
     WP<CDRMSyncobjSurfaceResource>         m_syncobj;     // may not be present
     WP<CFifoResource>                      m_fifo;        // may not be present
     WP<CCommitTimerResource>               m_commitTimer; // may not be present
-    WP<CColorManagementSurface>            m_colorManagement;
+    SP<CColorManagementSurface>            m_colorManagement;
     WP<CContentType>                       m_contentType;
 
     void                                   breadthfirst(std::function<void(SP<CWLSurfaceResource>, const Vector2D&, void*)> fn, void* data);

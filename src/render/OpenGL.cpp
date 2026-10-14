@@ -1444,7 +1444,7 @@ WP<CShader> CHyprOpenGLImpl::renderToFBInternal(CRenderContext& ctx, SP<ITexture
             return tex->m_imageDescription;
 
         // if valid CM surface, use that as a source
-        if (surface.valid() && surface->m_colorManagement.valid())
+        if (surface.valid() && surface->m_colorManagement)
             return CImageDescription::from(surface->m_colorManagement->imageDescription());
 
         if (data.cmBackToSRGB)
