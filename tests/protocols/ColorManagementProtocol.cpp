@@ -137,6 +137,26 @@ TEST_F(CColorManagementProtocolTest, InertSurfaceRejectsUnset) {
     expectError(5, WP_COLOR_MANAGEMENT_SURFACE_V1_ERROR_INERT);
 }
 
+TEST_F(CColorManagementProtocolTest, DescriptionAndDestructionAreDoubleBuffered) {
+    createSurface();
+    request(2, 2, {5, 4});
+    request(2, 6, {6});
+    const auto surface = CWLSurfaceResource::fromResource(wl_client_get_object(m_client, 4));
+    ASSERT_TRUE(surface);
+    ASSERT_TRUE(surface->m_colorManagement);
+    request(5, 1, {6, WP_COLOR_MANAGER_V1_RENDER_INTENT_PERCEPTUAL});
+    EXPECT_FALSE(surface->m_colorManagement->hasImageDescription());
+    request(6, 0, {});
+    EXPECT_TRUE(surface->m_pending.imageDescription);
+    request(4, 6, {});
+    EXPECT_TRUE(surface->m_colorManagement->hasImageDescription());
+    EXPECT_TRUE(surface->m_colorManagement->isWindowsScRGB());
+    request(5, 0, {});
+    EXPECT_TRUE(surface->m_colorManagement->hasImageDescription());
+    request(4, 6, {});
+    EXPECT_FALSE(surface->m_colorManagement->hasImageDescription());
+}
+
 TEST_F(CColorManagementProtocolTest, FailedDescriptionRejectsInformation) {
     PROTO::colorManagement->bindManager(m_client, nullptr, 1, 2);
     auto output = makeShared<CColorManagementOutput>(makeShared<CWpColorManagementOutputV1>(m_client, 1, 3), WP<CWLOutputResource>{});
