@@ -5,10 +5,12 @@
 #include <print>
 #include <string>
 #include <thread>
+#include <vector>
 #include <wayland-client.h>
 #include <wayland.hpp>
 #include <color-management-v1.hpp>
 #include <hyprutils/memory/SharedPtr.hpp>
+#include <hyprutils/memory/WeakPtr.hpp>
 #include <hyprutils/memory/Casts.hpp>
 
 using namespace Hyprutils::Memory;
@@ -29,19 +31,28 @@ class CDisplay {
 };
 
 static int run(wl_display* display, const std::string& mode) {
-    auto                               registry = makeShared<CCWlRegistry>(rc<wl_proxy*>(wl_display_get_registry(display)));
-    CSharedPointer<CCWlCompositor>     compositor;
-    CSharedPointer<CCWlOutput>         output;
-    CSharedPointer<CCWpColorManagerV1> manager;
+    auto                                    registry = makeShared<CCWlRegistry>(rc<wl_proxy*>(wl_display_get_registry(display)));
+    CSharedPointer<CCWlCompositor>          compositor;
+    CSharedPointer<CCWlOutput>              output;
+    std::vector<CSharedPointer<CCWlOutput>> outputs;
+    CSharedPointer<CCWpColorManagerV1>      manager;
     registry->setGlobal([&](CCWlRegistry* r, uint32_t name, const char* interface, uint32_t version) {
         if (std::strcmp(interface, "wl_compositor") == 0)
             compositor = makeShared<CCWlCompositor>(sc<wl_proxy*>(wl_registry_bind(rc<wl_registry*>(r->resource()), name, &wl_compositor_interface, 4)));
-        else if (std::strcmp(interface, "wl_output") == 0 && !output)
-            output = makeShared<CCWlOutput>(sc<wl_proxy*>(wl_registry_bind(rc<wl_registry*>(r->resource()), name, &wl_output_interface, std::min(version, 3U))));
-        else if (std::strcmp(interface, "wp_color_manager_v1") == 0)
+        else if (std::strcmp(interface, "wl_output") == 0 && (!output || mode.starts_with("output-reference="))) {
+            auto resource = makeShared<CCWlOutput>(sc<wl_proxy*>(wl_registry_bind(rc<wl_registry*>(r->resource()), name, &wl_output_interface, std::min(version, 4U))));
+            outputs.push_back(resource);
+            if (mode.starts_with("output-reference="))
+                resource->setName([&, weak = CWeakPointer<CCWlOutput>(resource)](CCWlOutput*, const char* name) {
+                    if (std::strcmp(name, "HEADLESS-1") == 0)
+                        output = weak.lock();
+                });
+            else
+                output = resource;
+        } else if (std::strcmp(interface, "wp_color_manager_v1") == 0)
             manager = makeShared<CCWpColorManagerV1>(sc<wl_proxy*>(wl_registry_bind(rc<wl_registry*>(r->resource()), name, &wp_color_manager_v1_interface, 1)));
     });
-    if (wl_display_roundtrip(display) < 0 || !manager || !compositor || !output)
+    if (wl_display_roundtrip(display) < 0 || wl_display_roundtrip(display) < 0 || !manager || !compositor || !output)
         return 2;
 
     auto                                                surface   = makeShared<CCWlSurface>(compositor->sendCreateSurface());
@@ -94,6 +105,7 @@ static int run(wl_display* display, const std::string& mode) {
     } else if (mode == "failed-info" || mode == "failed-set") {
         output->sendRelease();
         output.reset();
+        outputs.clear();
         description = makeShared<CCWpImageDescriptionV1>(cmOutput->sendGetImageDescription());
         description->setFailed([&](CCWpImageDescriptionV1*, wpImageDescriptionV1Cause cause, const char*) { failed = cause == WP_IMAGE_DESCRIPTION_V1_CAUSE_NO_OUTPUT; });
         if (wl_display_roundtrip(display) < 0 || !failed)
