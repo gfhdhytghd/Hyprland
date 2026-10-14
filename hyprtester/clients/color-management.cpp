@@ -65,7 +65,8 @@ static int run(wl_display* display, const std::string& mode) {
     CSharedPointer<CCWpImageDescriptionInfoV1>          information;
     CSharedPointer<CCWpImageDescriptionCreatorParamsV1> creator;
     std::string                                         expectedInterface;
-    uint32_t                                            expectedError = 0;
+    uint32_t                                            expectedError  = 0;
+    uint32_t                                            expectedObject = 0;
     bool                                                ready = false, failed = false;
 
     if (mode.starts_with("output-reference=")) {
@@ -124,6 +125,7 @@ static int run(wl_display* display, const std::string& mode) {
     } else {
         creator           = makeShared<CCWpImageDescriptionCreatorParamsV1>(manager->sendCreateParametricCreator());
         expectedInterface = "wp_image_description_creator_params_v1";
+        expectedObject    = wl_proxy_get_id(creator->resource());
         if (mode != "missing-tf" && mode != "empty")
             creator->sendSetTfNamed(WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_ST2084_PQ);
         if (mode != "missing-primaries" && mode != "empty")
@@ -177,7 +179,10 @@ static int run(wl_display* display, const std::string& mode) {
     const wl_interface* interface = nullptr;
     uint32_t            id        = 0;
     const auto          error     = wl_display_get_protocol_error(display, &interface, &id);
-    if (result >= 0 || wl_display_get_error(display) != EPROTO || !interface || expectedInterface != interface->name || error != expectedError) {
+    // create destroys the proxy; libwayland may then omit both its interface and ID.
+    // The server-side wire tests separately check the exact offending object ID.
+    const bool matchingObject = interface ? expectedInterface == interface->name : expectedObject != 0 && (id == 0 || id == expectedObject);
+    if (result >= 0 || wl_display_get_error(display) != EPROTO || !matchingObject || error != expectedError) {
         std::println(stderr, "{}: expected {} error {}, got {} error {}", mode, expectedInterface, expectedError, interface ? interface->name : "none", error);
         return 9;
     }
