@@ -721,10 +721,10 @@ CColorManagementParametricCreator::CColorManagementParametricCreator(SP<CWpImage
     m_resource->setSetMasteringLuminance([this](CWpImageDescriptionCreatorParamsV1* r, uint32_t min_lum, uint32_t max_lum) {
         auto min = min_lum / 10000.0f;
         LOG(Log::TRACE, "Set image description mastering luminances to {} - {}", min, max_lum);
-        // if (valuesSet & PC_MASTERING_LUMINANCES) {
-        //     r->error(WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_ALREADY_SET, "Mastering luminances already set");
-        //     return;
-        // }
+        if (m_valuesSet & PC_MASTERING_LUMINANCES) {
+            r->error(WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_ALREADY_SET, "Mastering luminances already set");
+            return;
+        }
         if (max_lum <= min) {
             r->error(WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_INVALID_LUMINANCE, "Invalid luminances");
             return;
@@ -735,19 +735,19 @@ CColorManagementParametricCreator::CColorManagementParametricCreator(SP<CWpImage
     });
     m_resource->setSetMaxCll([this](CWpImageDescriptionCreatorParamsV1* r, uint32_t max_cll) {
         LOG(Log::TRACE, "Set image description max content light level to {}", max_cll);
-        // if (valuesSet & PC_CLL) {
-        //     r->error(WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_ALREADY_SET, "Max CLL already set");
-        //     return;
-        // }
+        if (m_valuesSet & PC_CLL) {
+            r->error(WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_ALREADY_SET, "Max CLL already set");
+            return;
+        }
         m_settings.maxCLL = max_cll;
         m_valuesSet |= PC_CLL;
     });
     m_resource->setSetMaxFall([this](CWpImageDescriptionCreatorParamsV1* r, uint32_t max_fall) {
         LOG(Log::TRACE, "Set image description max frame-average light level to {}", max_fall);
-        // if (valuesSet & PC_FALL) {
-        //     r->error(WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_ALREADY_SET, "Max FALL already set");
-        //     return;
-        // }
+        if (m_valuesSet & PC_FALL) {
+            r->error(WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_ALREADY_SET, "Max FALL already set");
+            return;
+        }
         m_settings.maxFALL = max_fall;
         m_valuesSet |= PC_FALL;
     });
