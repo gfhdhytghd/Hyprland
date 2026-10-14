@@ -24,3 +24,20 @@ TEST(ColorManagement, XYZBasisIsFiniteAndInvertible) {
     EXPECT_NEAR(result.y, 0.4, 1e-6);
     EXPECT_NEAR(result.z, 0.6, 1e-6);
 }
+
+TEST(ColorManagement, BT1886DisplayCharacteristic) {
+    const auto          source = CImageDescription::from(SImageDescription{.transferFunction = CM_TRANSFER_FUNCTION_BT1886});
+    const auto          linear = CImageDescription::from(SImageDescription{.transferFunction = CM_TRANSFER_FUNCTION_LINEAR});
+    Render::SCMSettings settings{.srcTFRange = {.min = 0.01f, .max = 100.0f}};
+    const auto          decoded = convertColor(RGBAColor{{.r = 0.05, .g = 0.0, .b = 1.0, .a = 1.0}}, source, linear, settings);
+    const auto          black   = std::pow(0.01, 1.0 / 2.4);
+    const auto          white   = std::pow(100.0, 1.0 / 2.4);
+    EXPECT_NEAR(decoded.c.r, std::pow(0.05 * (white - black) + black, 2.4), 1e-6);
+    EXPECT_NEAR(decoded.c.g, 0.01, 1e-6);
+    EXPECT_NEAR(decoded.c.b, 100.0, 1e-6);
+    settings.dstTFRange = settings.srcTFRange;
+    const auto encoded  = convertColor(decoded, linear, source, settings);
+    EXPECT_NEAR(encoded.c.r, 0.05, 1e-6);
+    EXPECT_NEAR(encoded.c.g, 0.0, 1e-6);
+    EXPECT_NEAR(encoded.c.b, 1.0, 1e-6);
+}

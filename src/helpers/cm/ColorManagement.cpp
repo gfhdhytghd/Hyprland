@@ -229,10 +229,10 @@ Mat3x3 NColorManagement::adaptBradford(Hyprgraphics::CColor::xy srcW, Hyprgraphi
 #define SRGB_SCALE 12.92
 #define SRGB_ALPHA 1.055
 
-#define BT1886_POW   (1.0 / 0.45)
-#define BT1886_CUT   0.018053968510807
-#define BT1886_SCALE 4.5
-#define BT1886_ALPHA (1.0 + 5.5 * BT1886_CUT)
+#define BT709_POW   (1.0 / 0.45)
+#define BT709_CUT   0.018053968510807
+#define BT709_SCALE 4.5
+#define BT709_ALPHA (1.0 + 5.5 * BT709_CUT)
 
 // See http://car.france3.mars.free.fr/HD/INA-%2026%20jan%2006/SMPTE%20normes%20et%20confs/s240m.pdf
 #define ST240_POW   (1.0 / 0.45)
@@ -282,7 +282,7 @@ static RGBAColor tfInvHLG(RGBAColor color) {
 
 // Many transfer functions (including sRGB) follow the same pattern: a linear
 // segment for small values and a power function for larger values. The
-// following function implements this pattern from which sRGB, BT.1886, and
+// following function implements this pattern from which sRGB, BT.709, and
 // others can be derived by plugging in the right constants.
 static RGBAColor tfInvLinPow(RGBAColor color, float gamma, float thres, float scale, float alpha) {
     for (uint i = 0; i <= 2; i++) {
@@ -307,14 +307,18 @@ static RGBAColor tfInvExtSRGB(RGBAColor color) {
     }};
 }
 
-static RGBAColor tfInvBT1886(RGBAColor color) {
-    return tfInvLinPow(color, BT1886_POW, BT1886_CUT, BT1886_SCALE, BT1886_ALPHA);
+static RGBAColor tfInvBT1886(RGBAColor color, Render::STFRange range = {.min = 0.01f, .max = 100.0f}) {
+    const double black = std::pow(std::max(range.min, 0.0f), 1.0 / 2.4);
+    const double white = std::pow(range.max, 1.0 / 2.4);
+    for (uint i = 0; i < 3; ++i)
+        color.v[i] = (std::pow(std::max(color.v[i] * (white - black) + black, 0.0), 2.4) - range.min) / (range.max - range.min);
+    return color;
 }
 
 static RGBAColor tfInvXVYCC(RGBAColor color) {
-    // The inverse transfer function for XVYCC is the BT1886 transfer function mirrored around 0,
+    // The inverse transfer function for XVYCC is the BT.709 transfer function mirrored around 0,
     // same as what EXT sRGB is to sRGB.
-    const auto absColor = tfInvBT1886({{.r = abs(color.c.r), .g = abs(color.c.g), .b = abs(color.c.b), .a = color.c.a}});
+    const auto absColor = tfInvLinPow({{.r = abs(color.c.r), .g = abs(color.c.g), .b = abs(color.c.b), .a = color.c.a}}, BT709_POW, BT709_CUT, BT709_SCALE, BT709_ALPHA);
     return {{
         .r = absColor.c.r * sign(color.c.r),
         .g = absColor.c.g * sign(color.c.g),
@@ -367,14 +371,18 @@ static RGBAColor tfExtSRGB(RGBAColor color) {
     }};
 }
 
-static RGBAColor tfBT1886(RGBAColor color) {
-    return tfLinPow(color, BT1886_POW, BT1886_CUT, BT1886_SCALE, BT1886_ALPHA);
+static RGBAColor tfBT1886(RGBAColor color, Render::STFRange range = {.min = 0.01f, .max = 100.0f}) {
+    const double black = std::pow(std::max(range.min, 0.0f), 1.0 / 2.4);
+    const double white = std::pow(range.max, 1.0 / 2.4);
+    for (uint i = 0; i < 3; ++i)
+        color.v[i] = (std::pow(std::max(color.v[i] * (range.max - range.min) + range.min, 0.0), 1.0 / 2.4) - black) / (white - black);
+    return color;
 }
 
 static RGBAColor tfXVYCC(RGBAColor color) {
-    // The transfer function for XVYCC is the BT1886 transfer function mirrored around 0,
+    // The transfer function for XVYCC is the BT.709 transfer function mirrored around 0,
     // same as what EXT sRGB is to sRGB.
-    const auto absColor = tfBT1886({{.r = abs(color.c.r), .g = abs(color.c.g), .b = abs(color.c.b), .a = color.c.a}});
+    const auto absColor = tfLinPow({{.r = abs(color.c.r), .g = abs(color.c.g), .b = abs(color.c.b), .a = color.c.a}}, BT709_POW, BT709_CUT, BT709_SCALE, BT709_ALPHA);
     return {{
         .r = absColor.c.r * sign(color.c.r),
         .g = absColor.c.g * sign(color.c.g),
@@ -476,7 +484,7 @@ static RGBAColor fromLinearNit(RGBAColor color, eTransferFunction tf, Render::ST
         color.v[i] = (color.v[i] - range.min * color.c.a) / (range.max - range.min);
     }
     color /= std::max(color.c.a, 0.001);
-    color = fromLinearRGB(color, tf);
+    color = tf == CM_TRANSFER_FUNCTION_BT1886 ? tfBT1886(color, range) : fromLinearRGB(color, tf);
     color *= color.c.a;
     return color;
 }
@@ -501,7 +509,7 @@ static RGBAColor tonemap(RGBAColor color, std::array<std::array<double, 3>, 3> d
 
 RGBAColor NColorManagement::convertColor(RGBAColor color, PImageDescription srcDesc, PImageDescription dstDesc, const Render::SCMSettings& settings) {
     color /= std::max(color.c.a, 0.001);
-    color = toLinearRGB(color, srcDesc->value().transferFunction);
+    color = srcDesc->value().transferFunction == CM_TRANSFER_FUNCTION_BT1886 ? tfInvBT1886(color, settings.srcTFRange) : toLinearRGB(color, srcDesc->value().transferFunction);
     if (dstDesc->value().icc.present) {
         // color.rgb = applyIcc3DLut(color.rgb, iccLut3D, iccLutSize);
         color *= color.c.a;
