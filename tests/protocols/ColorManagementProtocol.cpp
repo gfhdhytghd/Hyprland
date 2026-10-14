@@ -1,4 +1,5 @@
 #include <Compositor.hpp>
+#include <event/EventBus.hpp>
 #include <config/ConfigValue.hpp>
 #include <config/lua/ConfigManager.hpp>
 #include <config/shared/inotify/ConfigWatcher.hpp>
@@ -26,6 +27,7 @@ class CColorManagementProtocolTest : public ::testing::Test {
     std::unique_ptr<wl_display, decltype(&wl_display_destroy)> m_display{nullptr, wl_display_destroy};
     Hyprutils::OS::CFileDescriptor                             m_socket;
     wl_client*                                                 m_client = nullptr; // Owned by m_display.
+    UP<Event::CEventBus>                                       m_previousBus;
     UP<CCompositor>                                            m_previousCompositor;
     UP<Config::IConfigManager>                                 m_previousConfig;
     UP<Config::CConfigWatcher>                                 m_previousWatcher;
@@ -53,6 +55,8 @@ void CColorManagementProtocolTest::SetUp() {
     m_previousConfig             = std::move(Config::mgr());
     Config::mgr()                = makeUnique<Config::Lua::CConfigManager>();
     CConfigValueBase::flushCaches();
+    m_previousBus          = std::move(Event::bus());
+    Event::bus()           = makeUnique<Event::CEventBus>();
     m_previousColor        = std::move(PROTO::colorManagement);
     m_previousCore         = std::move(PROTO::compositor);
     m_previousPresentation = std::move(PROTO::presentation);
@@ -71,6 +75,7 @@ void CColorManagementProtocolTest::TearDown() {
     Config::watcher()      = std::move(m_previousWatcher);
     if (Config::mgr())
         CConfigValueBase::flushCaches();
+    Event::bus()  = std::move(m_previousBus);
     g_pCompositor = std::move(m_previousCompositor);
 }
 
