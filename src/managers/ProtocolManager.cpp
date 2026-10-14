@@ -123,10 +123,8 @@ void CProtocolManager::onMonitorModeChange(PHLMONITOR pMonitor) {
         p.first->second->m_self = p.first->second;
     }
 
-    if (PROTO::colorManagement && g_pCompositor->shouldChangePreferredImageDescription()) {
-        LOG(Log::ERR, "FIXME: color management protocol is enabled, need a preferred image description id");
+    if (PROTO::colorManagement && g_pCompositor->shouldChangePreferredImageDescription())
         PROTO::colorManagement->onImagePreferredChanged();
-    }
 }
 
 CProtocolManager::CProtocolManager() {

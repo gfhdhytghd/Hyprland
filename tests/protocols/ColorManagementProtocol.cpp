@@ -21,6 +21,7 @@ class CColorManagementProtocolTest : public ::testing::Test {
     void                                                       TearDown() override;
     void                                                       request(uint32_t object, uint16_t opcode, std::initializer_list<uint32_t> arguments);
     void                                                       expectError(uint32_t object, uint32_t code);
+    void                                                       expectEvent(uint32_t object, uint16_t opcode);
     void                                                       createSurface();
     void                                                       createParams(uint32_t version = 1);
 
@@ -107,6 +108,22 @@ void CColorManagementProtocolTest::expectError(uint32_t object, uint32_t code) {
     FAIL() << "No wl_display.error event received";
 }
 
+void CColorManagementProtocolTest::expectEvent(uint32_t object, uint16_t opcode) {
+    std::array<uint32_t, 4096> events{};
+    const auto                 bytes = recv(m_socket.get(), events.data(), sizeof(events), MSG_DONTWAIT);
+    ASSERT_GT(bytes, 0);
+    size_t offset = 0;
+    while ((offset + 2) * sizeof(uint32_t) <= sc<size_t>(bytes)) {
+        const auto size = events[offset + 1] >> 16;
+        ASSERT_GE(size, 8U);
+        EXPECT_FALSE(events[offset] == 1 && (events[offset + 1] & 0xFFFF) == 0) << "Unexpected wl_display.error";
+        if (events[offset] == object && (events[offset + 1] & 0xFFFF) == opcode)
+            return;
+        offset += size / sizeof(uint32_t);
+    }
+    FAIL() << "Event " << opcode << " was not sent to object " << object;
+}
+
 void CColorManagementProtocolTest::createParams(uint32_t version) {
     PROTO::colorManagement->bindManager(m_client, nullptr, version, 2);
     request(2, 5, {3});
@@ -145,16 +162,18 @@ TEST_F(CColorManagementProtocolTest, DescriptionAndDestructionAreDoubleBuffered)
     ASSERT_TRUE(surface);
     ASSERT_TRUE(surface->m_colorManagement);
     request(5, 1, {6, WP_COLOR_MANAGER_V1_RENDER_INTENT_PERCEPTUAL});
-    EXPECT_FALSE(surface->m_colorManagement->hasImageDescription());
+    EXPECT_FALSE(surface->m_current.imageDescription);
     request(6, 0, {});
     EXPECT_TRUE(surface->m_pending.imageDescription);
     request(4, 6, {});
-    EXPECT_TRUE(surface->m_colorManagement->hasImageDescription());
-    EXPECT_TRUE(surface->m_colorManagement->isWindowsScRGB());
+    ASSERT_TRUE(surface->m_current.imageDescription);
+    EXPECT_TRUE(isWindowsScRGB(surface->m_current.imageDescription->value()));
+    // Destroying the extension object unsets the description only on the next commit.
     request(5, 0, {});
-    EXPECT_TRUE(surface->m_colorManagement->hasImageDescription());
+    EXPECT_FALSE(surface->m_colorManagement);
+    EXPECT_TRUE(surface->m_current.imageDescription);
     request(4, 6, {});
-    EXPECT_FALSE(surface->m_colorManagement->hasImageDescription());
+    EXPECT_FALSE(surface->m_current.imageDescription);
 }
 
 TEST_F(CColorManagementProtocolTest, FailedDescriptionRejectsInformation) {
@@ -213,4 +232,12 @@ TEST_F(CColorManagementProtocolTest, VersionTwoRejectsDeprecatedSRGB) {
     createParams(2);
     request(3, 1, {WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_SRGB});
     expectError(3, WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_INVALID_TF);
+}
+
+TEST_F(CColorManagementProtocolTest, ExplicitZeroPrimariesFail) {
+    createParams();
+    request(3, 1, {WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_GAMMA22});
+    request(3, 4, {0, 0, 0, 0, 0, 0, 0, 0});
+    request(3, 0, {4});
+    expectEvent(4, 0); // wp_image_description_v1.failed
 }

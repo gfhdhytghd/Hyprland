@@ -210,6 +210,9 @@ std::optional<Mat3x3> NColorManagement::rgbToXYZFromPrimaries(SPCPRimaries pr) {
         return std::nullopt;
 
     const auto S = matByVec(*invP, {W.x, W.y, W.z});
+    // White must be a positive mix of the primaries, otherwise a channel collapses and the matrix is singular.
+    if (std::ranges::any_of(S, [](float scale) { return !std::isfinite(scale) || scale <= 0; }))
+        return std::nullopt;
 
     P.multiply(diag3(S)); // RGB->XYZ
 
@@ -295,14 +298,34 @@ static RGBAColor tfInvPQ(RGBAColor color) {
     return color;
 }
 
-static RGBAColor tfInvHLG(RGBAColor color, const std::array<double, 3>& coefficients = {0.2627, 0.6780, 0.0593}) {
+static constexpr std::array<double, 3> BT2020_LUMINANCE = {0.2627, 0.6780, 0.0593};
+
+// BT.2100 HLG system gamma for a display with nominal peak luminance Lw; BT.2390 extends it outside 400-2000 cd/m².
+static double hlgGamma(double peak) {
+    if (peak >= 400.0 && peak <= 2000.0)
+        return 1.2 + 0.42 * std::log10(peak / 1000.0);
+    return 1.2 * std::pow(1.111, std::log2(peak / 1000.0));
+}
+
+// BT.2100 HLG black level lift for a display with black luminance range.min and nominal peak range.max.
+static double hlgBeta(Render::STFRange range, double nominalPeak) {
+    return std::sqrt(3.0 * std::pow(std::max(range.min, 0.0f) / range.max, 1.0 / hlgGamma(nominalPeak)));
+}
+
+// BT.2100 HLG EOTF: signal -> display light, normalized to range like the other transfer functions.
+// The system gamma follows the nominal peak of the display the signal was graded for, which is range.max unless the range was rescaled.
+static RGBAColor tfInvHLG(RGBAColor color, Render::STFRange range, const std::array<double, 3>& coefficients, double nominalPeak) {
+    const double beta = hlgBeta(range, nominalPeak);
     for (uint i = 0; i <= 2; i++) {
-        const bool isLow = color.v[i] <= HLG_E_CUT;
-        color.v[i]       = isLow ? color.v[i] * color.v[i] / 3.0 : (exp((color.v[i] - HLG_C) / HLG_A) + HLG_B) / 12.0;
+        const double signal = std::max((1.0 - beta) * color.v[i] + beta, 0.0);
+        color.v[i]          = signal <= HLG_E_CUT ? signal * signal / 3.0 : (exp((signal - HLG_C) / HLG_A) + HLG_B) / 12.0;
     }
-    // BT.2100 HLG OOTF for the protocol's 1000 cd/m² reference display.
-    const double luminance = std::max(coefficients[0] * color.c.r + coefficients[1] * color.c.g + coefficients[2] * color.c.b, 0.0);
-    color *= std::pow(luminance, 0.2);
+    const double Ys = std::max(coefficients[0] * color.c.r + coefficients[1] * color.c.g + coefficients[2] * color.c.b, 0.0);
+    // Scene black stays display black for any system gamma, including gamma < 1 where pow(0, gamma - 1) diverges.
+    const double scale = Ys > 0 ? range.max * std::pow(Ys, hlgGamma(nominalPeak) - 1.0) : 0.0;
+    for (uint i = 0; i <= 2; i++) {
+        color.v[i] = (color.v[i] * scale - range.min) / (range.max - range.min);
+    }
     return color;
 }
 
@@ -366,13 +389,19 @@ static RGBAColor tfPQ(RGBAColor color) {
     return color;
 }
 
-static RGBAColor tfHLG(RGBAColor color, const std::array<double, 3>& coefficients = {0.2627, 0.6780, 0.0593}) {
-    const double luminance = std::max(coefficients[0] * color.c.r + coefficients[1] * color.c.g + coefficients[2] * color.c.b, 0.0);
-    if (luminance > 0)
-        color *= std::pow(luminance, 1.0 / 1.2 - 1.0);
+// Inverse BT.2100 HLG EOTF: normalized display light -> signal.
+static RGBAColor tfHLG(RGBAColor color, Render::STFRange range, const std::array<double, 3>& coefficients) {
+    const double gamma = hlgGamma(range.max);
+    const double beta  = hlgBeta(range, range.max);
     for (uint i = 0; i <= 2; i++) {
-        const bool isLow = color.v[i] <= HLG_D_CUT;
-        color.v[i]       = isLow ? sqrt(std::max(color.v[i], 0.0) * 3.0) : HLG_A * log(std::max(12.0 * color.v[i] - HLG_B, 0.0001)) + HLG_C;
+        color.v[i] = std::max(color.v[i] * (range.max - range.min) + range.min, 0.0) / range.max;
+    }
+    const double Yd    = std::max(coefficients[0] * color.c.r + coefficients[1] * color.c.g + coefficients[2] * color.c.b, 0.0);
+    const double scale = Yd > 0 ? std::pow(Yd, (1.0 - gamma) / gamma) : 0.0;
+    for (uint i = 0; i <= 2; i++) {
+        const double scene = color.v[i] * scale;
+        const double E     = scene <= HLG_D_CUT ? sqrt(scene * 3.0) : HLG_A * log(std::max(12.0 * scene - HLG_B, 0.0001)) + HLG_C;
+        color.v[i]         = (E - beta) / (1.0 - beta);
     }
     return color;
 }
@@ -466,7 +495,7 @@ static RGBAColor toLinearRGB(RGBAColor color, eTransferFunction tf) {
         case CM_TRANSFER_FUNCTION_ST2084_PQ: return tfInvPQ(color);
         case CM_TRANSFER_FUNCTION_GAMMA22: return tfGamma(color, 2.2);
         case CM_TRANSFER_FUNCTION_GAMMA28: return tfGamma(color, 2.8);
-        case CM_TRANSFER_FUNCTION_HLG: return tfInvHLG(color);
+        case CM_TRANSFER_FUNCTION_HLG: return tfInvHLG(color, {.min = HDR_MIN_LUMINANCE, .max = HLG_MAX_LUMINANCE}, BT2020_LUMINANCE, HLG_MAX_LUMINANCE);
         case CM_TRANSFER_FUNCTION_EXT_SRGB: return tfInvExtSRGB(color);
         case CM_TRANSFER_FUNCTION_BT1886: return tfInvBT1886(color);
         case CM_TRANSFER_FUNCTION_ST240: return tfInvST240(color);
@@ -485,7 +514,7 @@ static RGBAColor fromLinearRGB(RGBAColor color, eTransferFunction tf) {
         case CM_TRANSFER_FUNCTION_ST2084_PQ: return tfPQ(color);
         case CM_TRANSFER_FUNCTION_GAMMA22: return tfGamma(color, 1.0 / 2.2);
         case CM_TRANSFER_FUNCTION_GAMMA28: return tfGamma(color, 1.0 / 2.8);
-        case CM_TRANSFER_FUNCTION_HLG: return tfHLG(color);
+        case CM_TRANSFER_FUNCTION_HLG: return tfHLG(color, {.min = HDR_MIN_LUMINANCE, .max = HLG_MAX_LUMINANCE}, BT2020_LUMINANCE);
         case CM_TRANSFER_FUNCTION_EXT_SRGB: return tfExtSRGB(color);
         case CM_TRANSFER_FUNCTION_BT1886: return tfBT1886(color);
         case CM_TRANSFER_FUNCTION_ST240: return tfST240(color);
@@ -513,7 +542,7 @@ static RGBAColor fromLinearNit(RGBAColor color, eTransferFunction tf, Render::ST
         color.v[i] = (color.v[i] - range.min * color.c.a) / (range.max - range.min);
     }
     color /= std::max(color.c.a, 0.001);
-    color = tf == CM_TRANSFER_FUNCTION_BT1886 ? tfBT1886(color, range) : (tf == CM_TRANSFER_FUNCTION_HLG ? tfHLG(color, coefficients) : fromLinearRGB(color, tf));
+    color = tf == CM_TRANSFER_FUNCTION_BT1886 ? tfBT1886(color, range) : (tf == CM_TRANSFER_FUNCTION_HLG ? tfHLG(color, range, coefficients) : fromLinearRGB(color, tf));
     color *= color.c.a;
     return color;
 }
@@ -531,9 +560,125 @@ static RGBAColor saturate(RGBAColor color, std::array<std::array<double, 3>, 3> 
     return color;
 }
 
-static RGBAColor tonemap(RGBAColor color, std::array<std::array<double, 3>, 3> dstXYZ, float maxLuminance, float dstMaxLuminance, float dstRefLuminance, float srcRefLuminance) {
-    // TODO source color is expected to be in sRGB colorspace and tonemapping shouldn't be needed
+// CPU counterparts of tonemap.glsl and mapToGamut in cm_helpers.glsl, keep them in sync.
+static double pqEncode(double luminance) {
+    const double E = std::pow(std::clamp(luminance / HDR_MAX_LUMINANCE, 0.0, 1.0), PQ_M1);
+    return std::pow((PQ_C1 + PQ_C2 * E) / (1.0 + PQ_C3 * E), PQ_M2);
+}
+
+static double pqDecode(double signal) {
+    const double E = std::pow(std::clamp(signal, 0.0, 1.0), PQ_INV_M2);
+    return std::pow(std::max(E - PQ_C1, 0.0) / (PQ_C2 - PQ_C3 * E), PQ_INV_M1) * HDR_MAX_LUMINANCE;
+}
+
+// ITU-R BT.2390 EETF on a PQ-encoded intensity, mapping source black/peak onto target black/peak.
+static double bt2390EETF(double signal, double srcMin, double srcMax, double dstMin, double dstMax) {
+    const double srcBlack = pqEncode(srcMin);
+    const double srcRange = pqEncode(srcMax) - srcBlack;
+    const double minLum   = (pqEncode(dstMin) - srcBlack) / srcRange;
+    const double maxLum   = (pqEncode(dstMax) - srcBlack) / srcRange;
+    const double E1       = std::clamp((signal - srcBlack) / srcRange, 0.0, 1.0);
+    const double KS       = 1.5 * maxLum - 0.5;
+    double       E2       = E1;
+    if (E1 >= KS) {
+        const double T  = (E1 - KS) / (1.0 - KS);
+        const double T2 = T * T;
+        const double T3 = T2 * T;
+        E2              = (2.0 * T3 - 3.0 * T2 + 1.0) * KS + (T3 - 2.0 * T2 + T) * (1.0 - KS) + (-2.0 * T3 + 3.0 * T2) * maxLum;
+    }
+    const double E3 = E2 + minLum * std::pow(1.0 - E2, 4.0);
+    return E3 * srcRange + srcBlack;
+}
+
+static RGBAColor limitLuminance(RGBAColor color, const std::array<double, 3>& luminanceCoefficients, double peak) {
+    const double luminance = luminanceCoefficients[0] * color.c.r + luminanceCoefficients[1] * color.c.g + luminanceCoefficients[2] * color.c.b;
+    if (luminance > peak) {
+        for (uint i = 0; i <= 2; i++) {
+            color.v[i] *= peak / luminance;
+        }
+    }
     return color;
+}
+
+static RGBAColor tonemap(RGBAColor color, const std::array<std::array<double, 3>, 3>& dstXYZ, const Render::SCMSettings& settings) {
+    const auto& luminanceCoefficients = dstXYZ[1];
+    if (settings.maxLuminance < settings.dstMaxLuminance * 1.01 || settings.tonemapMode == 2)
+        return limitLuminance(color, luminanceCoefficients, settings.dstMaxLuminance);
+
+    // BT.2100 Table 7 RGB -> LMS (integers / 4096) composed with D65 XYZ -> BT.2020 RGB.
+    static const Hyprgraphics::CMatrix3 XYZ_TO_LMS{{{
+        {0.3592832590121218, 0.6976051147779497, -0.0358915932320289},
+        {-0.19208084637049927, 1.1004767970374318, 0.07537486585191187},
+        {0.00707978446074772, 0.07483966621863658, 0.8433265453898765},
+    }}};
+    static const Hyprgraphics::CMatrix3 LMS_TO_XYZ = Hyprgraphics::CMatrix3{XYZ_TO_LMS}.invert();
+    const Hyprgraphics::CMatrix3        rgbToXYZ{dstXYZ};
+    const auto                          toLMS   = XYZ_TO_LMS * rgbToXYZ;
+    const auto                          fromLMS = Hyprgraphics::CMatrix3{rgbToXYZ}.invert() * LMS_TO_XYZ;
+
+    const auto                          lmsLinear = toLMS * Hyprgraphics::CColor::XYZ{.x = color.c.r, .y = color.c.g, .z = color.c.b};
+    const double                        L = pqEncode(lmsLinear.x), M = pqEncode(lmsLinear.y), S = pqEncode(lmsLinear.z);
+    const double                        I1 = 0.5 * L + 0.5 * M;
+    double                              Ct = (6610.0 * L - 13613.0 * M + 7003.0 * S) / 4096.0;
+    double                              Cp = (17933.0 * L - 17390.0 * M - 543.0 * S) / 4096.0;
+    double                              I2 = I1;
+    if (settings.tonemapMode == 3) {
+        // Alternative curve suggested by LionHeartP, see USE_ALT_TONEMAP in tonemap.glsl.
+        const double luminance = pqDecode(I1);
+        const double kneeRatio = std::clamp(settings.dstMaxLuminance / settings.maxLuminance, 0.5f, 0.85f);
+        const double knee      = settings.dstMaxLuminance * kneeRatio;
+        double       mapped    = luminance;
+        if (luminance > knee) {
+            const double a = (settings.maxLuminance - settings.dstMaxLuminance) / ((settings.maxLuminance - knee) * (settings.dstMaxLuminance - knee));
+            mapped         = knee + (luminance - knee) / (1.0 + a * (luminance - knee));
+        }
+        I2 = pqEncode(mapped);
+    } else
+        I2 = bt2390EETF(I1, settings.srcMinLuminance, settings.maxLuminance, settings.dstTFRange.min, settings.dstMaxLuminance);
+    if (settings.tonemapMode != 3 && I1 > 0 && I2 > 0) {
+        Ct *= std::min(I1 / I2, I2 / I1);
+        Cp *= std::min(I1 / I2, I2 / I1);
+    }
+
+    const double L2  = I2 + 0.0086090370379327566 * Ct + 0.11102962500302595656 * Cp;
+    const double M2  = I2 - 0.0086090370379327566 * Ct - 0.11102962500302595656 * Cp;
+    const double S2  = I2 + 0.560031335710679118 * Ct - 0.32062717498731885185 * Cp;
+    const auto   rgb = fromLMS * Hyprgraphics::CColor::XYZ{.x = pqDecode(L2), .y = pqDecode(M2), .z = pqDecode(S2)};
+    color.c.r        = rgb.x;
+    color.c.g        = rgb.y;
+    color.c.b        = rgb.z;
+    return limitLuminance(color, luminanceCoefficients, settings.dstMaxLuminance);
+}
+
+// Hue-preserving gamut clipping (BT.2407): desaturate towards the achromatic color of the same luminance.
+static RGBAColor mapToGamut(RGBAColor color, const std::array<double, 3>& luminanceCoefficients, Render::STFRange range) {
+    if (std::ranges::all_of(std::array{color.c.r, color.c.g, color.c.b}, [&](double v) { return v >= range.min && v <= range.max; }))
+        return color;
+
+    const double Y = std::clamp(luminanceCoefficients[0] * color.c.r + luminanceCoefficients[1] * color.c.g + luminanceCoefficients[2] * color.c.b, sc<double>(range.min),
+                                sc<double>(range.max));
+    double       s = 1.0;
+    for (uint i = 0; i <= 2; i++) {
+        const double chroma = color.v[i] - Y;
+        if (chroma < 0)
+            s = std::min(s, (Y - range.min) / -chroma);
+        else if (chroma > 0)
+            s = std::min(s, (range.max - Y) / chroma);
+    }
+    s = std::max(s, 0.0);
+    for (uint i = 0; i <= 2; i++) {
+        color.v[i] = Y + s * (color.v[i] - Y);
+    }
+    return color;
+}
+
+bool NColorManagement::isWindowsScRGB(const SImageDescription& description) {
+    return description.isWindows && description.primariesNamed == CM_PRIMARIES_SRGB && description.transferFunction == CM_TRANSFER_FUNCTION_EXT_LINEAR;
+}
+
+bool NColorManagement::isHDR(const SImageDescription& description) {
+    return description.transferFunction == CM_TRANSFER_FUNCTION_ST2084_PQ || description.transferFunction == CM_TRANSFER_FUNCTION_HLG || isWindowsScRGB(description) ||
+        (description.transferFunction == CM_TRANSFER_FUNCTION_EXT_LINEAR && description.luminances.max > description.luminances.reference);
 }
 
 float NColorManagement::referenceLuminanceScale(const SImageDescription& source, const SImageDescription& target) {
@@ -542,36 +687,60 @@ float NColorManagement::referenceLuminanceScale(const SImageDescription& source,
     return sc<float>(target.luminances.reference) / source.luminances.reference;
 }
 
+// CPU counterpart of doColorManagement in cm_helpers.glsl, keep both in sync.
 RGBAColor NColorManagement::convertColor(RGBAColor color, PImageDescription srcDesc, PImageDescription dstDesc, const Render::SCMSettings& settings) {
-    color /= std::max(color.c.a, 0.001);
-    color = srcDesc->value().transferFunction == CM_TRANSFER_FUNCTION_BT1886 ?
+    const auto sourceLuminance = Hyprgraphics::CMatrix3{srcDesc->getPrimaries()->toXYZ()}.mat()[1];
+    const auto targetLuminance = Hyprgraphics::CMatrix3{dstDesc->getPrimaries()->toXYZ()}.mat()[1];
+    const auto alpha           = color.c.a;
+
+    color /= std::max(alpha, 0.001);
+    color = settings.sourceTF == CM_TRANSFER_FUNCTION_BT1886 ?
         tfInvBT1886(color, settings.srcTFRange) :
-        (srcDesc->value().transferFunction == CM_TRANSFER_FUNCTION_HLG ? tfInvHLG(color, Hyprgraphics::CMatrix3{srcDesc->getPrimaries()->toXYZ()}.mat()[1]) :
-                                                                         toLinearRGB(color, srcDesc->value().transferFunction));
+        (settings.sourceTF == CM_TRANSFER_FUNCTION_HLG ? tfInvHLG(color, settings.srcTFRange, sourceLuminance, settings.srcTFRange.max / settings.srcReferenceScale) :
+                                                         toLinearRGB(color, settings.sourceTF));
     if (dstDesc->value().icc.present) {
         // color.rgb = applyIcc3DLut(color.rgb, iccLut3D, iccLutSize);
-        color *= color.c.a;
-    } else {
-        const auto convertMatrix = srcDesc->getPrimaries()->convertMatrix(dstDesc->getPrimaries());
-        const auto converted     = convertMatrix * Hyprgraphics::CColor::XYZ{.x = color.c.r, .y = color.c.g, .z = color.c.b};
-        color.c.r                = converted.x;
-        color.c.g                = converted.y;
-        color.c.b                = converted.z;
-        if (srcDesc->value().transferFunction != CM_TRANSFER_FUNCTION_LINEAR)
-            color = toNit(color, settings.srcTFRange);
-        else
-            color *= referenceLuminanceScale(srcDesc->value(), dstDesc->value());
-        color *= color.c.a;
-        if (settings.needsTonemap)
-            color = tonemap(color, settings.dstPrimaries2XYZ, settings.maxLuminance, settings.dstMaxLuminance, settings.dstRefLuminance, settings.srcRefLuminance);
-
-        if (settings.needsSDRmod) {
-            color = saturate(color, settings.dstPrimaries2XYZ, settings.sdrSaturation);
-            color *= settings.sdrBrightnessMultiplier;
-        }
-        color = fromLinearNit(color, dstDesc->value().transferFunction, settings.dstTFRange, Hyprgraphics::CMatrix3{dstDesc->getPrimaries()->toXYZ()}.mat()[1]);
+        color *= alpha;
+        return color;
     }
+
+    // settings.convertMatrix already carries the reference-white ratio for linear sources.
+    const auto& M = settings.convertMatrix;
+    color         = RGBAColor{{
+        .r = M[0][0] * color.c.r + M[0][1] * color.c.g + M[0][2] * color.c.b,
+        .g = M[1][0] * color.c.r + M[1][1] * color.c.g + M[1][2] * color.c.b,
+        .b = M[2][0] * color.c.r + M[2][1] * color.c.g + M[2][2] * color.c.b,
+        .a = color.c.a,
+    }};
+    if (settings.sourceTF != CM_TRANSFER_FUNCTION_LINEAR)
+        color = toNit(color, settings.srcTFRange);
+    if (settings.needsSDRmod) {
+        color = saturate(color, settings.dstPrimaries2XYZ, settings.sdrSaturation);
+        color *= settings.sdrBrightnessMultiplier;
+    }
+    if (settings.needsTonemap)
+        color = tonemap(color, settings.dstPrimaries2XYZ, settings);
+    if (settings.targetTF != CM_TRANSFER_FUNCTION_LINEAR && settings.targetTF != CM_TRANSFER_FUNCTION_EXT_LINEAR)
+        color = mapToGamut(color, targetLuminance, settings.dstTFRange);
+
+    color.c.a = alpha;
+    for (uint i = 0; i <= 2; i++) {
+        color.v[i] *= alpha;
+    }
+    color = fromLinearNit(color, settings.targetTF, settings.dstTFRange, targetLuminance);
     return color;
+}
+
+double NColorManagement::decodeChannel(double signal, eTransferFunction tf, Render::STFRange range) {
+    RGBAColor color{{.r = signal, .g = signal, .b = signal, .a = 1}};
+    color = tf == CM_TRANSFER_FUNCTION_BT1886 ? tfInvBT1886(color, range) : toLinearRGB(color, tf);
+    if (tf != CM_TRANSFER_FUNCTION_LINEAR)
+        color = toNit(color, range);
+    return color.c.r;
+}
+
+double NColorManagement::encodeChannel(double luminance, eTransferFunction tf, Render::STFRange range) {
+    return fromLinearNit(RGBAColor{{.r = luminance, .g = luminance, .b = luminance, .a = 1}}, tf, range, BT2020_LUMINANCE).c.r;
 }
 
 CHyprColor NColorManagement::convertColor(const CHyprColor& color, PImageDescription srcDesc, PImageDescription dstDesc, const Render::SCMSettings& settings) {

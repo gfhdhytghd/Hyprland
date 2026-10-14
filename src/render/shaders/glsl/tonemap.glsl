@@ -4,16 +4,17 @@
 #endif
 #include "constants.h"
 
-const mat3 BT2020toLMS = mat3( //
-    0.3592, -0.1922, 0.0070,   //
-    0.6976, 1.1004, 0.0749,    //
-    -0.0358, 0.0755, 0.8434    //
+// BT.2100 Table 7 RGB -> LMS (integers / 4096) composed with D65 XYZ -> BT.2020 RGB, so it applies to XYZ.
+const mat3 XYZtoLMS = mat3(                                         //
+    0.3592832590121218, -0.19208084637049927, 0.00707978446074772,  //
+    0.6976051147779497, 1.1004767970374318, 0.07483966621863658,    //
+    -0.0358915932320289, 0.07537486585191187, 0.8433265453898765    //
 );
-//const mat3 LMStoBT2020 = inverse(BT2020toLMS);
-const mat3 LMStoBT2020 = mat3(                                                //
-    2.0701800566956135096, 0.36498825003265747974, -0.049595542238932107896,  //
-    -1.3264568761030210255, 0.68046736285223514102, -0.049421161186757487412, //
-    0.20661600684785517081, -0.045421753075853231409, 1.1879959417328034394   //
+//const mat3 LMStoXYZ = inverse(XYZtoLMS);
+const mat3 LMStoXYZ = mat3(                                         //
+    2.0701522183894223, 0.36473852097480713, -0.04974720753581203,  //
+    -1.3263473389671556, 0.6805660249472276, -0.04926096669661379,  //
+    0.20665104762940512, -0.04530454592203474, 1.1880659249923042   //
 );
 
 // const mat3 ICtCpPQ = transpose(mat3(
@@ -42,39 +43,63 @@ vec4 limitLuminance(vec4 color, mat3 dstXYZ, float peak) {
     return color;
 }
 
-vec4 tonemap(vec4 color, mat3 dstXYZ, float maxLuminance, float dstMaxLuminance, float dstRefLuminance, int tonemapMode) {
+float pqEncode(float luminance) {
+    float E = pow(clamp(luminance / HDR_MAX_LUMINANCE, 0.0, 1.0), PQ_M1);
+    return pow((PQ_C1 + PQ_C2 * E) / (1.0 + PQ_C3 * E), PQ_M2);
+}
+
+float pqDecode(float signal) {
+    float E = pow(clamp(signal, 0.0, 1.0), PQ_INV_M2);
+    return pow(max(E - PQ_C1, 0.0) / (PQ_C2 - PQ_C3 * E), PQ_INV_M1) * HDR_MAX_LUMINANCE;
+}
+
+// ITU-R BT.2390 EETF on a PQ-encoded intensity, mapping source black/peak onto target black/peak.
+float bt2390EETF(float signal, float srcMin, float srcMax, float dstMin, float dstMax) {
+    float srcBlack = pqEncode(srcMin);
+    float srcRange = pqEncode(srcMax) - srcBlack;
+    float minLum   = (pqEncode(dstMin) - srcBlack) / srcRange;
+    float maxLum   = (pqEncode(dstMax) - srcBlack) / srcRange;
+    float E1       = clamp((signal - srcBlack) / srcRange, 0.0, 1.0);
+    float KS       = 1.5 * maxLum - 0.5;
+    float E2       = E1;
+    if (E1 >= KS) {
+        float T  = (E1 - KS) / (1.0 - KS);
+        float T2 = T * T;
+        float T3 = T2 * T;
+        E2       = (2.0 * T3 - 3.0 * T2 + 1.0) * KS + (T3 - 2.0 * T2 + T) * (1.0 - KS) + (-2.0 * T3 + 3.0 * T2) * maxLum;
+    }
+    float E3 = E2 + minLum * pow(1.0 - E2, 4.0);
+    return E3 * srcRange + srcBlack;
+}
+
+vec4 tonemap(vec4 color, mat3 dstXYZ, float srcMinLuminance, float maxLuminance, float dstMaxLuminance, float dstMinLuminance, int tonemapMode) {
     if (maxLuminance < dstMaxLuminance * 1.01 || tonemapMode == 2)
         return limitLuminance(color, dstXYZ, dstMaxLuminance);
 
-    mat3  toLMS   = BT2020toLMS * dstXYZ;
-    mat3  fromLMS = inverse(dstXYZ) * LMStoBT2020;
+    mat3  toLMS   = XYZtoLMS * dstXYZ;
+    mat3  fromLMS = inverse(dstXYZ) * LMStoXYZ;
 
     vec3  lms   = fromLinear(vec4((toLMS * color.rgb) / HDR_MAX_LUMINANCE, 1.0), CM_TRANSFER_FUNCTION_ST2084_PQ).rgb;
     vec3  ICtCp = ICtCpPQ * lms;
+    float I1    = ICtCp[0];
 
-    float E         = pow(clamp(ICtCp[0], 0.0, 1.0), PQ_INV_M2);
-    float luminance = pow((max(E - PQ_C1, 0.0)) / (PQ_C2 - PQ_C3 * E), PQ_INV_M1) * HDR_MAX_LUMINANCE;
-
-    float newLuminance;
 #if USE_ALT_TONEMAP
     // suggested by LionHeartP
-    newLuminance    = luminance;
-    float kneeRatio = clamp(dstMaxLuminance / maxLuminance, 0.5, 0.85);
-    float knee      = dstMaxLuminance * kneeRatio;
+    float luminance    = pqDecode(I1);
+    float newLuminance = luminance;
+    float kneeRatio    = clamp(dstMaxLuminance / maxLuminance, 0.5, 0.85);
+    float knee         = dstMaxLuminance * kneeRatio;
     if (luminance > knee) {
         float alpha  = (maxLuminance - dstMaxLuminance) / ((maxLuminance - knee) * (dstMaxLuminance - knee));
         newLuminance = knee + (luminance - knee) / (1.0 + alpha * (luminance - knee));
     }
+    ICtCp[0] = pqEncode(newLuminance);
 #else
-    float luminanceRatio = max(luminance / dstRefLuminance, 0.0);
-    float srcScale       = maxLuminance / dstRefLuminance;
-    float dstScale       = dstMaxLuminance / dstRefLuminance;
-    float v              = (dstScale * (1.0 + srcScale) - srcScale) / pow(srcScale, 2.0);
-    newLuminance         = (luminanceRatio * (1.0 + luminanceRatio * v) / (1.0 + luminanceRatio)) * dstRefLuminance;
+    ICtCp[0] = bt2390EETF(I1, srcMinLuminance, maxLuminance, dstMinLuminance, dstMaxLuminance);
+    // BT.2390 keeps the saturation of mapped colors by scaling chroma with the intensity change.
+    if (I1 > 0.0 && ICtCp[0] > 0.0)
+        ICtCp.yz *= min(I1 / ICtCp[0], ICtCp[0] / I1);
 #endif
-
-    E        = pow(clamp(newLuminance / HDR_MAX_LUMINANCE, 0.0, 1.0), PQ_M1);
-    ICtCp[0] = pow((PQ_C1 + PQ_C2 * E) / (1.0 + PQ_C3 * E), PQ_M2);
 
     color = vec4(fromLMS * toLinear(vec4(ICtCpPQInv * ICtCp, 1.0), CM_TRANSFER_FUNCTION_ST2084_PQ).rgb * HDR_MAX_LUMINANCE, color[3]);
 

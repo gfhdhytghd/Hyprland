@@ -130,6 +130,7 @@ namespace Render {
         NColorManagement::eTransferFunction  targetTF = NColorManagement::CM_TRANSFER_FUNCTION_GAMMA22;
         STFRange                             srcTFRange;
         STFRange                             dstTFRange;
+        float                                srcReferenceScale = 1; // target / source reference white, already applied to srcTFRange
         float                                srcRefLuminance = 80;
         float                                dstRefLuminance = 80;
         std::array<std::array<double, 3>, 3> convertMatrix;
@@ -138,6 +139,8 @@ namespace Render {
         int                                  tonemapMode     = 1; // 1 - default, 2 - clamp, 3 - limited
         float                                maxLuminance    = 80;
         float                                dstMaxLuminance = 80;
+        float                                srcMaxLuminance = 80; // source peak after reference white anchoring, without SDR adjustments
+        float                                srcMinLuminance = 0;  // source black after reference white anchoring, the BT.2390 EETF black input
         std::array<std::array<double, 3>, 3> dstPrimaries2XYZ;
         bool                                 needsSDRmod             = false;
         float                                sdrSaturation           = 1.0;

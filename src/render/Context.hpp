@@ -70,7 +70,6 @@ namespace Render {
             void*       surfacePtr      = nullptr; // read-only!!
             bool        modifySDR       = false;
             float       sdrMinLuminance = -1.F;
-            int         sdrMaxLuminance = -1;
             SCMSettings settings;
         };
         std::vector<SCMSettingsCacheEntry> m_cmSettingsCache;

@@ -8,7 +8,6 @@
 #include <ranges>
 #include "Subcompositor.hpp"
 #include "../Viewporter.hpp"
-#include "../ColorManagement.hpp"
 #include "../../output/Monitor.hpp"
 #include "../PresentationTime.hpp"
 #include "../DRMSyncobj.hpp"
@@ -522,7 +521,7 @@ SP<CWLSurfaceResource> CWLSurfaceResource::findFirstPreorder(std::function<bool(
 }
 
 SP<CWLSurfaceResource> CWLSurfaceResource::findWithCM() {
-    return findFirstPreorder([this](SP<CWLSurfaceResource> surf) { return surf->m_colorManagement && surf->extends() == extends(); });
+    return findFirstPreorder([this](SP<CWLSurfaceResource> surf) { return surf->m_current.imageDescription && surf->extends() == extends(); });
 }
 
 std::pair<SP<CWLSurfaceResource>, Vector2D> CWLSurfaceResource::at(const Vector2D& localCoords, bool allowsInput) {
@@ -663,9 +662,6 @@ void CWLSurfaceResource::commitState(SSurfaceState& state) {
 
     auto lastTexture = m_current.texture;
     m_current.updateFrom(state);
-
-    if (state.updated.bits.colorManagement && m_colorManagement)
-        m_colorManagement->commitImageDescription(m_current.imageDescription);
 
     if (m_current.buffer) {
         if (m_current.buffer->isSynchronous())

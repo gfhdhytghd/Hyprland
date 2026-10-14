@@ -138,10 +138,8 @@ void CMonitorStateTracker::add(PHLMONITOR mon) {
     g_pHyprRenderer->damageMonitor(mon);
     mon->m_frameScheduler->onFrame();
 
-    if (PROTO::colorManagement && g_pCompositor->shouldChangePreferredImageDescription()) {
-        LOG(Log::ERR, "FIXME: color management protocol is enabled, need a preferred image description id");
+    if (PROTO::colorManagement && g_pCompositor->shouldChangePreferredImageDescription())
         PROTO::colorManagement->onImagePreferredChanged();
-    }
 }
 
 void CMonitorStateTracker::add(SP<Aquamarine::IOutput> output) {

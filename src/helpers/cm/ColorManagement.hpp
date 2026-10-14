@@ -26,6 +26,7 @@ struct hdr_output_metadata;
 namespace Render {
     class ITexture;
     struct SCMSettings;
+    struct STFRange;
 }
 
 namespace NColorManagement {
@@ -392,7 +393,14 @@ namespace NColorManagement {
 
     float               referenceLuminanceScale(const SImageDescription& source, const SImageDescription& target);
 
+    bool                isHDR(const SImageDescription& description);
+    bool                isWindowsScRGB(const SImageDescription& description);
+
     RGBAColor           convertColor(RGBAColor color, PImageDescription srcDesc, PImageDescription dstDesc, const Render::SCMSettings& settings);
+
+    // Single channel transfer functions in absolute luminance for display hardware LUTs. HLG mixes channels and has no such form.
+    double              decodeChannel(double signal, eTransferFunction tf, Render::STFRange range);
+    double              encodeChannel(double luminance, eTransferFunction tf, Render::STFRange range);
     CHyprColor          convertColor(const CHyprColor& color, PImageDescription srcDesc, PImageDescription dstDesc, const Render::SCMSettings& settings);
 
     PImageDescription   getDefaultImageDescription();

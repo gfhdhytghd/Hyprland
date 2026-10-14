@@ -5,6 +5,16 @@
 
 using namespace NColorManagement;
 
+static Render::SCMSettings conversionSettings(PImageDescription source, PImageDescription target, Render::STFRange srcRange, Render::STFRange dstRange) {
+    return {
+        .sourceTF      = source->value().transferFunction,
+        .targetTF      = target->value().transferFunction,
+        .srcTFRange    = srcRange,
+        .dstTFRange    = dstRange,
+        .convertMatrix = Hyprgraphics::CMatrix3{source->getPrimaries()->convertMatrix(target->getPrimaries())}.mat(),
+    };
+}
+
 TEST(ColorManagement, GenericFilmChannelOrder) {
     const auto& p = getPrimaries(CM_PRIMARIES_GENERIC_FILM);
     EXPECT_DOUBLE_EQ(p.red.x, 0.681);
@@ -27,17 +37,15 @@ TEST(ColorManagement, XYZBasisIsFiniteAndInvertible) {
 }
 
 TEST(ColorManagement, BT1886DisplayCharacteristic) {
-    const auto          source = CImageDescription::from(SImageDescription{.transferFunction = CM_TRANSFER_FUNCTION_BT1886});
-    const auto          linear = CImageDescription::from(SImageDescription{.transferFunction = CM_TRANSFER_FUNCTION_LINEAR});
-    Render::SCMSettings settings{.srcTFRange = {.min = 0.01f, .max = 100.0f}};
-    const auto          decoded = convertColor(RGBAColor{{.r = 0.05, .g = 0.0, .b = 1.0, .a = 1.0}}, source, linear, settings);
-    const auto          black   = std::pow(0.01, 1.0 / 2.4);
-    const auto          white   = std::pow(100.0, 1.0 / 2.4);
+    const auto source  = CImageDescription::from(SImageDescription{.transferFunction = CM_TRANSFER_FUNCTION_BT1886});
+    const auto linear  = CImageDescription::from(SImageDescription{.transferFunction = CM_TRANSFER_FUNCTION_LINEAR});
+    const auto decoded = convertColor(RGBAColor{{.r = 0.05, .g = 0.0, .b = 1.0, .a = 1.0}}, source, linear, conversionSettings(source, linear, {.min = 0.01f, .max = 100.0f}, {}));
+    const auto black   = std::pow(0.01, 1.0 / 2.4);
+    const auto white   = std::pow(100.0, 1.0 / 2.4);
     EXPECT_NEAR(decoded.c.r, std::pow(0.05 * (white - black) + black, 2.4), 1e-6);
     EXPECT_NEAR(decoded.c.g, 0.01, 1e-6);
     EXPECT_NEAR(decoded.c.b, 100.0, 1e-6);
-    settings.dstTFRange = settings.srcTFRange;
-    const auto encoded  = convertColor(decoded, linear, source, settings);
+    const auto encoded = convertColor(decoded, linear, source, conversionSettings(linear, source, {}, {.min = 0.01f, .max = 100.0f}));
     EXPECT_NEAR(encoded.c.r, 0.05, 1e-6);
     EXPECT_NEAR(encoded.c.g, 0.0, 1e-6);
     EXPECT_NEAR(encoded.c.b, 1.0, 1e-6);
@@ -54,7 +62,7 @@ TEST(ColorManagement, PQPrimaryRangeDoesNotAdvertiseDisplayPeak) {
 }
 
 TEST(ColorManagement, WindowsPresetsCarryHDRHeadroom) {
-    for (const auto description : {SCRGB_IMAGE_DESCRIPTION, BT2100_IMAGE_DESCRIPTION}) {
+    for (const auto& description : {SCRGB_IMAGE_DESCRIPTION, BT2100_IMAGE_DESCRIPTION}) {
         EXPECT_EQ(description->value().luminances.min, 0);
         EXPECT_EQ(description->value().luminances.max, 10000U);
         EXPECT_EQ(description->value().luminances.reference, 203U);
@@ -66,13 +74,29 @@ TEST(ColorManagement, HLGReferenceDisplayOOTF) {
     const auto hlg = CImageDescription::from(SImageDescription{.transferFunction = CM_TRANSFER_FUNCTION_HLG, .primariesNameSet = true, .primariesNamed = CM_PRIMARIES_BT2020});
     const auto linear =
         CImageDescription::from(SImageDescription{.transferFunction = CM_TRANSFER_FUNCTION_LINEAR, .primariesNameSet = true, .primariesNamed = CM_PRIMARIES_BT2020});
-    Render::SCMSettings settings{.srcTFRange = {.min = 0, .max = 1000}};
-    const auto          result = convertColor(RGBAColor{{.r = 0.75, .g = 0.75, .b = 0.75, .a = 1}}, hlg, linear, settings);
+    // 75% HLG is BT.2100 reference white: 203 cd/m² on a 1000 cd/m² display with gamma 1.2.
+    const auto result = convertColor(RGBAColor{{.r = 0.75, .g = 0.75, .b = 0.75, .a = 1}}, hlg, linear, conversionSettings(hlg, linear, {.min = 0, .max = 1000}, {}));
     EXPECT_NEAR(result.c.r, 203.152, 0.01);
     EXPECT_NEAR(result.c.g, result.c.r, 1e-6);
-    settings.dstTFRange = settings.srcTFRange;
-    const auto encoded  = convertColor(result, linear, hlg, settings);
+    const auto encoded = convertColor(result, linear, hlg, conversionSettings(linear, hlg, {}, {.min = 0, .max = 1000}));
     EXPECT_NEAR(encoded.c.r, 0.75, 1e-6);
+}
+
+TEST(ColorManagement, HLGSystemGammaAndBlackLiftFollowTheDisplay) {
+    const auto hlg = CImageDescription::from(SImageDescription{.transferFunction = CM_TRANSFER_FUNCTION_HLG, .primariesNameSet = true, .primariesNamed = CM_PRIMARIES_BT2020});
+    const auto linear =
+        CImageDescription::from(SImageDescription{.transferFunction = CM_TRANSFER_FUNCTION_LINEAR, .primariesNameSet = true, .primariesNamed = CM_PRIMARIES_BT2020});
+    // BT.2100: signal 0 is displayed at Lb, signal 1 at Lw.
+    const Render::STFRange range = {.min = 0.05f, .max = 2000};
+    const auto             black = convertColor(RGBAColor{{.r = 0, .g = 0, .b = 0, .a = 1}}, hlg, linear, conversionSettings(hlg, linear, range, {}));
+    const auto             white = convertColor(RGBAColor{{.r = 1, .g = 1, .b = 1, .a = 1}}, hlg, linear, conversionSettings(hlg, linear, range, {}));
+    EXPECT_NEAR(black.c.r, 0.05, 1e-4);
+    EXPECT_NEAR(white.c.r, 2000, 1e-2);
+    // gamma = 1.2 + 0.42 log10(2000 / 1000); 50% signal is scene light 1/12.
+    const auto mid = convertColor(RGBAColor{{.r = 0.5, .g = 0.5, .b = 0.5, .a = 1}}, hlg, linear, conversionSettings(hlg, linear, {.min = 0, .max = 2000}, {}));
+    EXPECT_NEAR(mid.c.r, 2000 * std::pow(1.0 / 12.0, 1.2 + 0.42 * std::log10(2.0)), 1e-3);
+    const auto roundtrip = convertColor(mid, linear, hlg, conversionSettings(linear, hlg, {}, {.min = 0, .max = 2000}));
+    EXPECT_NEAR(roundtrip.c.r, 0.5, 1e-6);
 }
 
 TEST(ColorManagement, EncodingRangeHonorsBlackAndRelativePeak) {
@@ -122,9 +146,11 @@ TEST(ColorManagement, HDRMetadataUsesMasteringGamutAndPreservesUnknownLightLevel
 }
 
 TEST(ColorManagement, SDRBrightnessIsAppliedInLinearLight) {
-    const auto          source = DEFAULT_SRGB_IMAGE_DESCRIPTION;
-    Render::SCMSettings settings{.srcTFRange = {.min = 0, .max = 80}, .dstTFRange = {.min = 0, .max = 80}, .needsSDRmod = true, .sdrBrightnessMultiplier = 0.5f};
-    const auto          result = convertColor(RGBAColor{{.r = 1, .g = 1, .b = 1, .a = 1}}, source, source, settings);
+    const auto source                = DEFAULT_SRGB_IMAGE_DESCRIPTION;
+    auto       settings              = conversionSettings(source, source, {.min = 0, .max = 80}, {.min = 0, .max = 80});
+    settings.needsSDRmod             = true;
+    settings.sdrBrightnessMultiplier = 0.5f;
+    const auto result                = convertColor(RGBAColor{{.r = 1, .g = 1, .b = 1, .a = 1}}, source, source, settings);
     EXPECT_NEAR(result.c.r, 0.735356983, 1e-6);
 }
 
@@ -137,4 +163,142 @@ TEST(ColorManagement, MatchingPQEncodingsStillNeedPeakCompression) {
     EXPECT_TRUE(CImageDescription::from(source)->needsCM(destination));
     source.maxCLL = 400;
     EXPECT_FALSE(CImageDescription::from(source)->needsCM(destination));
+}
+
+TEST(ColorManagement, BT2390MapsSourcePeakToTargetPeak) {
+    const auto pq = CImageDescription::from(SImageDescription{.transferFunction = CM_TRANSFER_FUNCTION_ST2084_PQ, .primariesNameSet = true, .primariesNamed = CM_PRIMARIES_BT2020});
+    const auto linear =
+        CImageDescription::from(SImageDescription{.transferFunction = CM_TRANSFER_FUNCTION_LINEAR, .primariesNameSet = true, .primariesNamed = CM_PRIMARIES_BT2020});
+    auto settings             = conversionSettings(pq, linear, {.min = 0, .max = 10000}, {.min = 0, .max = 10000});
+    settings.needsTonemap     = true;
+    settings.maxLuminance     = 1000;
+    settings.dstMaxLuminance  = 600;
+    settings.dstPrimaries2XYZ = Hyprgraphics::CMatrix3{linear->getPrimaries()->toXYZ()}.mat();
+    const auto nits           = [&](double luminance) {
+        const auto signal =
+            std::pow((0.8359375 + 18.8515625 * std::pow(luminance / 10000.0, 0.1593017578125)) / (1.0 + 18.6875 * std::pow(luminance / 10000.0, 0.1593017578125)), 78.84375);
+        return convertColor(RGBAColor{{.r = signal, .g = signal, .b = signal, .a = 1}}, pq, linear, settings).c.g;
+    };
+    // The knee leaves dark content alone, the source peak lands on the target peak and the curve is monotonic.
+    EXPECT_NEAR(nits(10), 10, 0.05);
+    EXPECT_NEAR(nits(1000), 600, 0.5);
+    EXPECT_LT(nits(500), nits(800));
+    EXPECT_LT(nits(800), nits(1000));
+}
+
+TEST(ColorManagement, OutOfGamutColorsAreDesaturatedTowardsWhite) {
+    const auto bt2020 =
+        CImageDescription::from(SImageDescription{.transferFunction = CM_TRANSFER_FUNCTION_GAMMA22, .primariesNameSet = true, .primariesNamed = CM_PRIMARIES_BT2020});
+    const auto srgb   = CImageDescription::from(SImageDescription{.transferFunction = CM_TRANSFER_FUNCTION_LINEAR, .primariesNameSet = true, .primariesNamed = CM_PRIMARIES_SRGB});
+    const auto mapped = convertColor(RGBAColor{{.r = 0, .g = 1, .b = 0, .a = 1}}, bt2020, srgb, conversionSettings(bt2020, srgb, {.min = 0, .max = 80}, {.min = 0, .max = 80}));
+    // A linear target keeps extended values for later stages.
+    EXPECT_LT(std::min({mapped.c.r, mapped.c.b}), 0);
+
+    const auto encoded =
+        CImageDescription::from(SImageDescription{.transferFunction = CM_TRANSFER_FUNCTION_GAMMA22, .primariesNameSet = true, .primariesNamed = CM_PRIMARIES_SRGB});
+    auto       settings  = conversionSettings(bt2020, encoded, {.min = 0, .max = 80}, {.min = 0, .max = 80});
+    const auto clipped   = convertColor(RGBAColor{{.r = 0, .g = 1, .b = 0, .a = 1}}, bt2020, encoded, settings);
+    const auto linearRGB = [](double v) { return std::pow(v, 2.2) * 80; };
+    const auto r = linearRGB(clipped.c.r), g = linearRGB(clipped.c.g), b = linearRGB(clipped.c.b);
+    const auto Y = Hyprgraphics::CMatrix3{srgb->getPrimaries()->toXYZ()}.mat()[1];
+    EXPECT_GE(std::min({r, g, b}), -1e-6);
+    // Luminance is kept and the color moved straight towards the achromatic axis.
+    EXPECT_NEAR(Y[0] * r + Y[1] * g + Y[2] * b, Y[0] * mapped.c.r + Y[1] * mapped.c.g + Y[2] * mapped.c.b, 1e-3);
+    const auto lum = Y[0] * r + Y[1] * g + Y[2] * b;
+    EXPECT_NEAR((g - lum) / (mapped.c.g - lum), (b - lum) / (mapped.c.b - lum), 1e-3);
+}
+
+TEST(ColorManagement, HDRMetadataReportsUnknownMasteringAsZero) {
+    const SImageDescription pq{.transferFunction = CM_TRANSFER_FUNCTION_ST2084_PQ, .primariesNameSet = true, .primariesNamed = CM_PRIMARIES_BT2020};
+    const auto              metadata = createHDRMetadata(pq).hdmi_metadata_type1;
+    EXPECT_EQ(metadata.eotf, 2);
+    EXPECT_EQ(metadata.display_primaries[0].x, 0);
+    EXPECT_EQ(metadata.white_point.x, 0);
+    EXPECT_EQ(metadata.max_display_mastering_luminance, 0);
+    EXPECT_EQ(metadata.min_display_mastering_luminance, 0);
+    EXPECT_EQ(createHDRMetadata(SCRGB_IMAGE_DESCRIPTION->value()).hdmi_metadata_type1.eotf, 0);
+}
+
+TEST(ColorManagement, HLGBlackStaysBlackBelowUnitSystemGamma) {
+    const auto hlg = CImageDescription::from(SImageDescription{.transferFunction = CM_TRANSFER_FUNCTION_HLG, .primariesNameSet = true, .primariesNamed = CM_PRIMARIES_BT2020});
+    const auto linear =
+        CImageDescription::from(SImageDescription{.transferFunction = CM_TRANSFER_FUNCTION_LINEAR, .primariesNameSet = true, .primariesNamed = CM_PRIMARIES_BT2020});
+    // A 150 cd/m² display has system gamma 1.2 * 1.111^log2(0.15) < 1, where pow(0, gamma - 1) diverges.
+    const auto black = convertColor(RGBAColor{{.r = 0, .g = 0, .b = 0, .a = 1}}, hlg, linear, conversionSettings(hlg, linear, {.min = 0, .max = 150}, {}));
+    EXPECT_EQ(black.c.r, 0);
+    EXPECT_EQ(black.c.g, 0);
+    EXPECT_EQ(black.c.b, 0);
+}
+
+TEST(ColorManagement, HLGReferenceScalingKeepsTheSourceSystemGamma) {
+    const auto hlg = CImageDescription::from(SImageDescription{.transferFunction = CM_TRANSFER_FUNCTION_HLG, .primariesNameSet = true, .primariesNamed = CM_PRIMARIES_BT2020});
+    const auto linear =
+        CImageDescription::from(SImageDescription{.transferFunction = CM_TRANSFER_FUNCTION_LINEAR, .primariesNameSet = true, .primariesNamed = CM_PRIMARIES_BT2020});
+    // Doubling the reference white doubles the decoded light of a 1000 cd/m² HLG source instead of decoding it for a 2000 cd/m² display.
+    auto settings              = conversionSettings(hlg, linear, {.min = 0, .max = 2000}, {});
+    settings.srcReferenceScale = 2;
+    const auto result          = convertColor(RGBAColor{{.r = 0.75, .g = 0.75, .b = 0.75, .a = 1}}, hlg, linear, settings);
+    EXPECT_NEAR(result.c.r, 2 * 203.152146, 0.01);
+}
+
+static Render::SCMSettings pqTonemapSettings(PImageDescription pq, PImageDescription linear, float maxLuminance, float dstMaxLuminance) {
+    auto settings             = conversionSettings(pq, linear, {.min = 0, .max = 10000}, {.min = 0, .max = 10000});
+    settings.needsTonemap     = true;
+    settings.maxLuminance     = maxLuminance;
+    settings.dstMaxLuminance  = dstMaxLuminance;
+    settings.dstPrimaries2XYZ = Hyprgraphics::CMatrix3{linear->getPrimaries()->toXYZ()}.mat();
+    return settings;
+}
+
+static double pqSignal(double luminance) {
+    const auto Y = std::pow(luminance / 10000.0, 0.1593017578125);
+    return std::pow((0.8359375 + 18.8515625 * Y) / (1.0 + 18.6875 * Y), 78.84375);
+}
+
+TEST(ColorManagement, BT2390NormalizesAgainstTheSourceBlack) {
+    const auto pq = CImageDescription::from(SImageDescription{.transferFunction = CM_TRANSFER_FUNCTION_ST2084_PQ, .primariesNameSet = true, .primariesNamed = CM_PRIMARIES_BT2020});
+    const auto linear =
+        CImageDescription::from(SImageDescription{.transferFunction = CM_TRANSFER_FUNCTION_LINEAR, .primariesNameSet = true, .primariesNamed = CM_PRIMARIES_BT2020});
+    auto settings            = pqTonemapSettings(pq, linear, 1000, 100);
+    settings.srcMinLuminance = 0.1f;
+    settings.dstTFRange.min  = 0.2f;
+    const auto signal        = pqSignal(0.1);
+    // BT.2390 §5.4: the mastering black LB lands on the target black LMIN.
+    EXPECT_NEAR(convertColor(RGBAColor{{.r = signal, .g = signal, .b = signal, .a = 1}}, pq, linear, settings).c.g, 0.2, 1e-4);
+}
+
+TEST(ColorManagement, BT2390UsesTheBT2100ICtCpMatrices) {
+    const auto pq = CImageDescription::from(SImageDescription{.transferFunction = CM_TRANSFER_FUNCTION_ST2084_PQ, .primariesNameSet = true, .primariesNamed = CM_PRIMARIES_BT2020});
+    const auto linear =
+        CImageDescription::from(SImageDescription{.transferFunction = CM_TRANSFER_FUNCTION_LINEAR, .primariesNameSet = true, .primariesNamed = CM_PRIMARIES_BT2020});
+    // Reference computed with the integer RGB -> LMS and ICtCp matrices of BT.2100 Table 7.
+    const auto red = convertColor(RGBAColor{{.r = pqSignal(1000), .g = 0, .b = 0, .a = 1}}, pq, linear, pqTonemapSettings(pq, linear, 1000, 100));
+    EXPECT_NEAR(red.c.r, 315.570419, 2e-3);
+    EXPECT_NEAR(red.c.g, 12.945958, 2e-3);
+    EXPECT_NEAR(red.c.b, 2.713443, 2e-3);
+}
+
+TEST(ColorManagement, AlternativeTonemapMatchesTheShader) {
+    const auto pq = CImageDescription::from(SImageDescription{.transferFunction = CM_TRANSFER_FUNCTION_ST2084_PQ, .primariesNameSet = true, .primariesNamed = CM_PRIMARIES_BT2020});
+    const auto linear =
+        CImageDescription::from(SImageDescription{.transferFunction = CM_TRANSFER_FUNCTION_LINEAR, .primariesNameSet = true, .primariesNamed = CM_PRIMARIES_BT2020});
+    auto settings        = pqTonemapSettings(pq, linear, 1000, 600);
+    settings.tonemapMode = 3;
+    const auto nits      = [&](double luminance) {
+        const auto signal = pqSignal(luminance);
+        return convertColor(RGBAColor{{.r = signal, .g = signal, .b = signal, .a = 1}}, pq, linear, settings).c.g;
+    };
+    // Knee at 0.6 * 600 = 360, rational roll-off reaching the target peak at the source peak.
+    const double knee = 360, alpha = 400.0 / ((1000 - knee) * (600 - knee));
+    EXPECT_NEAR(nits(300), 300, 0.05);
+    EXPECT_NEAR(nits(700), knee + (700 - knee) / (1 + alpha * (700 - knee)), 0.05);
+    EXPECT_NEAR(nits(1000), 600, 0.05);
+}
+
+TEST(ColorManagement, WhiteOnAPrimaryIsRejected) {
+    auto primaries  = getPrimaries(CM_PRIMARIES_SRGB);
+    primaries.white = primaries.red;
+    EXPECT_FALSE(rgbToXYZFromPrimaries(primaries).has_value());
+    EXPECT_TRUE(rgbToXYZFromPrimaries(getPrimaries(CM_PRIMARIES_SRGB)).has_value());
+    EXPECT_TRUE(rgbToXYZFromPrimaries(getPrimaries(CM_PRIMARIES_CIE1931_XYZ)).has_value());
 }

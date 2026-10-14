@@ -3,6 +3,8 @@
 #include "color-management-v1.hpp"
 #include "../output/Monitor.hpp"
 #include "core/Output.hpp"
+#include "../event/EventBus.hpp"
+#include "../managers/eventLoop/EventLoopManager.hpp"
 #include "../helpers/cm/ColorManagement.hpp"
 #include <cstdint>
 #include "../helpers/MiscFunctions.hpp"
@@ -226,6 +228,11 @@ CColorManagementOutput::CColorManagementOutput(SP<CWpColorManagementOutputV1> re
     if UNLIKELY (!good())
         return;
 
+    if (m_output) {
+        m_monitor      = m_output->m_monitor;
+        m_outputGlobal = m_output->m_owner;
+    }
+
     m_client = m_resource->client();
 
     m_resource->setDestroy([this](CWpColorManagementOutputV1* r) { PROTO::colorManagement->destroyResource(this); });
@@ -244,10 +251,10 @@ CColorManagementOutput::CColorManagementOutput(SP<CWpColorManagementOutputV1> re
         }
 
         RESOURCE->m_self = RESOURCE;
-        if (!m_output || !m_output->m_monitor.valid())
+        if (inert())
             RESOURCE->m_resource->sendFailed(WP_IMAGE_DESCRIPTION_V1_CAUSE_NO_OUTPUT, "No output");
         else {
-            RESOURCE->m_settings = m_output->m_monitor->m_imageDescription;
+            RESOURCE->m_settings = m_monitor->m_imageDescription;
 
             RESOURCE->sendMaybeReady();
         }
@@ -256,6 +263,10 @@ CColorManagementOutput::CColorManagementOutput(SP<CWpColorManagementOutputV1> re
 
 bool CColorManagementOutput::good() {
     return m_resource->resource();
+}
+
+bool CColorManagementOutput::inert() {
+    return !m_monitor || !m_outputGlobal || m_outputGlobal->isDefunct();
 }
 
 wl_client* CColorManagementOutput::client() {
@@ -267,7 +278,6 @@ CColorManagementSurface::CColorManagementSurface(SP<CWpColorManagementSurfaceV1>
         return;
 
     m_client = m_resource->client();
-    commitImageDescription(m_surface->m_current.imageDescription);
 
     m_resource->setDestroy([](CWpColorManagementSurfaceV1* r) { wl_resource_destroy(r->resource()); });
     m_resource->setOnDestroy([this](CWpColorManagementSurfaceV1* r) {
@@ -325,62 +335,6 @@ wl_client* CColorManagementSurface::client() {
     return m_client;
 }
 
-const SImageDescription& CColorManagementSurface::imageDescription() {
-    if (!hasImageDescription()) {
-        LOG(Log::TRACE, "Reading imageDescription while none set. Returns default or empty values");
-        return getDefaultImageDescription()->value(); // JIC default settings change
-    }
-
-    return m_imageDescription->value();
-}
-
-void CColorManagementSurface::commitImageDescription(PImageDescription description) {
-    const auto effective = description ? description : getDefaultImageDescription();
-    if (m_imageDescription == effective && m_hasImageDescription == bool(description))
-        return;
-
-    m_imageDescription = effective;
-    setHasImageDescription(bool(description));
-}
-
-bool CColorManagementSurface::hasImageDescription() {
-    return m_hasImageDescription;
-}
-
-void CColorManagementSurface::setHasImageDescription(bool has) {
-    m_hasImageDescription = has;
-    m_needsNewMetadata    = true;
-}
-
-const hdr_output_metadata& CColorManagementSurface::hdrMetadata() {
-    return m_hdrMetadata;
-}
-
-void CColorManagementSurface::setHDRMetadata(const hdr_output_metadata& metadata) {
-    m_hdrMetadata          = metadata;
-    m_lastImageDescription = m_imageDescription;
-    m_needsNewMetadata     = false;
-}
-
-bool CColorManagementSurface::needsHdrMetadataUpdate() {
-    if (!m_needsNewMetadata)
-        return false;
-    if (m_imageDescription == m_lastImageDescription)
-        m_needsNewMetadata = false;
-    return m_needsNewMetadata;
-}
-
-bool CColorManagementSurface::isHDR() {
-    const auto& description = m_imageDescription->value();
-    return description.transferFunction == CM_TRANSFER_FUNCTION_ST2084_PQ || description.transferFunction == CM_TRANSFER_FUNCTION_HLG || isWindowsScRGB() ||
-        (description.transferFunction == CM_TRANSFER_FUNCTION_EXT_LINEAR && description.luminances.max > description.luminances.reference);
-}
-
-bool CColorManagementSurface::isWindowsScRGB() {
-    const auto& description = m_imageDescription->value();
-    return description.isWindows && description.primariesNamed == CM_PRIMARIES_SRGB && description.transferFunction == CM_TRANSFER_FUNCTION_EXT_LINEAR;
-}
-
 CColorManagementFeedbackSurface::CColorManagementFeedbackSurface(SP<CWpColorManagementSurfaceFeedbackV1> resource, SP<CWLSurfaceResource> surface_) :
     m_surface(surface_), m_resource(resource) {
     if UNLIKELY (!good())
@@ -429,11 +383,9 @@ CColorManagementFeedbackSurface::CColorManagementFeedbackSurface(SP<CWpColorMana
             return;
         }
 
-        const auto preferred = m_surface->getPreferredImageDescription();
-        if (preferred->value().icc.present) {
-            r->error(WP_COLOR_MANAGEMENT_SURFACE_FEEDBACK_V1_ERROR_UNSUPPORTED_FEATURE, "The preferred description is not parametric");
-            return;
-        }
+        const auto surfacePreferred = m_surface->getPreferredImageDescription();
+        // ICC outputs are fed through a linear sRGB 3D LUT, so sRGB is the parametric description that loses nothing.
+        const auto preferred = surfacePreferred->value().icc.present ? getDefaultImageDescription() : surfacePreferred;
 
         const auto RESOURCE = PROTO::colorManagement->m_imageDescriptions.emplace_back(
             makeShared<CColorManagementImageDescription>(makeShared<CWpImageDescriptionV1>(r->client(), r->version(), id), true));
@@ -446,7 +398,7 @@ CColorManagementFeedbackSurface::CColorManagementFeedbackSurface(SP<CWpColorMana
 
         RESOURCE->m_self     = RESOURCE;
         RESOURCE->m_settings = preferred;
-        m_currentPreferredId = RESOURCE->m_settings->id();
+        m_currentPreferredId = surfacePreferred->id();
 
         RESOURCE->sendMaybeReady();
     });
@@ -590,7 +542,8 @@ CColorManagementParametricCreator::CColorManagementParametricCreator(SP<CWpImage
         }
 
         RESOURCE->m_self = RESOURCE;
-        if (!rgbToXYZFromPrimaries(m_settings.getPrimaries())) {
+        // Validate explicit primaries as sent; getPrimaries() would substitute named primaries for all-zero values.
+        if (!rgbToXYZFromPrimaries(m_settings.primariesNameSet ? m_settings.getPrimaries() : m_settings.primaries)) {
             RESOURCE->resource()->sendFailed(WP_IMAGE_DESCRIPTION_V1_CAUSE_UNSUPPORTED, "Primaries do not define an invertible color space");
             PROTO::colorManagement->destroyResource(this);
             return;
@@ -908,7 +861,26 @@ wl_client* CColorManagementImageDescriptionInfo::client() {
 
 CColorManagementProtocol::CColorManagementProtocol(const wl_interface* iface, const int& ver, const std::string& name, bool debug) :
     IWaylandProtocol(iface, ver, name), m_debug(debug) {
-    ;
+    // Preferred descriptions also depend on the window's monitor, the monitor set and quirks:prefer_hdr.
+    m_listeners.configReloaded = Event::bus()->m_events.config.reloaded.listen([this] { onImagePreferredChanged(); });
+    m_listeners.monitorRemoved = Event::bus()->m_events.monitor.removed.listen([this](PHLMONITOR) { onImagePreferredChanged(); });
+    // Window monitors are updated after these events, so the check runs once the move is complete.
+    m_listeners.workspaceMoved = Event::bus()->m_events.workspace.moveToMonitor.listen([this](PHLWORKSPACE, PHLMONITOR) { schedulePreferredCheck(); });
+    m_listeners.windowMoved    = Event::bus()->m_events.window.moveToWorkspace.listen([this](PHLWINDOW, PHLWORKSPACE) { schedulePreferredCheck(); });
+}
+
+void CColorManagementProtocol::schedulePreferredCheck() {
+    if (m_preferredCheckScheduled)
+        return;
+
+    m_preferredCheckScheduled = true;
+    g_pEventLoopManager->doLater([] {
+        if (!PROTO::colorManagement)
+            return;
+
+        PROTO::colorManagement->m_preferredCheckScheduled = false;
+        PROTO::colorManagement->onImagePreferredChanged();
+    });
 }
 
 void CColorManagementProtocol::bindManager(wl_client* client, void* data, uint32_t ver, uint32_t id) {
@@ -931,11 +903,12 @@ void CColorManagementProtocol::onImagePreferredChanged() {
 void CColorManagementProtocol::onMonitorImageDescriptionChanged(PHLMONITORREF monitor) {
     std::vector<SP<CWLOutputResource>> changedOutputs;
     for (const auto& output : m_outputs) {
-        if (!output->m_output || output->m_output->m_monitor != monitor)
+        if (output->inert() || output->m_monitor != monitor)
             continue;
         output->m_resource->sendImageDescriptionChanged();
+        // wl_output.done can only be sent while the client still holds its wl_output object.
         const auto resource = output->m_output.lock();
-        if (std::ranges::find(changedOutputs, resource) == changedOutputs.end())
+        if (resource && std::ranges::find(changedOutputs, resource) == changedOutputs.end())
             changedOutputs.push_back(resource);
     }
     for (const auto& output : changedOutputs)

@@ -23,10 +23,12 @@ TEST(ColorManagementShader, SurfaceAndBlurVariantsCompile) {
     CShaderLoader loader(includes, fragments);
     for (const auto fragment : {SH_FRAG_SURFACE, SH_FRAG_BLURPREPARE, SH_FRAG_BLURFINISH, SH_FRAG_PRISMFINISH}) {
         for (const auto tf : {CM_TRANSFER_FUNCTION_BT1886, CM_TRANSFER_FUNCTION_EXT_LINEAR, CM_TRANSFER_FUNCTION_ST2084_PQ, CM_TRANSFER_FUNCTION_HLG}) {
-            for (const auto extra : {0, sc<int>(SH_FEAT_SDR_MOD), sc<int>(SH_FEAT_TONEMAP | SH_FEAT_MIRROR), sc<int>(SH_FEAT_TONEMAP | SH_FEAT_SDR_MOD | SH_FEAT_ALT_TONEMAP)}) {
+            for (const auto extra :
+                 {0, sc<int>(SH_FEAT_SDR_MOD), sc<int>(SH_FEAT_MIRROR), sc<int>(SH_FEAT_TONEMAP | SH_FEAT_MIRROR), sc<int>(SH_FEAT_TONEMAP | SH_FEAT_SDR_MOD | SH_FEAT_MIRROR),
+                  sc<int>(SH_FEAT_ICC | SH_FEAT_MIRROR), sc<int>(SH_FEAT_TONEMAP | SH_FEAT_SDR_MOD | SH_FEAT_ALT_TONEMAP)}) {
                 if (fragment == SH_FRAG_BLURPREPARE && extra != 0)
                     continue;
-                if (fragment != SH_FRAG_SURFACE && (extra & SH_FEAT_TONEMAP))
+                if (fragment != SH_FRAG_SURFACE && (extra & (SH_FEAT_TONEMAP | SH_FEAT_ICC | SH_FEAT_MIRROR)))
                     continue;
                 std::map<std::string, std::string> defines;
                 for (const auto name :
@@ -36,6 +38,7 @@ TEST(ColorManagementShader, SurfaceAndBlurVariantsCompile) {
                 defines["USE_TONEMAP"]     = extra & SH_FEAT_TONEMAP ? "1" : "0";
                 defines["USE_SDR_MOD"]     = extra & SH_FEAT_SDR_MOD ? "1" : "0";
                 defines["USE_MIRROR"]      = extra & SH_FEAT_MIRROR ? "1" : "0";
+                defines["USE_ICC"]         = extra & SH_FEAT_ICC ? "1" : "0";
                 defines["USE_ALT_TONEMAP"] = extra & SH_FEAT_ALT_TONEMAP ? "1" : "0";
                 defines["SOURCE_TF"]       = std::to_string(sc<int>(tf));
                 defines["TARGET_TF"]       = std::to_string(sc<int>(tf));

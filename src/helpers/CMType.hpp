@@ -11,7 +11,7 @@ namespace NCMType {
         CM_WIDE,     // wide color gamut, BT2020 primaries
         CM_EDID,     // primaries from edid (known to be inaccurate)
         CM_HDR,      // wide color gamut and HDR PQ transfer function
-        CM_HDR_EDID, // same as CM_HDR with edid primaries
+        CM_HDR_EDID, // same as CM_HDR: HDR10 is always BT.2020-encoded, EDID primaries only describe the mastering volume
         CM_DCIP3,    // movie theatre with greenish white point
         CM_DP3,      // applle P3 variant with blueish white point
         CM_ADOBE,    // adobe colorspace

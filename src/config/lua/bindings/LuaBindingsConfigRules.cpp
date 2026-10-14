@@ -156,11 +156,6 @@ namespace {
              p.rule().m_sdrMinLuminance = *sc<const Config::FLOAT*>(v->data());
              return true;
          }},
-        {"sdr_max_luminance", []() -> ILuaConfigValue* { return new CLuaConfigInt(80); },
-         [](ILuaConfigValue* v, CMonitorRuleParser& p) {
-             p.rule().m_sdrMaxLuminance = sc<int>(*sc<const Config::INTEGER*>(v->data()));
-             return true;
-         }},
         {"min_luminance", []() -> ILuaConfigValue* { return new CLuaConfigFloat(-1.F); },
          [](ILuaConfigValue* v, CMonitorRuleParser& p) {
              p.rule().m_minLuminance = *sc<const Config::FLOAT*>(v->data());
@@ -1151,6 +1146,12 @@ static int hlMonitor(lua_State* L) {
         const char* key = lua_tostring(L, -2);
 
         if (std::string_view{key} == "output") {
+            lua_pop(L, 1);
+            continue;
+        }
+
+        if (std::string_view{key} == "sdr_max_luminance") {
+            self->addError(std::format("{}: hl.monitor: 'sdr_max_luminance' was removed, SDR white follows 'reference_luminance'", sourceInfo));
             lua_pop(L, 1);
             continue;
         }

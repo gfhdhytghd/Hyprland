@@ -51,20 +51,58 @@
 
 ## #16329 配置
 
-Lua monitor 增加 `reference_luminance`，单位 cd/m²，正整数；`-1` 恢复默认。`0` 和小于 `-1` 的值会被拒绝。原有 SDR 配置行为保留，HDR 默认 reference 仍为 203。
+Lua monitor 增加 `reference_luminance`，单位 cd/m²，正整数；`-1` 恢复默认。`0` 和小于 `-1` 的值会被拒绝。HDR 默认 reference 为 203。
 
-例如，需要将 HDR reference 和 SDR white 明确对齐到 450 时：
+第二轮修正后，SDR white 与 HDR reference white 都锚定到 `reference_luminance`，`sdr_max_luminance` 已删除（配置中使用会报错并提示改用 `reference_luminance`）。例如，需要将 HDR reference 和 SDR white 对齐到 450 时：
 
 ```lua
 hl.monitor({
     output = "你的输出名称",
     cm = "hdr",
     reference_luminance = 450,
-    sdr_max_luminance = 450,
 })
 ```
 
-这两个配置项独立，不自动相互覆盖，也不自动按 EDID 推导 reference。新选项需要用户另行提交 wiki PR。
+不自动按 EDID 推导 reference。新增和删除的选项需要用户另行提交 wiki PR。
+
+## 第二轮修正（未提交的工作区改动）
+
+目标：完全符合 color-management-v1、BT.2100、BT.2390、BT.2408、BT.1886、CTA-861.3 和 KMS 语义；正确性优先于配置兼容。以下内容取代上表中对应条目的描述。
+
+| 范围 | 修正 | 取代 / 影响 |
+| --- | --- | --- |
+| 协议 | ICC 输出上的 `get_preferred_parametric` 返回 sRGB（ICC 输出在线性 sRGB 上经 LUT），不再杀客户端；CM output 对象绑定 monitor 和 output global，global 移除后 inert，`wl_output.done` 只在客户端的 `wl_output` 资源仍在时发送；config reload、monitor 移除、窗口 / workspace 换 monitor 时检查 `preferred_changed`；named sRGB / BT.2020 description 报告 named primaries；全零 primaries 失败而不是退化为 sRGB。 | 补充修复中的 ICC parametric 拒绝 |
+| surface 生命周期 | 已提交 description 存在 `SSurfaceState`，CM surface 扩展恢复为 WP，不再持有已提交状态。 | #3 |
+| 输出信号 | `cm = hdredid` 为标准 HDR10：始终 BT.2020 编码，EDID primaries 只作 mastering metadata；`cm = edid` 不再发送 BT2020_RGB，无 EDID 色度时退为 sRGB；合成输出 MaxCLL / MaxFALL 为 0，未知 mastering primaries / 亮度为 0；extended linear 不生成 PQ metadata；direct scanout 时按 surface description 逐帧生成 metadata。 | #19, #23 |
+| aquamarine | 回到 SDR 时把 HDR_OUTPUT_METADATA 设为 blob 0，停止 HDR 信号（`/home/wilf/data/aquamarine` 分支 `hdr-metadata-clear`，`743db96`，未推送）。 | — |
+| reference 锚定 | 所有转换都按 target.ref / source.ref 缩放；SDR 内容在 HDR 输出上默认 203 cd/m²（原为 80）；删除 `sdr_max_luminance`；`sdrbrightness` / `sdrsaturation` 在 tone mapping 前应用并计入峰值；`hyprctl monitors` 的 `sdrMaxLuminance` 改为 `referenceLuminance`。 | #28, #29, 补充修复中的 SDR 亮度处理 |
+| HLG | 按 BT.2100：系统 gamma 随显示峰值变化（400–2000 cd/m² 用 1.2 + 0.42·log10(Lw/1000)，范围外用 BT.2390 扩展），黑电平 β 提升在信号域。 | #14 |
+| tone mapping / 色域 | 默认曲线为 BT.2390 EETF（PQ 域 Hermite knee，ICtCp I 上应用，色度按 min(I1/I2, I2/I1) 缩放），LionHeartP 曲线保留为 alt；编码输出使用 BT.2407 式保色相色域裁剪（在同亮度灰色方向去饱和），FP16 中间缓冲保留扩展值。 | #15, #27 |
+| CPU 路径 | `convertColor`（边框、清屏色）与 shader 完全一致：使用实际 source TF（forced gamma 2.2 不再被忽略）、线性源不再重复 reference 缩放、包含 tone mapping 和色域映射。 | — |
+| mirror / unmodified copy | mirror FB 的格式和 description 跟随源；unmodified copy 转为 BT.709 primaries，HDR 源 reference white 缩放到 80 cd/m²，高光经 BT.2390 EETF 映射到 SDR 峰值后再做色域裁剪，始终标记为 sRGB。1000 cd/m² 内容的 reference white 落在约 63 cd/m²（BT.2390 knee 的结果）。 | #21 |
+| CTM / direct scanout | `non_shader_cm` 的 CTM 只在 primaries 相同或两端 TF 均为线性时使用，否则回退 shader；TF 或 HDR 状态不匹配时始终阻止 direct scanout，即使 `non_shader_cm = ignore`。 | #22 |
+
+用户可见变化（需在 PR 中说明并提交 wiki PR）：SDR 默认 80 → 203 cd/m²；删除 `sdr_max_luminance`；`hdredid` 与 `hdr` 等价；HDR 内容在低峰值显示器上的观感随 BT.2390 改变；`non_shader_cm` 能生效的情况变少；IPC 字段改名。
+
+第二轮验证：Hyprland 与 hyprland_gtests 构建通过，682 / 682 单元测试通过（含新增的 HLG、BT.2390、色域裁剪、HDR metadata、全零 primaries 协议测试，以及 MIRROR 单独 / TONEMAP / ICC 组合的 shader 编译）；clang-format 与 `git diff --check` 通过。hyprtester 和实体 HDR 输出未验证。hyprctl 当前因系统缺少 `libabsl_crc_cpu_detect` 无法链接，与本改动无关。
+
+待办：aquamarine 实现 DEGAMMA / GAMMA LUT，使 CTM 路径在非线性 TF 下也正确；检查 connector 是否支持 BT2020_RGB colorspace；HLG 输出信号；reference 对象 user data 的类型误用（目前无协议路径产生）。
+
+## 第三轮：Codex 复审修正与硬件 CM（未提交）
+
+Codex 对第二轮的独立复审确认了 6 个缺陷和 3 个可疑点，均已修复并加测试：HLG 系统 gamma < 1 时黑色为 NaN；reference 缩放改变了 HLG 解码 gamma（改为按源自身峰值解码后再缩放）；mirror 中模糊背景未经转换；blur prepare/finish 不互逆；BT.2390 忽略已知源黑（改用 mastering 黑或编码黑）；ICtCp 改用 BT.2100 Table 7 精确矩阵；CPU 端补齐 alt tonemap；mirror 不再因源与目标描述相同而跳过 CM；装饰 shader 的特性与 uniform 方向统一（上游已有的 bug，边框此前拿不到 sdrbrightness/sdrsaturation）；白点落在原色上的描述被拒绝。
+
+硬件 CM（依赖 aquamarine `drm-color-pipeline` 分支，ABI 15）：
+- `src/helpers/cm/HardwareCM.*`：为 SDR 直接扫描输出构造 DEGAMMA → CTM → GAMMA。只接受逐通道可表示、无需 tone mapping、无负 CTM 系数的情况，并在软件中模拟 KMS 流水线（16 位量化、线性插值、CTM 钳位），对灰阶、原色、二次色斜坡和色立方与 shader 等价的 CPU 路径比较，误差超过半个 10 位码值即拒绝，回退 shader 合成。AMD 式 4096 项 LUT、SDR 黑 0.2 时通过；256 项或 SDR 黑 0 时被拒绝。
+- gamma-control 与 ICC VCGT 曲线在编码之后合成到同一 GAMMA 槽；对角用户 CTM（如 hyprsunset）折叠进编码，非对角时不走硬件路径。
+- 硬件不支持 CTM 时不再提交非单位 CTM（否则新 aquamarine 会让每次提交失败）。
+- DRM 连接器未列出 `BT2020_RGB` 时不再使用 BT.2020 编码（HDR 和 `cm = wide` 回退 sRGB）。
+- 模式应用前清除 LUT 与 CTM，避免换 CRTC 后旧尺寸的 LUT 让所有模式测试失败；提交后重建。
+- aquamarine 侧补充：空 LUT（禁用）在任何情况下有效，旧版接口上禁用 degamma 为空操作。
+
+Codex 第二次复审（硬件 CM）确认的 8 个缺陷均已处理：模式测试前的过期 LUT/CTM、清除硬件 CM 时 CTM 残留、暗部精度、同一缓冲区直接扫描跳过更新、缓存键缺少 CTM 支持、空 colorspace 列表、黑电平处的色域映射、用户 CTM 语义不一致。
+
+验证：`build-aq` 下 695 / 695 单元测试通过；aquamarine 4 / 5 通过（`simpleWindow` 需要显示器）。未在实体硬件上验证 LUT 是否被驱动接受，以及实际显示效果。
 
 ## 验证结果和范围
 

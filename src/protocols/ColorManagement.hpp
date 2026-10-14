@@ -11,6 +11,7 @@
 
 class CColorManager;
 class CColorManagementOutput;
+class CWLOutputProtocol;
 class CColorManagementImageDescription;
 class CColorManagementProtocol;
 
@@ -31,6 +32,7 @@ class CColorManagementOutput {
 
     bool                                 good();
     wl_client*                           client();
+    bool                                 inert();
 
     WP<CColorManagementOutput>           m_self;
     WP<CColorManagementImageDescription> m_imageDescription;
@@ -39,6 +41,9 @@ class CColorManagementOutput {
     SP<CWpColorManagementOutputV1> m_resource;
     wl_client*                     m_client = nullptr;
     WP<CWLOutputResource>          m_output;
+    // The object stays bound to the output global, not to the client's wl_output object.
+    PHLMONITORREF         m_monitor;
+    WP<CWLOutputProtocol> m_outputGlobal;
 
     friend class CColorManagementProtocol;
     friend class CColorManagementImageDescription;
@@ -54,25 +59,10 @@ class CColorManagementSurface {
     WP<CColorManagementSurface>                m_self;
     WP<CWLSurfaceResource>                     m_surface;
 
-    const NColorManagement::SImageDescription& imageDescription();
-    bool                                       hasImageDescription();
-    void                                       setHasImageDescription(bool has);
-    void                                       commitImageDescription(NColorManagement::PImageDescription description);
-    const hdr_output_metadata&                 hdrMetadata();
-    void                                       setHDRMetadata(const hdr_output_metadata& metadata);
-    bool                                       needsHdrMetadataUpdate();
-    bool                                       isHDR();
-    bool                                       isWindowsScRGB();
-
   private:
-    SP<CWpColorManagementSurfaceV1>     m_resource;
-    wl_client*                          m_client = nullptr;
-    NColorManagement::PImageDescription m_imageDescription;
-    NColorManagement::PImageDescription m_lastImageDescription;
-    bool                                m_hasImageDescription = false;
-    bool                                m_needsNewMetadata    = false;
-    hdr_output_metadata                 m_hdrMetadata{};
-    CHyprSignalListener                 m_destroyListener;
+    SP<CWpColorManagementSurfaceV1> m_resource;
+    wl_client*                      m_client = nullptr;
+    CHyprSignalListener             m_destroyListener;
 };
 
 class CColorManagementFeedbackSurface {
@@ -204,6 +194,7 @@ class CColorManagementProtocol : public IWaylandProtocol {
     bool         isClientCMAware(wl_client* client);
 
   private:
+    void                                               schedulePreferredCheck();
     void                                               destroyResource(CColorManager* resource);
     void                                               destroyResource(CColorManagementOutput* resource);
     void                                               destroyResource(CColorManagementSurface* resource);
@@ -219,7 +210,15 @@ class CColorManagementProtocol : public IWaylandProtocol {
     std::vector<SP<CColorManagementIccCreator>>        m_iccCreators;
     std::vector<SP<CColorManagementParametricCreator>> m_parametricCreators;
     std::vector<SP<CColorManagementImageDescription>>  m_imageDescriptions;
-    bool                                               m_debug = false;
+    bool                                               m_debug                   = false;
+    bool                                               m_preferredCheckScheduled = false;
+
+    struct {
+        CHyprSignalListener configReloaded;
+        CHyprSignalListener monitorRemoved;
+        CHyprSignalListener workspaceMoved;
+        CHyprSignalListener windowMoved;
+    } m_listeners;
 
     friend class CColorManager;
     friend class CColorManagementOutput;

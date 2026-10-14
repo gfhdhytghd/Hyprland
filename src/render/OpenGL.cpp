@@ -1279,8 +1279,7 @@ void CHyprOpenGLImpl::renderTexture(CRenderContext& ctx, SP<ITexture> tex, const
 static std::map<std::pair<uint32_t, uint32_t>, std::array<GLfloat, 9>> primariesConversionCache;
 
 void CHyprOpenGLImpl::passCMUniforms(WP<CShader> shader, const NColorManagement::PImageDescription imageDescription,
-                                     const NColorManagement::PImageDescription targetImageDescription, bool modifySDR, float sdrMinLuminance, int sdrMaxLuminance,
-                                     const SCMSettings& settings) {
+                                     const NColorManagement::PImageDescription targetImageDescription, bool modifySDR, float sdrMinLuminance, const SCMSettings& settings) {
     const auto sourceXYZ = Hyprgraphics::CMatrix3{imageDescription->getPrimaries()->toXYZ()}.mat();
     const auto targetXYZ = Hyprgraphics::CMatrix3{targetImageDescription->getPrimaries()->toXYZ()}.mat();
     shader->setUniformFloat3(SHADER_SOURCE_LUMINANCE_COEFFICIENTS, sourceXYZ[1][0], sourceXYZ[1][1], sourceXYZ[1][2]);
@@ -1289,6 +1288,8 @@ void CHyprOpenGLImpl::passCMUniforms(WP<CShader> shader, const NColorManagement:
     shader->setUniformFloat2(SHADER_DST_TF_RANGE, settings.dstTFRange.min, settings.dstTFRange.max);
     shader->setUniformFloat(SHADER_SRC_REF_LUMINANCE, settings.srcRefLuminance);
     shader->setUniformFloat(SHADER_DST_REF_LUMINANCE, settings.dstRefLuminance);
+    shader->setUniformFloat(SHADER_SOURCE_REFERENCE_SCALE, settings.srcReferenceScale);
+    shader->setUniformFloat(SHADER_SRC_MIN_LUMINANCE, settings.srcMinLuminance);
     shader->setUniformFloat(SHADER_MAX_LUMINANCE, settings.maxLuminance);
     shader->setUniformFloat(SHADER_DST_MAX_LUMINANCE, settings.dstMaxLuminance);
     shader->setUniformInt(SHADER_TONEMAP_MODE, settings.tonemapMode);
@@ -1315,6 +1316,18 @@ void CHyprOpenGLImpl::passCMUniforms(WP<CShader> shader, const NColorManagement:
             mat[0][2], mat[1][2], mat[2][2], //
         };
         shader->setUniformMatrix3fv(SHADER_TARGET_PRIMARIES_XYZ, 1, false, glTargetPrimariesXYZ);
+
+        // The unmodified copy is BT.709 SDR: undo the target primaries and map the target reference white to SDR white.
+        const float                  mirrorScale    = settings.dstRefLuminance <= 0 ? 1.0f : SDR_REF_LUMINANCE / settings.dstRefLuminance;
+        const auto                   mirror         = Hyprgraphics::CMatrix3{targetImageDescription->getPrimaries()->convertMatrix(CPrimaries::from(CM_PRIMARIES_SRGB))}.mat();
+        const std::array<GLfloat, 9> glMirrorMatrix = {
+            sc<GLfloat>(mirror[0][0] * mirrorScale), sc<GLfloat>(mirror[1][0] * mirrorScale), sc<GLfloat>(mirror[2][0] * mirrorScale), //
+            sc<GLfloat>(mirror[0][1] * mirrorScale), sc<GLfloat>(mirror[1][1] * mirrorScale), sc<GLfloat>(mirror[2][1] * mirrorScale), //
+            sc<GLfloat>(mirror[0][2] * mirrorScale), sc<GLfloat>(mirror[1][2] * mirrorScale), sc<GLfloat>(mirror[2][2] * mirrorScale), //
+        };
+        shader->setUniformMatrix3fv(SHADER_MIRROR_CONVERT_MATRIX, 1, false, glMirrorMatrix);
+        shader->setUniformFloat(SHADER_MIRROR_MAX_LUMINANCE, settings.srcMaxLuminance * mirrorScale);
+        shader->setUniformFloat(SHADER_MIRROR_TARGET_MAX_LUMINANCE, settings.dstMaxLuminance * mirrorScale);
     } else {
         // TODO: this sucks
         setActiveTexture(GL_TEXTURE8);
@@ -1328,20 +1341,18 @@ void CHyprOpenGLImpl::passCMUniforms(WP<CShader> shader, const NColorManagement:
 }
 
 void CHyprOpenGLImpl::passCMUniforms(CRenderContext& ctx, WP<CShader> shader, const NColorManagement::PImageDescription imageDescription,
-                                     const NColorManagement::PImageDescription targetImageDescription, bool modifySDR, float sdrMinLuminance, int sdrMaxLuminance) {
-    const auto settings = g_pHyprRenderer->getCMSettings(ctx, imageDescription, targetImageDescription, ctx.m_data.surface.valid() ? ctx.m_data.surface.lock() : nullptr, modifySDR,
-                                                         sdrMinLuminance, sdrMaxLuminance);
-    passCMUniforms(shader, imageDescription, targetImageDescription, modifySDR, sdrMinLuminance, sdrMaxLuminance, settings);
+                                     const NColorManagement::PImageDescription targetImageDescription, bool modifySDR, float sdrMinLuminance) {
+    const auto settings =
+        g_pHyprRenderer->getCMSettings(ctx, imageDescription, targetImageDescription, ctx.m_data.surface.valid() ? ctx.m_data.surface.lock() : nullptr, modifySDR, sdrMinLuminance);
+    passCMUniforms(shader, imageDescription, targetImageDescription, modifySDR, sdrMinLuminance, settings);
 }
 
 void CHyprOpenGLImpl::passCMUniforms(CRenderContext& ctx, WP<CShader> shader, const PImageDescription imageDescription) {
-    passCMUniforms(ctx, shader, imageDescription, g_pHyprRenderer->workBufferImageDescription(ctx), true, ctx.m_data.pMonitor->m_sdrMinLuminance,
-                   ctx.m_data.pMonitor->m_sdrMaxLuminance);
+    passCMUniforms(ctx, shader, imageDescription, g_pHyprRenderer->workBufferImageDescription(ctx), true, ctx.m_data.pMonitor->m_sdrMinLuminance);
 }
 
 void CHyprOpenGLImpl::passCMUniforms(CRenderContext& ctx, WP<CShader> shader, const PImageDescription imageDescription, const SCMSettings& settings) {
-    passCMUniforms(shader, imageDescription, g_pHyprRenderer->workBufferImageDescription(ctx), true, ctx.m_data.pMonitor->m_sdrMinLuminance, ctx.m_data.pMonitor->m_sdrMaxLuminance,
-                   settings);
+    passCMUniforms(shader, imageDescription, g_pHyprRenderer->workBufferImageDescription(ctx), true, ctx.m_data.pMonitor->m_sdrMinLuminance, settings);
 }
 
 WP<CShader> CHyprOpenGLImpl::renderScreenShaderInternal(CRenderContext& ctx) {
@@ -1448,8 +1459,8 @@ WP<CShader> CHyprOpenGLImpl::renderToFBInternal(CRenderContext& ctx, SP<ITexture
             return tex->m_imageDescription;
 
         // if valid CM surface, use that as a source
-        if (surface.valid() && surface->m_colorManagement)
-            return CImageDescription::from(surface->m_colorManagement->imageDescription());
+        if (surface.valid() && surface->m_current.imageDescription)
+            return surface->m_current.imageDescription;
 
         if (data.cmBackToSRGB)
             return tex->m_imageDescription ? tex->m_imageDescription : WORK_BUFFER_IMAGE_DESCRIPTION;
@@ -1494,9 +1505,11 @@ WP<CShader> CHyprOpenGLImpl::renderToFBInternal(CRenderContext& ctx, SP<ITexture
     if (data.discardActive)
         shaderFeatures |= SH_FEAT_DISCARD;
 
-    const bool skipCM = !*PENABLECM || !m_cmSupported                   /* CM unsupported or disabled */
-        || ctx.m_data.pMonitor->doesNoShaderCM()                        /* no shader needed */
-        || !SOURCE_IMAGE_DESCRIPTION->needsCM(TARGET_IMAGE_DESCRIPTION) /* Source and target have matching image descriptions */
+    // The unmodified copy is always BT.709 SDR, so it still needs CM when only the target matches the source.
+    const bool mirrorNeedsCM = (globalFeatures(ctx) & SH_FEAT_MIRROR) && TARGET_IMAGE_DESCRIPTION->needsCM(DEFAULT_SRGB_IMAGE_DESCRIPTION);
+    const bool skipCM        = !*PENABLECM || !m_cmSupported                                /* CM unsupported or disabled */
+        || ctx.m_data.pMonitor->doesNoShaderCM()                                            /* no shader needed */
+        || (!SOURCE_IMAGE_DESCRIPTION->needsCM(TARGET_IMAGE_DESCRIPTION) && !mirrorNeedsCM) /* Source and target have matching image descriptions */
         ;
 
     if (ctx.m_data.pMonitor->needsACopyFB())
@@ -1511,7 +1524,7 @@ WP<CShader> CHyprOpenGLImpl::renderToFBInternal(CRenderContext& ctx, SP<ITexture
 
     if (!skipCM) {
         const auto settings = g_pHyprRenderer->getCMSettings(ctx, SOURCE_IMAGE_DESCRIPTION, TARGET_IMAGE_DESCRIPTION, surface.valid() ? surface.lock() : nullptr, true,
-                                                             ctx.m_data.pMonitor->m_sdrMinLuminance, ctx.m_data.pMonitor->m_sdrMaxLuminance, true);
+                                                             ctx.m_data.pMonitor->m_sdrMinLuminance, true);
 
         shaderFeatures |= SH_FEAT_CM;
 
@@ -1532,7 +1545,7 @@ WP<CShader> CHyprOpenGLImpl::renderToFBInternal(CRenderContext& ctx, SP<ITexture
             shader = getShaderVariant(SH_FRAG_SURFACE, shaderFeatures | globalFeatures(ctx), settings.sourceTF, settings.targetTF);
         shader = useShader(shader);
 
-        passCMUniforms(shader, SOURCE_IMAGE_DESCRIPTION, TARGET_IMAGE_DESCRIPTION, true, ctx.m_data.pMonitor->m_sdrMinLuminance, ctx.m_data.pMonitor->m_sdrMaxLuminance, settings);
+        passCMUniforms(shader, SOURCE_IMAGE_DESCRIPTION, TARGET_IMAGE_DESCRIPTION, true, ctx.m_data.pMonitor->m_sdrMinLuminance, settings);
     } else {
         if (!shader)
             shader = getShaderVariant(SH_FRAG_SURFACE, shaderFeatures | globalFeatures(ctx));
@@ -1994,11 +2007,10 @@ void CHyprOpenGLImpl::renderTextureWithBlurInternal(CRenderContext& ctx, SP<ITex
 }
 
 static SShaderVariant getDecoVariant(CRenderContext& ctx) {
-    const bool         IS_ICC          = g_pHyprRenderer->workBufferImageDescription(ctx)->value().icc.present;
-    const auto         settings        = g_pHyprRenderer->getCMSettings(ctx, g_pHyprRenderer->workBufferImageDescription(ctx), getDefaultImageDescription(), nullptr, true,
-                                                                        ctx.m_data.pMonitor->m_sdrMinLuminance, ctx.m_data.pMonitor->m_sdrMaxLuminance);
-    const auto         uniformSettings = g_pHyprRenderer->getCMSettings(ctx, getDefaultImageDescription(), g_pHyprRenderer->workBufferImageDescription(ctx), nullptr, true,
-                                                                        ctx.m_data.pMonitor->m_sdrMinLuminance, ctx.m_data.pMonitor->m_sdrMaxLuminance);
+    const bool IS_ICC = g_pHyprRenderer->workBufferImageDescription(ctx)->value().icc.present;
+    // Decorations are sRGB drawn into the work buffer, the same conversion passCMUniforms sets up for them.
+    const auto settings =
+        g_pHyprRenderer->getCMSettings(ctx, getDefaultImageDescription(), g_pHyprRenderer->workBufferImageDescription(ctx), nullptr, true, ctx.m_data.pMonitor->m_sdrMinLuminance);
 
     ShaderFeatureFlags features = SH_FEAT_ROUNDING | SH_FEAT_CM | globalFeatures(ctx);
     if (IS_ICC)
@@ -2012,7 +2024,7 @@ static SShaderVariant getDecoVariant(CRenderContext& ctx) {
         if (settings.needsSDRmod)
             features |= SH_FEAT_SDR_MOD;
     }
-    return {.features = features, .sourceTF = uniformSettings.sourceTF, .targetTF = uniformSettings.targetTF};
+    return {.features = features, .sourceTF = settings.sourceTF, .targetTF = settings.targetTF};
 }
 
 void CHyprOpenGLImpl::renderBorder(CRenderContext& ctx, const CBox& box, const Config::CGradientValueData& grad, SBorderRenderData data) {

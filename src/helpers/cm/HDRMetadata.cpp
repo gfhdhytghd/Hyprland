@@ -13,9 +13,7 @@ hdr_output_metadata              NColorManagement::createHDRMetadata(const SImag
         case CM_TRANSFER_FUNCTION_GAMMA22:
         case CM_TRANSFER_FUNCTION_SRGB: eotf = 0; break; // used to send primaries and luminances to AQ. ignored for now
         case CM_TRANSFER_FUNCTION_ST2084_PQ: eotf = 2; break;
-        case CM_TRANSFER_FUNCTION_EXT_LINEAR:
-            eotf = 2;
-            break; // should be Windows scRGB
+        // Linear content is never sent to the display; it is composited into the output's PQ encoding.
         // case CM_TRANSFER_FUNCTION_HLG: eotf = 3; break; TODO check display capabilities first
         default: return NO_HDR_METADATA; // empty metadata for SDR
     }
@@ -23,9 +21,9 @@ hdr_output_metadata              NColorManagement::createHDRMetadata(const SImag
     const auto toNits  = [](double value) { return sc<uint16_t>(std::clamp(std::round(value), 0.0, 65535.0)); };
     const auto to16Bit = [](float value) { return sc<uint16_t>(std::clamp(std::round(value * 50000.0), 0.0, 65535.0)); };
 
-    const auto colorimetry = settings.masteringPrimaries != SPCPRimaries{} ? settings.masteringPrimaries : settings.getPrimaries();
-    const auto luminances  = settings.masteringLuminances.max > 0 ? settings.masteringLuminances :
-                                                                    SImageDescription::SPCMasteringLuminances{.min = settings.luminances.min, .max = settings.luminances.max};
+    // CTA-861.3: zero fields mean unknown. The primary volume is the encoding range, not a mastering display.
+    const auto colorimetry = settings.masteringPrimaries;
+    const auto luminances  = settings.masteringLuminances.max > 0 ? settings.masteringLuminances : SImageDescription::SPCMasteringLuminances{.min = 0, .max = 0};
 
     LOG(Log::TRACE, "ColorManagement primaries {},{} {},{} {},{} {},{}", colorimetry.red.x, colorimetry.red.y, colorimetry.green.x, colorimetry.green.y, colorimetry.blue.x,
         colorimetry.blue.y, colorimetry.white.x, colorimetry.white.y);

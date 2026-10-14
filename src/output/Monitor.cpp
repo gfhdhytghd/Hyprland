@@ -38,6 +38,7 @@
 #include "../layout/space/Space.hpp"
 #include "../layout/algorithm/Algorithm.hpp"
 #include "../i18n/Engine.hpp"
+#include "../helpers/cm/HardwareCM.hpp"
 #include "../helpers/cm/ColorManagement.hpp"
 #include "../state/MonitorState.hpp"
 #include "../state/MonitorLayoutController.hpp"
@@ -518,9 +519,10 @@ void CMonitor::applyCMType(NCMType::eCMType cmType, NTransferFunction::eTF cmSdr
     switch (cmType) {
         case NCMType::CM_SRGB:
             m_imageDescription = CImageDescription::from({.transferFunction = chosenSdrEotf,
+                                                          .primariesNameSet = true,
                                                           .primariesNamed   = NColorManagement::CM_PRIMARIES_SRGB,
                                                           .primaries        = NColorManagement::getPrimaries(NColorManagement::CM_PRIMARIES_SRGB)});
-            break; // assumes SImageDescription defaults to sRGB
+            break;
         case NCMType::CM_WIDE:
             m_imageDescription = CImageDescription::from({.transferFunction    = chosenSdrEotf,
                                                           .primariesNameSet    = true,
@@ -562,16 +564,20 @@ void CMonitor::applyCMType(NCMType::eCMType cmType, NTransferFunction::eTF cmSdr
                                                           .maxFALL             = maxFALL});
             break;
         case NCMType::CM_EDID:
-            m_imageDescription = CImageDescription::from({.transferFunction    = chosenSdrEotf,
-                                                          .primariesNameSet    = false,
-                                                          .primariesNamed      = NColorManagement::CM_PRIMARIES_BT2020,
-                                                          .primaries           = masteringPrimaries,
-                                                          .masteringPrimaries  = masteringPrimaries,
-                                                          .masteringLuminances = masteringLuminances,
-                                                          .maxCLL              = maxCLL,
-                                                          .maxFALL             = maxFALL});
+            // Native panel primaries are sent with the default colorimetry; without EDID chromaticities the panel is assumed to be sRGB.
+            m_imageDescription = CImageDescription::from(
+                {.transferFunction = chosenSdrEotf,
+                 .primariesNameSet = !m_output->parsedEDID.chromaticityCoords.has_value(),
+                 .primariesNamed   = NColorManagement::CM_PRIMARIES_SRGB,
+                 .primaries        = m_output->parsedEDID.chromaticityCoords.has_value() ? masteringPrimaries : NColorManagement::getPrimaries(NColorManagement::CM_PRIMARIES_SRGB),
+                 .masteringPrimaries  = masteringPrimaries,
+                 .masteringLuminances = masteringLuminances,
+                 .maxCLL              = maxCLL,
+                 .maxFALL             = maxFALL});
             break;
         case NCMType::CM_HDR:
+        case NCMType::CM_HDR_EDID:
+            // HDR10 signals BT.2020 colorimetry, so pixels are always encoded in BT.2020. The panel's EDID gamut is only its mastering volume.
             m_imageDescription = CImageDescription::from({.transferFunction    = NColorManagement::CM_TRANSFER_FUNCTION_ST2084_PQ,
                                                           .primariesNameSet    = true,
                                                           .primariesNamed      = NColorManagement::CM_PRIMARIES_BT2020,
@@ -583,21 +589,6 @@ void CMonitor::applyCMType(NCMType::eCMType cmType, NTransferFunction::eTF cmSdr
                                                           .masteringLuminances = masteringLuminances,
                                                           .maxCLL              = maxCLL,
                                                           .maxFALL             = maxFALL});
-            break;
-        case NCMType::CM_HDR_EDID:
-            m_imageDescription = CImageDescription::from(
-                {.transferFunction = NColorManagement::CM_TRANSFER_FUNCTION_ST2084_PQ,
-                 .primariesNameSet = false,
-                 .primariesNamed   = NColorManagement::CM_PRIMARIES_BT2020,
-                 .primaries = m_output->parsedEDID.chromaticityCoords.has_value() ? masteringPrimaries : NColorManagement::getPrimaries(NColorManagement::CM_PRIMARIES_BT2020),
-                 .masteringPrimaries  = masteringPrimaries,
-                 .luminances          = {.min       = DEFAULT_HDR_IMAGE_DESCRIPTION->value().getTFMinLuminance(),
-                                         .max       = DEFAULT_HDR_IMAGE_DESCRIPTION->value().getTFMaxLuminance(),
-                                         .reference = DEFAULT_HDR_IMAGE_DESCRIPTION->value().getTFRefLuminance()},
-                 .masteringLuminances = masteringLuminances,
-                 .maxCLL              = maxCLL,
-                 .maxFALL             = maxFALL});
-
             break;
         default: UNREACHABLE();
     }
@@ -633,6 +624,13 @@ bool CMonitor::applyMonitorRuleSoft(Config::CMonitorRule&& pMonitorRule) {
         switch (m_cmType) {
             case NCMType::CM_AUTO: m_cmType = m_enabled10bit && supportsWideColor() ? NCMType::CM_WIDE : NCMType::CM_SRGB; break;
             case NCMType::CM_EDID: m_cmType = m_output->parsedEDID.chromaticityCoords.has_value() ? NCMType::CM_EDID : NCMType::CM_SRGB; break;
+            case NCMType::CM_WIDE:
+                // BT.2020 pixels the connector can't signal would be shown with the display's default colorimetry.
+                if (!canSignalBT2020()) {
+                    LOG(Log::WARN, "Output {} can't signal BT2020_RGB colorimetry, using sRGB instead of the wide color gamut", m_name);
+                    m_cmType = NCMType::CM_SRGB;
+                }
+                break;
             case NCMType::CM_HDR:
             case NCMType::CM_HDR_EDID: m_cmType = supportsHDR() ? m_cmType : NCMType::CM_SRGB; break;
             default: break;
@@ -641,7 +639,6 @@ bool CMonitor::applyMonitorRuleSoft(Config::CMonitorRule&& pMonitorRule) {
         m_sdrEotf = m_activeMonitorRule.m_sdrEotf;
 
         m_sdrMinLuminance    = m_activeMonitorRule.m_sdrMinLuminance;
-        m_sdrMaxLuminance    = m_activeMonitorRule.m_sdrMaxLuminance;
         m_referenceLuminance = m_activeMonitorRule.m_referenceLuminance;
 
         m_minLuminance    = m_activeMonitorRule.m_minLuminance;
@@ -699,6 +696,19 @@ bool CMonitor::applyMonitorRule(Config::CMonitorRule&& pMonitorRule) {
     static auto PDISABLESCALECHECKS = CConfigValue<Config::INTEGER>("debug:disable_scale_checks");
 
     LOG(Log::DEBUG, "Applying monitor rule for {}", m_name);
+
+    // Mode tests and commits below may move the output to a CRTC with other LUT sizes or without a CTM, where the current color
+    // state would fail every one of them. LUTs are rebuilt after the commit, the renderer restages the CTM.
+    m_hardwareCM.reset();
+    m_hardwareCMFailed = false;
+    if (!m_output->state->state().gammaLut.empty())
+        m_output->state->setGammaLut({});
+    if (!m_output->state->state().degammaLut.empty())
+        m_output->state->setDeGammaLut({});
+    m_output->state->setCTM(Mat3x3::identity());
+    m_noShaderCTM = false;
+    m_ctmUpdated  = true;
+    m_previousFSWindow.reset();
 
     if (m_forceSize.has_value())
         m_activeMonitorRule.m_resolution = m_forceSize.value();
@@ -1052,6 +1062,7 @@ bool CMonitor::applyMonitorRule(Config::CMonitorRule&& pMonitorRule) {
     }
 
     updateVCGTRamps();
+    applyColorLuts();
 
     LOG(Log::DEBUG, "Monitor {} data dump: res {:X}@{:.2f}Hz, scale {:.2f}, transform {}, pos {:X}, 10b {}", m_name, m_pixelSize, m_refreshRate, m_scale, sc<int>(m_transform),
         m_position, sc<int>(m_enabled10bit));
@@ -1939,6 +1950,14 @@ bool CMonitor::updateTearing() {
     return m_tearingState.activelyTearing;
 }
 
+static bool isCompatibleTF(eTransferFunction sourceTF, eTransferFunction targetTF) {
+    const auto sdrEOTF = NTransferFunction::fromConfig();
+    return sourceTF == targetTF                                                                                        // same
+        || (sdrEOTF == NTransferFunction::TF_FORCED_GAMMA22 && sourceTF == NColorManagement::CM_TRANSFER_FUNCTION_SRGB // forced source gamma22 to output gamma22
+            && targetTF == NColorManagement::CM_TRANSFER_FUNCTION_GAMMA22)                                             //
+        ;
+}
+
 uint16_t CMonitor::isDSBlocked(bool full) {
     uint16_t    reasons        = 0;
     static auto PDIRECTSCANOUT = CConfigValue<Config::INTEGER>("render:direct_scanout");
@@ -2023,17 +2042,26 @@ uint16_t CMonitor::isDSBlocked(bool full) {
             return reasons;
     }
 
-    const bool surfaceIsHDR   = PSURFACE->m_colorManagement && PSURFACE->m_colorManagement->isHDR();
-    const bool surfaceIsScRGB = PSURFACE->m_colorManagement && PSURFACE->m_colorManagement->imageDescription().transferFunction == CM_TRANSFER_FUNCTION_EXT_LINEAR;
+    const auto& surfaceDescription = (PSURFACE->m_current.imageDescription ? PSURFACE->m_current.imageDescription : getDefaultImageDescription())->value();
+    const bool  surfaceIsHDR       = NColorManagement::isHDR(surfaceDescription);
+    const bool  surfaceIsScRGB     = surfaceDescription.transferFunction == CM_TRANSFER_FUNCTION_EXT_LINEAR;
+    const bool  surfaceIsHLG       = surfaceDescription.transferFunction == CM_TRANSFER_FUNCTION_HLG;
+    const auto  sourceTF           = surfaceDescription.transferFunction;
+    const auto& output             = m_imageDescription->value();
 
-    const bool surfaceIsHLG = surfaceIsHDR && PSURFACE->m_colorManagement->imageDescription().transferFunction == CM_TRANSFER_FUNCTION_HLG;
+    // SDR buffers can be converted exactly by the display hardware, see buildHardwareCM.
+    const bool hardwareCM = !surfaceIsHDR && hardwareCMFor(surfaceDescription);
+
     if (surfaceIsScRGB || surfaceIsHLG)
         reasons |= DS_BLOCK_CM; // These encodings require conversion to the output's PQ signalling.
-    else if (*PNONSHADER != CM_NS_IGNORE) {
-        if (!surfaceIsHDR && needsCM() && !canNoShaderCM(true))
+    else if (!isCompatibleTF(sourceTF, output.transferFunction) || surfaceIsHDR != inHDR()) {
+        if (!hardwareCM)
+            reasons |= DS_BLOCK_CM; // The buffer must already use the encoding that is signalled to the display, even with non_shader_cm = ignore.
+    } else if (*PNONSHADER != CM_NS_IGNORE) {
+        if (!surfaceIsHDR && needsCM() && !canNoShaderCM(true) && !hardwareCM)
             reasons |= DS_BLOCK_CM; // block SDR that needs CM while non-shader CM isn't available
         else if (surfaceIsHDR) {
-            const auto& source = PSURFACE->m_colorManagement->imageDescription();
+            const auto& source = surfaceDescription;
             const auto& target = m_imageDescription->value();
             if (!inHDR() || source.transferFunction != target.transferFunction || source.luminances != target.luminances ||
                 (source.getPrimaries() != target.getPrimaries() && !canNoShaderCM(true)))
@@ -2057,7 +2085,8 @@ bool CMonitor::attemptDirectScanout() {
     auto       PBUFFER    = PSURFACE->m_current.buffer.m_buffer;
 
     // #TODO this entire bit needs figuring out, vrr goes down the drain without it
-    if (PBUFFER == m_output->state->state().buffer && *PSAME) {
+    // The same buffer is only resubmitted for cursor updates, so a hardware conversion that needs restaging takes the full path.
+    if (PBUFFER == m_output->state->state().buffer && *PSAME && !scanoutCMNeedsUpdate(PSURFACE)) {
         PSURFACE->presentFeedback(Time::steadyNow(), m_self.lock());
         PROTO::presentation->tagQueued(m_self.lock(), 0, m_tearingState.activelyTearing, m_vrrActive);
 
@@ -2110,7 +2139,25 @@ bool CMonitor::attemptDirectScanout() {
         m_output->state->resetExplicitFences();
     }};
 
-    const bool  NEEDS_TEST = !m_lastScanout || m_drmFormat != params.format; // do not retest while it's active
+    // A buffer the CTM alone can't convert to the signalled encoding goes through the hardware DEGAMMA -> CTM -> GAMMA pipeline.
+    const auto& SURFACE_DESCRIPTION = scanoutDescription(PSURFACE);
+    const bool  HAD_HARDWARE_CM     = usesHardwareCM();
+    bool        hardwareCMChanged   = false;
+    if (needsCM() && !canNoShaderCM(true) && stageScanoutCM(SURFACE_DESCRIPTION, hardwareCMChanged)) {
+        if (hardwareCMChanged)
+            LOG(Log::DEBUG, "attemptDirectScanout: converting the buffer with the display hardware");
+    } else {
+        hardwareCMChanged = HAD_HARDWARE_CM;
+        clearScanoutCM();
+    }
+    const bool  HARDWARE_CM_CHANGED = hardwareCMChanged;
+    CScopeGuard rollbackHardwareCM  = {[this, HAD_HARDWARE_CM, &scanoutCommitted]() {
+        // Composited frames are converted by the shader, a staged hardware conversion would apply twice.
+        if (!scanoutCommitted && !HAD_HARDWARE_CM)
+            clearScanoutCM();
+    }};
+
+    const bool  NEEDS_TEST = !m_lastScanout || m_drmFormat != params.format || HARDWARE_CM_CHANGED; // do not retest while it's active
     if (m_drmFormat != params.format) {
         m_output->state->setFormat(params.format);
         m_drmFormat = params.format;
@@ -2123,6 +2170,12 @@ bool CMonitor::attemptDirectScanout() {
 
     if (NEEDS_TEST && !m_state.test()) {
         LOG(Log::TRACE, "attemptDirectScanout: failed basic test");
+        if (usesHardwareCM()) {
+            // Don't keep retrying a pipeline the driver rejects, composite with shader CM instead.
+            LOG(Log::WARN, "Output {} rejected hardware color management, falling back to shader color management", m_name);
+            m_hardwareCMFailed = true;
+            clearScanoutCM();
+        }
         return false;
     }
 
@@ -2192,6 +2245,7 @@ void CMonitor::handleDSleave() {
     m_lastScanout.reset();
     m_previousFSWindow.reset(); // recalc fs settings
     m_directScanoutIsActive = false;
+    clearScanoutCM();
 
     // reset DRM format, but only if needed since it might modeset
     if (m_output->state->state().drmFormat != m_prevDrmFormat)
@@ -2355,6 +2409,10 @@ void CMonitor::onCursorMovedOnMonitor() {
 }
 
 bool CMonitor::supportsWideColor() {
+    // BT.2020 content must be signalled as such, which a DRM connector can only do when it lists BT2020_RGB.
+    if (!canSignalBT2020())
+        return false;
+
     switch (m_supportsWideColor) {
         case -1: return false;
         case 1: return true;
@@ -2378,7 +2436,7 @@ float CMonitor::minLuminance(float defaultValue) {
 }
 
 int CMonitor::referenceLuminance() const {
-    return m_referenceLuminance > 0 ? m_referenceLuminance : HDR_REF_LUMINANCE;
+    return m_referenceLuminance > 0 ? m_referenceLuminance : sc<int>(HDR_REF_LUMINANCE);
 }
 
 int CMonitor::maxLuminance(int defaultValue) {
@@ -2390,20 +2448,21 @@ int CMonitor::maxLuminance(int defaultValue) {
 }
 
 int CMonitor::maxAvgLuminance(int defaultValue) {
-    return m_maxAvgLuminance >= 0 ? m_maxAvgLuminance :
-                                    (m_output->parsedEDID.hdrMetadata.has_value() ? m_output->parsedEDID.hdrMetadata->desiredMaxFrameAverageLuminance : defaultValue);
+    return m_maxAvgLuminance > 0 ? m_maxAvgLuminance :
+                                   (m_output->parsedEDID.hdrMetadata.has_value() ? m_output->parsedEDID.hdrMetadata->desiredMaxFrameAverageLuminance : defaultValue);
 }
 
 float CMonitor::maxFALL() {
-    return m_maxAvgLuminance >= 0 ? m_maxAvgLuminance : (m_output->parsedEDID.hdrMetadata.has_value() ? m_output->parsedEDID.hdrMetadata->desiredMaxFrameAverageLuminance : 0);
+    return maxAvgLuminance(0);
 }
 
 float CMonitor::maxCLL() {
-    return m_maxLuminance >= 0 ? m_maxLuminance : (m_output->parsedEDID.hdrMetadata.has_value() ? m_output->parsedEDID.hdrMetadata->desiredContentMaxLuminance : 0);
+    return maxLuminance(0);
 }
 
 bool CMonitor::wantsWideColor() {
-    return supportsWideColor() && (wantsHDR() || m_imageDescription->value().primariesNamed == CM_PRIMARIES_BT2020);
+    const auto& description = m_imageDescription->value();
+    return supportsWideColor() && (wantsHDR() || (description.primariesNameSet && description.primariesNamed == CM_PRIMARIES_BT2020));
 }
 
 bool CMonitor::wantsHDR() {
@@ -2423,7 +2482,7 @@ std::optional<NColorManagement::PImageDescription> CMonitor::getFSImageDescripti
 
     const auto ROOT_SURF = FS_WINDOW->wlSurface()->resource();
     const auto SURF      = ROOT_SURF->findWithCM();
-    return SURF ? NColorManagement::CImageDescription::from(SURF->m_colorManagement->imageDescription()) : getDefaultImageDescription();
+    return SURF ? SURF->m_current.imageDescription : getDefaultImageDescription();
 }
 
 NColorManagement::SPCPRimaries CMonitor::getMasteringPrimaries() {
@@ -2440,7 +2499,7 @@ NColorManagement::SPCPRimaries CMonitor::getMasteringPrimaries() {
 NColorManagement::SImageDescription::SPCMasteringLuminances CMonitor::getMasteringLuminances() {
     return {
         .min = m_minLuminance >= 0 ? m_minLuminance : (m_output->parsedEDID.hdrMetadata.has_value() ? m_output->parsedEDID.hdrMetadata->desiredContentMinLuminance : 0),
-        .max = m_maxLuminance >= 0 ? m_maxLuminance : (m_output->parsedEDID.hdrMetadata.has_value() ? m_output->parsedEDID.hdrMetadata->desiredContentMaxLuminance : 0),
+        .max = sc<uint32_t>(maxLuminance(0)),
     };
 }
 
@@ -2462,17 +2521,6 @@ bool CMonitor::needsCM() {
     return SRC_DESC.has_value() && SRC_DESC.value() != m_imageDescription;
 }
 
-static bool isCompatibleTF(eTransferFunction sourceTF, eTransferFunction targetTF) {
-    static auto PNONSHADER = CConfigValue<Hyprlang::INT>("render:non_shader_cm");
-    const auto  sdrEOTF    = NTransferFunction::fromConfig();
-    return sourceTF == targetTF                                                                                                         // same
-        || (sdrEOTF == NTransferFunction::TF_FORCED_GAMMA22 && sourceTF == NColorManagement::CM_TRANSFER_FUNCTION_SRGB                  // forced source gamma22 to output gamma22
-            && targetTF == NColorManagement::CM_TRANSFER_FUNCTION_GAMMA22)                                                              //
-        || (*PNONSHADER == CM_NS_ONDEMAND                                                                                               // FIXME incorrect but good enough for DS
-            && (sourceTF == NColorManagement::CM_TRANSFER_FUNCTION_GAMMA22 || sourceTF == NColorManagement::CM_TRANSFER_FUNCTION_SRGB)  //
-            && (targetTF == NColorManagement::CM_TRANSFER_FUNCTION_GAMMA22 || targetTF == NColorManagement::CM_TRANSFER_FUNCTION_SRGB)) //
-        ;
-}
 
 // TODO support more drm properties
 bool CMonitor::canNoShaderCM(bool forDSmode) {
@@ -2495,14 +2543,20 @@ bool CMonitor::canNoShaderCM(bool forDSmode) {
 
     LOG(Log::TRACE, "CM: can no shder compares src={} to output={}", SRC_DESC_VALUE, m_imageDescription->value());
 
-    // only primaries differ
-    return (
-        isCompatibleTF(SRC_DESC_VALUE.transferFunction, DST_DESC->value().transferFunction) //
-        && SRC_DESC_VALUE.transferFunctionPower == DST_DESC->value().transferFunctionPower  //
-        && (!inHDR() || SRC_DESC_VALUE.luminances == DST_DESC->value().luminances)
-        // not used by shaders atm
-        // && SRC_DESC_VALUE.masteringLuminances == m_imageDescription->value().masteringLuminances && SRC_DESC_VALUE.maxCLL == m_imageDescription->value().maxCLL && SRC_DESC_VALUE.maxFALL == m_imageDescription->value().maxFALL
-    );
+    const auto& DST_DESC_VALUE = DST_DESC->value();
+    const auto  linear         = [](eTransferFunction tf) { return tf == CM_TRANSFER_FUNCTION_LINEAR || tf == CM_TRANSFER_FUNCTION_EXT_LINEAR; };
+    // The KMS CTM runs between the (unset) degamma and gamma LUTs, so a primaries conversion is only correct on linear values.
+    const bool primariesOk = SRC_DESC_VALUE.getPrimaries() == DST_DESC_VALUE.getPrimaries() || (linear(SRC_DESC_VALUE.transferFunction) && linear(DST_DESC_VALUE.transferFunction));
+    // Content brighter than the target needs tone mapping, which a CTM can't do.
+    const auto sourcePeak =
+        SRC_DESC_VALUE.maxCLL > 0 ? SRC_DESC_VALUE.maxCLL : (SRC_DESC_VALUE.masteringLuminances.max > 0 ? SRC_DESC_VALUE.masteringLuminances.max : SRC_DESC_VALUE.luminances.max);
+    const auto destinationPeak = DST_DESC_VALUE.masteringLuminances.max > 0 ? DST_DESC_VALUE.masteringLuminances.max : DST_DESC_VALUE.luminances.max;
+
+    return isCompatibleTF(SRC_DESC_VALUE.transferFunction, DST_DESC_VALUE.transferFunction) //
+        && SRC_DESC_VALUE.transferFunctionPower == DST_DESC_VALUE.transferFunctionPower     //
+        && SRC_DESC_VALUE.luminances == DST_DESC_VALUE.luminances                           //
+        && sourcePeak <= destinationPeak * 1.01f && primariesOk                             //
+        && (SRC_DESC_VALUE.getPrimaries() == DST_DESC_VALUE.getPrimaries() || m_output->supportsCTM());
 }
 
 bool CMonitor::doesNoShaderCM() {
@@ -2576,23 +2630,166 @@ void CMonitor::updateVCGTRamps() {
     }
 
     if (!m_imageDescription->value().icc.vcgt) {
-        if (m_vcgtRampsSet)
-            m_output->state->setGammaLut({});
-
+        m_vcgtRamp.clear();
         m_vcgtRampsSet = false;
+        applyColorLuts();
         return;
     }
 
-    // build table
-    auto table = resampleInterleavedToKms(*m_imageDescription->value().icc.vcgt, gammaSize);
-
-    m_output->state->setGammaLut(table);
-
+    m_vcgtRamp     = resampleInterleavedToKms(*m_imageDescription->value().icc.vcgt, gammaSize);
     m_vcgtRampsSet = true;
+    applyColorLuts();
 }
 
 bool CMonitor::gammaRampsInUse() {
     return m_vcgtRampsSet;
+}
+
+void CMonitor::setClientGammaRamp(const std::vector<uint16_t>& ramp) {
+    m_clientGammaRamp = ramp;
+    applyColorLuts();
+    scheduleFrame(Aquamarine::IOutput::scheduleFrameReason::AQ_SCHEDULE_NEEDS_FRAME);
+}
+
+void CMonitor::applyColorLuts() {
+    if (!m_output)
+        return;
+
+    // VCGT and gamma-control are exclusive, see CGammaControl. Both act on the output signal, after the hardware CM encoding.
+    const auto& ramp    = m_vcgtRampsSet ? m_vcgtRamp : m_clientGammaRamp;
+    const auto  gamma   = composeGammaRamp(m_hardwareCM ? m_hardwareCM->gamma : std::vector<uint16_t>{}, ramp, m_output->getGammaSize());
+    const auto  degamma = m_hardwareCM ? m_hardwareCM->degamma : std::vector<uint16_t>{};
+    const auto& STATE   = m_output->state->state();
+    if (STATE.gammaLut != gamma)
+        m_output->state->setGammaLut(gamma);
+    if (STATE.degammaLut != degamma)
+        m_output->state->setDeGammaLut(degamma);
+}
+
+WP<SHardwareCM> CMonitor::hardwareCMFor(const SImageDescription& source) {
+    static auto PNONSHADER = CConfigValue<Config::INTEGER>("render:non_shader_cm");
+    if (!m_output || m_hardwareCMFailed || (*PNONSHADER != CM_NS_ALWAYS && *PNONSHADER != CM_NS_ONDEMAND))
+        return {};
+
+    // Same source transfer function as IHyprRenderer::getCMSettings picks for a color managed surface.
+    auto effective = source;
+    if (NTransferFunction::fromConfig() == NTransferFunction::TF_FORCED_GAMMA22 && effective.transferFunction == CM_TRANSFER_FUNCTION_SRGB)
+        effective.transferFunction = CM_TRANSFER_FUNCTION_GAMMA22;
+
+    // The user CTM acts on the encoded output of composited frames. Kept with non_shader_cm_interop, its diagonal folds into the encoding,
+    // anything else has no hardware form after the GAMMA LUT.
+    static auto PNSINTEROP = CConfigValue<Config::INTEGER>("render:non_shader_cm_interop");
+    const auto  FSWINDOW   = Fullscreen::controller()->getFullscreenWindow(m_self.lock());
+    const bool  INTEROP    = *PNSINTEROP == 1 || (*PNSINTEROP == 2 && FSWINDOW && FSWINDOW->getContentType() == CONTENT_TYPE_NONE);
+    const auto& USER_CTM   = INTEROP ? m_ctm : Mat3x3::identity();
+    const auto& USER       = USER_CTM.getMatrix();
+    if (USER[1] != 0 || USER[2] != 0 || USER[3] != 0 || USER[5] != 0 || USER[6] != 0 || USER[7] != 0)
+        return {};
+
+    const SHardwareCMParams params = {
+        .degammaSize   = m_output->getDeGammaSize(),
+        .gammaSize     = m_output->getGammaSize(),
+        .supportsCTM   = m_output->supportsCTM(),
+        .sdrBrightness = m_sdrBrightness,
+        .sdrSaturation = m_sdrSaturation,
+        .sdrBlack      = m_sdrMinLuminance,
+        .outputGain    = {USER[0], USER[4], USER[8]},
+    };
+
+    auto&      cache    = m_hardwareCMCache;
+    const auto sourceId = CImageDescription::from(effective)->id();
+    const auto targetId = m_imageDescription->id();
+    if (cache.mode != *PNONSHADER || cache.sourceId != sourceId || cache.targetId != targetId || cache.degammaSize != params.degammaSize || cache.gammaSize != params.gammaSize ||
+        cache.supportsCTM != params.supportsCTM || cache.sdrBrightness != params.sdrBrightness || cache.sdrSaturation != params.sdrSaturation ||
+        cache.sdrBlack != m_sdrMinLuminance || cache.outputGain != params.outputGain) {
+        auto result         = buildHardwareCM(effective, m_imageDescription->value(), params);
+        cache.result        = result ? makeUnique<SHardwareCM>(std::move(*result)) : nullptr;
+        cache.mode          = *PNONSHADER;
+        cache.sourceId      = sourceId;
+        cache.targetId      = targetId;
+        cache.degammaSize   = params.degammaSize;
+        cache.gammaSize     = params.gammaSize;
+        cache.supportsCTM   = params.supportsCTM;
+        cache.sdrBrightness = params.sdrBrightness;
+        cache.sdrSaturation = params.sdrSaturation;
+        cache.sdrBlack      = m_sdrMinLuminance;
+        cache.outputGain    = params.outputGain;
+    }
+
+    return cache.result;
+}
+
+bool CMonitor::usesHardwareCM() const {
+    return m_hardwareCM != nullptr;
+}
+
+bool CMonitor::canSignalBT2020() const {
+    // Other backends have no colorimetry signalling of their own.
+    if (!m_output || m_output->getBackend()->type() != Aquamarine::AQ_BACKEND_DRM)
+        return true;
+    return supportsColorspace("BT2020_RGB");
+}
+
+bool CMonitor::supportsColorspace(const std::string& name) const {
+    if (!m_output)
+        return false;
+    const auto colorspaces = m_output->getSupportedColorspaces();
+    return std::ranges::any_of(colorspaces, [&name](const auto& colorspace) { return colorspace.name == name; });
+}
+
+bool CMonitor::stageCTM(const Mat3x3& ctm) {
+    if (!m_output)
+        return false;
+    if (ctm != Mat3x3::identity() && !m_output->supportsCTM()) {
+        static bool warned = false;
+        if (!warned)
+            LOG(Log::WARN, "Output {} has no CTM support, ignoring a color transformation matrix", m_name);
+        warned = true;
+        return false;
+    }
+    m_output->state->setCTM(ctm);
+    return true;
+}
+
+const SImageDescription& CMonitor::scanoutDescription(SP<CWLSurfaceResource> surface) {
+    return (surface->m_current.imageDescription ? surface->m_current.imageDescription : getDefaultImageDescription())->value();
+}
+
+bool CMonitor::scanoutCMNeedsUpdate(SP<CWLSurfaceResource> surface) {
+    const auto WANTED = needsCM() && !canNoShaderCM(true) ? hardwareCMFor(scanoutDescription(surface)) : WP<SHardwareCM>{};
+    if (!WANTED)
+        return usesHardwareCM();
+    return !m_hardwareCM || m_ctmUpdated || m_hardwareCM->degamma != WANTED->degamma || m_hardwareCM->gamma != WANTED->gamma || m_hardwareCM->ctm != WANTED->ctm;
+}
+
+bool CMonitor::stageScanoutCM(const SImageDescription& source, bool& changed) {
+    changed             = false;
+    const auto HARDWARE = hardwareCMFor(source);
+    if (!HARDWARE)
+        return false;
+    if (m_hardwareCM && m_hardwareCM->degamma == HARDWARE->degamma && m_hardwareCM->gamma == HARDWARE->gamma && m_hardwareCM->ctm == HARDWARE->ctm && !m_ctmUpdated)
+        return true;
+
+    changed = true;
+
+    // The user CTM is already folded into the GAMMA LUT, see hardwareCMFor.
+    m_hardwareCM = makeUnique<SHardwareCM>(*HARDWARE);
+    applyColorLuts();
+    m_output->state->setCTM(Mat3x3{m_hardwareCM->ctm});
+    m_ctmUpdated = false;
+    return true;
+}
+
+void CMonitor::clearScanoutCM() {
+    if (!m_hardwareCM)
+        return;
+    m_hardwareCM.reset();
+    applyColorLuts();
+    // Restore the composited CTM in the same commit as the LUTs, the renderer recomputes a non-shader CTM on its next pass.
+    stageCTM(m_ctm);
+    m_noShaderCTM = false;
+    m_ctmUpdated  = false;
+    m_previousFSWindow.reset();
 }
 
 CMonitorState::CMonitorState(CMonitor* owner) : m_owner(owner) {
@@ -2683,8 +2880,7 @@ bool CMonitor::needsUnmodifiedCopy() {
     if (*PKEEP == 1)
         return true;
 
-    const bool HAS_MODS = m_sdrMinLuminance != SDR_MIN_LUMINANCE || m_sdrMaxLuminance != SDR_MAX_LUMINANCE || (m_sdrBrightness > 0 && m_sdrBrightness != 1.0) ||
-        (m_sdrSaturation > 0 && m_sdrSaturation != 1.0);
+    const bool HAS_MODS = m_sdrMinLuminance != SDR_MIN_LUMINANCE || (m_sdrBrightness > 0 && m_sdrBrightness != 1.0) || (m_sdrSaturation > 0 && m_sdrSaturation != 1.0);
 
     if (!HAS_MODS)
         return false;

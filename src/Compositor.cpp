@@ -981,10 +981,8 @@ PImageDescription CCompositor::getPreferredImageDescription() {
         LOG(Log::ERR, "FIXME: color management protocol is not enabled, returning empty image description");
         return getDefaultImageDescription();
     }
-    LOG(Log::WARN, "FIXME: color management protocol is enabled, determine correct preferred image description");
-    // should determine some common settings to avoid unnecessary transformations while keeping maximum displayable precision
-    return State::monitorState()->monitors().size() == 1 ? State::monitorState()->monitors()[0]->m_imageDescription :
-                                                           CImageDescription::from(SImageDescription{.primaries = NColorPrimaries::BT709});
+    // Surfaces that are not on a single known output get the default SDR description.
+    return State::monitorState()->monitors().size() == 1 ? State::monitorState()->monitors()[0]->m_imageDescription : getDefaultImageDescription();
 }
 
 PImageDescription CCompositor::getHDRImageDescription() {
