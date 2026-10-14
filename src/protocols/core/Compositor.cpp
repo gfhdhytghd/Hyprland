@@ -8,6 +8,7 @@
 #include <ranges>
 #include "Subcompositor.hpp"
 #include "../Viewporter.hpp"
+#include "../ColorManagement.hpp"
 #include "../../output/Monitor.hpp"
 #include "../PresentationTime.hpp"
 #include "../DRMSyncobj.hpp"
