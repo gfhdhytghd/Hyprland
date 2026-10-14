@@ -140,7 +140,7 @@ void CMonitorStateTracker::add(PHLMONITOR mon) {
 
     if (PROTO::colorManagement && g_pCompositor->shouldChangePreferredImageDescription()) {
         LOG(Log::ERR, "FIXME: color management protocol is enabled, need a preferred image description id");
-        PROTO::colorManagement->onImagePreferredChanged(0);
+        PROTO::colorManagement->onImagePreferredChanged();
     }
 }
 

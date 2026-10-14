@@ -1009,8 +1009,7 @@ PImageDescription CCompositor::getHDRImageDescription() {
 }
 
 bool CCompositor::shouldChangePreferredImageDescription() {
-    LOG(Log::WARN, "FIXME: color management protocol is enabled and outputs changed, check preferred image description changes");
-    return false;
+    return true; // Each feedback object compares its effective description identity before sending an event.
 }
 
 std::optional<unsigned int> CCompositor::getVTNr() {

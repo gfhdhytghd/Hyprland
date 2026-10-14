@@ -439,6 +439,7 @@ CColorManagementFeedbackSurface::CColorManagementFeedbackSurface(SP<CWpColorMana
 
         RESOURCE->m_self     = RESOURCE;
         RESOURCE->m_settings = m_surface->getPreferredImageDescription();
+        m_currentPreferredId = RESOURCE->m_settings->id();
 
         RESOURCE->sendMaybeReady();
     });
@@ -482,17 +483,17 @@ void CColorManagementFeedbackSurface::onPreferredChanged() {
     if (!m_surface)
         return;
 
-    if (m_surface->m_enteredOutputs.size() == 1) {
-        const auto newId = m_surface->getPreferredImageDescription()->id();
-        if (m_currentPreferredId != newId) {
-            const uint32_t lo = sc<uint32_t>(newId & 0xFFFFFFFF);
-            const uint32_t hi = sc<uint32_t>(newId >> 32);
-            if (m_resource->version() > 1)
-                m_resource->sendPreferredChanged2(hi, lo);
-            else if (!hi)
-                m_resource->sendPreferredChanged(lo);
-        }
-    }
+    const auto newId = m_surface->getPreferredImageDescription()->id();
+    if (m_currentPreferredId == newId)
+        return;
+
+    const uint32_t lo = sc<uint32_t>(newId & 0xFFFFFFFF);
+    const uint32_t hi = sc<uint32_t>(newId >> 32);
+    if (m_resource->version() > 1)
+        m_resource->sendPreferredChanged2(hi, lo);
+    else if (!hi)
+        m_resource->sendPreferredChanged(lo);
+    m_currentPreferredId = newId;
 }
 
 bool CColorManagementFeedbackSurface::good() {
@@ -932,11 +933,9 @@ void CColorManagementProtocol::bindManager(wl_client* client, void* data, uint32
     LOG(Log::TRACE, "New WP_color_manager at {:x}", (uintptr_t)RESOURCE.get());
 }
 
-void CColorManagementProtocol::onImagePreferredChanged(uint32_t preferredId) {
-    for (auto const& feedback : m_feedbackSurfaces) {
-        if (feedback->m_surface)
-            feedback->m_resource->sendPreferredChanged(preferredId);
-    }
+void CColorManagementProtocol::onImagePreferredChanged() {
+    for (const auto& feedback : m_feedbackSurfaces)
+        feedback->onPreferredChanged();
 }
 
 void CColorManagementProtocol::onMonitorImageDescriptionChanged(PHLMONITORREF monitor) {
