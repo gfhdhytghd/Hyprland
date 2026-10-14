@@ -161,6 +161,7 @@ class CColorManagementImageDescription {
     wl_client*                                  client();
     SP<CWpImageDescriptionV1>                   resource();
     bool                                        sendMaybeReady();
+    bool                                        ready() const;
 
     WP<CColorManagementImageDescription>        m_self;
 
@@ -170,6 +171,7 @@ class CColorManagementImageDescription {
     SP<CWpImageDescriptionV1> m_resource;
     wl_client*                m_client              = nullptr;
     bool                      m_allowGetInformation = false;
+    bool                      m_ready               = false;
 
     friend class CColorManager;
     friend class CColorManagementOutput;

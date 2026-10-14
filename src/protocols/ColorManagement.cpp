@@ -217,7 +217,7 @@ CColorManager::CColorManager(SP<CWpColorManagerV1> resource) : m_resource(resour
         RESOURCE->m_self = RESOURCE;
 
         const auto OLD_RES = CColorManagementImageDescription::fromReference(ref);
-        if UNLIKELY (!OLD_RES) {
+        if UNLIKELY (!OLD_RES || !OLD_RES->ready()) {
             RESOURCE->resource()->sendFailed(WP_IMAGE_DESCRIPTION_V1_CAUSE_UNSUPPORTED, "Reference image description was not found");
             return;
         }
@@ -315,7 +315,7 @@ CColorManagementSurface::CColorManagementSurface(SP<CWpColorManagementSurfaceV1>
 
         const auto imageDescription =
             std::ranges::find_if(PROTO::colorManagement->m_imageDescriptions, [&](const auto& other) { return other->resource()->resource() == image_description; });
-        if (imageDescription == PROTO::colorManagement->m_imageDescriptions.end()) {
+        if (imageDescription == PROTO::colorManagement->m_imageDescriptions.end() || !(*imageDescription)->ready()) {
             r->error(WP_COLOR_MANAGEMENT_SURFACE_V1_ERROR_IMAGE_DESCRIPTION, "Image description not found");
             return;
         }
@@ -763,6 +763,10 @@ CColorManagementImageDescription::CColorManagementImageDescription(SP<CWpImageDe
 
     m_resource->setGetInformation([this](CWpImageDescriptionV1* r, uint32_t id) {
         LOG(Log::TRACE, "Get image information for image={}, id={}", (uintptr_t)r, id);
+        if (!m_ready) {
+            r->error(WP_IMAGE_DESCRIPTION_V1_ERROR_NOT_READY, "Image description is not ready");
+            return;
+        }
         if (!m_allowGetInformation) {
             r->error(WP_IMAGE_DESCRIPTION_V1_ERROR_NO_INFORMATION, "Image descriptions doesn't allow get_information request");
             return;
@@ -795,7 +799,14 @@ SP<CWpImageDescriptionV1> CColorManagementImageDescription::resource() {
     return m_resource;
 }
 
+bool CColorManagementImageDescription::ready() const {
+    return m_ready;
+}
+
 bool CColorManagementImageDescription::sendMaybeReady() {
+    if (!m_settings)
+        return false;
+
     const uint32_t lo = sc<uint32_t>(m_settings->id() & 0xFFFFFFFF);
     const uint32_t hi = sc<uint32_t>(m_settings->id() >> 32);
 
@@ -808,6 +819,7 @@ bool CColorManagementImageDescription::sendMaybeReady() {
         return false;
     }
 
+    m_ready = true;
     return true;
 }
 
