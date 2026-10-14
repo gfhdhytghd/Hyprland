@@ -261,11 +261,6 @@ vec4
     pixColor = tonemap(pixColor, dstxyz, maxLuminance, dstMaxLuminance, dstRefLuminance, srcRefLuminance, tonemapMode);
 #endif
 
-#if USE_MIRROR
-    // TODO HDR -> SDR tonemap
-    vec4 mirrorColor = fromLinearNit(pixColor, CM_TRANSFER_FUNCTION_SRGB,
-                                     srcTF == CM_TRANSFER_FUNCTION_GAMMA22 || srcTF == CM_TRANSFER_FUNCTION_SRGB ? srcTFRange : vec2(SDR_MIN_LUMINANCE, SDR_MAX_LUMINANCE));
-#endif
     pixColor = fromLinearNit(pixColor, dstTF, dstTFRange);
 #if USE_SDR_MOD
     pixColor = saturate(pixColor, dstxyz, sdrSaturation);
@@ -276,7 +271,7 @@ vec4
 #if USE_MIRROR
     vec4[2] pixColors;
     pixColors[0] = pixColor;
-    pixColors[1] = mirrorColor;
+    pixColors[1] = pixColor;
     return pixColors;
 #else
     return pixColor;
