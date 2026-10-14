@@ -131,8 +131,9 @@ bool CImageDescription::needsCM(WP<const CImageDescription> target) const {
     if (m_id == target->m_id)
         return false;
 
-    return m_imageDescription.icc.present || target->m_imageDescription.icc.present           // TODO compare ICC
-        || m_imageDescription.transferFunction != target->m_imageDescription.transferFunction //
+    return m_imageDescription.icc.present || target->m_imageDescription.icc.present // TODO compare ICC
+        || m_imageDescription.isWindows != target->m_imageDescription.isWindows || m_imageDescription.isInternal != target->m_imageDescription.isInternal ||
+        m_imageDescription.transferFunction != target->m_imageDescription.transferFunction //
         //|| m_imageDescription.transferFunctionPower != target->m_imageDescription.transferFunctionPower // TODO unsupported
         || m_imageDescription.getPrimaries() != target->m_imageDescription.getPrimaries() //
         // || m_imageDescription.masteringPrimaries != target->m_imageDescription.masteringPrimaries // TODO unused
@@ -228,13 +229,13 @@ Mat3x3 NColorManagement::adaptBradford(Hyprgraphics::CColor::xy srcW, Hyprgraphi
 }
 
 float SImageDescription::encodingMinLuminance() const {
-    return transferFunction == CM_TRANSFER_FUNCTION_EXT_LINEAR || transferFunction == CM_TRANSFER_FUNCTION_LINEAR ? 0.0f : luminances.min;
+    return transferFunction == CM_TRANSFER_FUNCTION_LINEAR || (transferFunction == CM_TRANSFER_FUNCTION_EXT_LINEAR && (isWindows || isInternal)) ? 0.0f : luminances.min;
 }
 
 float SImageDescription::encodingMaxLuminance() const {
     if (transferFunction == CM_TRANSFER_FUNCTION_ST2084_PQ)
         return luminances.min + HDR_MAX_LUMINANCE;
-    if (transferFunction == CM_TRANSFER_FUNCTION_EXT_LINEAR)
+    if (transferFunction == CM_TRANSFER_FUNCTION_EXT_LINEAR && (isWindows || isInternal))
         return SDR_MAX_LUMINANCE;
     return luminances.max;
 }

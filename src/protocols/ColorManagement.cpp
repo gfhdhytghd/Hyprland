@@ -367,12 +367,14 @@ bool CColorManagementSurface::needsHdrMetadataUpdate() {
 }
 
 bool CColorManagementSurface::isHDR() {
-    return m_imageDescription->value().transferFunction == CM_TRANSFER_FUNCTION_ST2084_PQ || m_imageDescription->value().transferFunction == CM_TRANSFER_FUNCTION_HLG ||
-        isWindowsScRGB();
+    const auto& description = m_imageDescription->value();
+    return description.transferFunction == CM_TRANSFER_FUNCTION_ST2084_PQ || description.transferFunction == CM_TRANSFER_FUNCTION_HLG || isWindowsScRGB() ||
+        (description.transferFunction == CM_TRANSFER_FUNCTION_EXT_LINEAR && description.luminances.max > description.luminances.reference);
 }
 
 bool CColorManagementSurface::isWindowsScRGB() {
-    return m_imageDescription->value().primariesNamed == CM_PRIMARIES_SRGB && m_imageDescription->value().transferFunction == CM_TRANSFER_FUNCTION_EXT_LINEAR;
+    const auto& description = m_imageDescription->value();
+    return description.isWindows && description.primariesNamed == CM_PRIMARIES_SRGB && description.transferFunction == CM_TRANSFER_FUNCTION_EXT_LINEAR;
 }
 
 CColorManagementFeedbackSurface::CColorManagementFeedbackSurface(SP<CWpColorManagementSurfaceFeedbackV1> resource, SP<CWLSurfaceResource> surface_) :

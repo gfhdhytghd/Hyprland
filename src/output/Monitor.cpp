@@ -2024,7 +2024,7 @@ uint16_t CMonitor::isDSBlocked(bool full) {
     }
 
     const bool surfaceIsHDR   = PSURFACE->m_colorManagement && PSURFACE->m_colorManagement->isHDR();
-    const bool surfaceIsScRGB = surfaceIsHDR && PSURFACE->m_colorManagement->isWindowsScRGB();
+    const bool surfaceIsScRGB = PSURFACE->m_colorManagement && PSURFACE->m_colorManagement->imageDescription().transferFunction == CM_TRANSFER_FUNCTION_EXT_LINEAR;
 
     const bool surfaceIsHLG = surfaceIsHDR && PSURFACE->m_colorManagement->imageDescription().transferFunction == CM_TRANSFER_FUNCTION_HLG;
     if (surfaceIsScRGB || surfaceIsHLG)
