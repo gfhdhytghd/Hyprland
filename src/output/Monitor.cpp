@@ -602,10 +602,11 @@ void CMonitor::applyCMType(NCMType::eCMType cmType, NTransferFunction::eTF cmSdr
         default: UNREACHABLE();
     }
     if (cmType == NCMType::CM_HDR || cmType == NCMType::CM_HDR_EDID) {
-        auto description                = m_imageDescription->value();
-        description.luminances.min      = minLuminance(HDR_MIN_LUMINANCE);
-        description.masteringLuminances = {.min = minLuminance(HDR_MIN_LUMINANCE), .max = sc<uint32_t>(maxLuminance(HDR_MAX_LUMINANCE))};
-        m_imageDescription              = CImageDescription::from(description);
+        auto description                 = m_imageDescription->value();
+        description.luminances.min       = minLuminance(HDR_MIN_LUMINANCE);
+        description.luminances.reference = HDR_REF_LUMINANCE;
+        description.masteringLuminances  = {.min = minLuminance(HDR_MIN_LUMINANCE), .max = sc<uint32_t>(maxLuminance(HDR_MAX_LUMINANCE))};
+        m_imageDescription               = CImageDescription::from(description);
     }
 
     if (oldImageDescription != m_imageDescription) {
