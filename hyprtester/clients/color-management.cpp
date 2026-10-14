@@ -31,7 +31,9 @@ class CDisplay {
 };
 
 static int run(wl_display* display, const std::string& mode) {
-    auto                                    registry = makeShared<CCWlRegistry>(rc<wl_proxy*>(wl_display_get_registry(display)));
+    const auto                              separator       = mode.find('@');
+    const auto                              requestedOutput = separator == std::string::npos ? std::string("HEADLESS-1") : mode.substr(separator + 1);
+    auto                                    registry        = makeShared<CCWlRegistry>(rc<wl_proxy*>(wl_display_get_registry(display)));
     CSharedPointer<CCWlCompositor>          compositor;
     CSharedPointer<CCWlOutput>              output;
     std::vector<CSharedPointer<CCWlOutput>> outputs;
@@ -44,7 +46,7 @@ static int run(wl_display* display, const std::string& mode) {
             outputs.push_back(resource);
             if (mode.starts_with("output-reference="))
                 resource->setName([&, weak = CWeakPointer<CCWlOutput>(resource)](CCWlOutput*, const char* name) {
-                    if (std::strcmp(name, "HEADLESS-1") == 0)
+                    if (requestedOutput == name)
                         output = weak.lock();
                 });
             else
