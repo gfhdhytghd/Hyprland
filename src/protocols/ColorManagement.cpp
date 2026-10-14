@@ -583,6 +583,16 @@ CColorManagementParametricCreator::CColorManagementParametricCreator(SP<CWpImage
             };
         }
 
+        const auto mastering        = m_valuesSet & PC_MASTERING_LUMINANCES ?
+            m_settings.masteringLuminances :
+            SImageDescription::SPCMasteringLuminances{.min = m_settings.luminances.min, .max = m_settings.luminances.max};
+        const auto outsideMastering = [&](uint32_t value) { return value <= mastering.min || value > mastering.max; };
+        if (((m_valuesSet & PC_CLL) && (m_valuesSet & PC_FALL) && m_settings.maxFALL > m_settings.maxCLL) ||
+            (r->version() == 1 && (((m_valuesSet & PC_CLL) && outsideMastering(m_settings.maxCLL)) || ((m_valuesSet & PC_FALL) && outsideMastering(m_settings.maxFALL))))) {
+            r->error(WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_INVALID_LUMINANCE, "Content light levels are outside the permitted range");
+            return;
+        }
+
         RESOURCE->m_self     = RESOURCE;
         RESOURCE->m_settings = CImageDescription::from(m_settings);
 
