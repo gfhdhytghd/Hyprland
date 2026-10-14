@@ -529,6 +529,12 @@ static RGBAColor tonemap(RGBAColor color, std::array<std::array<double, 3>, 3> d
     return color;
 }
 
+float NColorManagement::referenceLuminanceScale(const SImageDescription& source, const SImageDescription& target) {
+    if (source.isWindows || source.luminances.reference == 0 || target.luminances.reference == 0)
+        return 1.0f;
+    return sc<float>(target.luminances.reference) / source.luminances.reference;
+}
+
 RGBAColor NColorManagement::convertColor(RGBAColor color, PImageDescription srcDesc, PImageDescription dstDesc, const Render::SCMSettings& settings) {
     color /= std::max(color.c.a, 0.001);
     color = srcDesc->value().transferFunction == CM_TRANSFER_FUNCTION_BT1886 ?
@@ -546,6 +552,8 @@ RGBAColor NColorManagement::convertColor(RGBAColor color, PImageDescription srcD
         color.c.b                = converted.z;
         if (srcDesc->value().transferFunction != CM_TRANSFER_FUNCTION_LINEAR)
             color = toNit(color, settings.srcTFRange);
+        else
+            color *= referenceLuminanceScale(srcDesc->value(), dstDesc->value());
         color *= color.c.a;
         if (settings.needsTonemap)
             color = tonemap(color, settings.dstPrimaries2XYZ, settings.maxLuminance, settings.dstMaxLuminance, settings.dstRefLuminance, settings.srcRefLuminance);

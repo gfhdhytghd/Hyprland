@@ -2118,10 +2118,11 @@ SCMSettings IHyprRenderer::getCMSettings(CRenderContext& ctx, const NColorManage
     } else
         srcTF = imageDescription->value().transferFunction;
 
-    const bool  needsSDRmod     = modifySDR && isSDR2HDR(ctx, imageDescription->value(), targetImageDescription->value());
-    const auto& source          = imageDescription->value();
-    const auto& target          = targetImageDescription->value();
-    const float maxLuminance    = source.maxCLL > 0 ? source.maxCLL : (source.masteringLuminances.max > 0 ? source.masteringLuminances.max : source.luminances.max);
+    const bool  needsSDRmod    = modifySDR && isSDR2HDR(ctx, imageDescription->value(), targetImageDescription->value());
+    const auto& source         = imageDescription->value();
+    const auto& target         = targetImageDescription->value();
+    const float referenceScale = needsSDRmod ? 1.0f : referenceLuminanceScale(source, target);
+    const float maxLuminance = referenceScale * (source.maxCLL > 0 ? source.maxCLL : (source.masteringLuminances.max > 0 ? source.masteringLuminances.max : source.luminances.max));
     const auto  dstMaxLuminance = target.masteringLuminances.max > 0 ? target.masteringLuminances.max : (target.luminances.max > 0 ? target.luminances.max : 10000);
 
     auto        matrix = imageDescription->getPrimaries()->convertMatrix(targetImageDescription->getPrimaries());
@@ -2152,6 +2153,14 @@ SCMSettings IHyprRenderer::getCMSettings(CRenderContext& ctx, const NColorManage
         .sdrSaturation           = needsSDRmod && ctx.m_data.pMonitor->m_sdrSaturation > 0 ? ctx.m_data.pMonitor->m_sdrSaturation : 1.0f,
         .sdrBrightnessMultiplier = needsSDRmod && ctx.m_data.pMonitor->m_sdrBrightness > 0 ? ctx.m_data.pMonitor->m_sdrBrightness : 1.0f,
     };
+
+    // Scale pixels and the source peak by the same reference-white ratio.
+    result.srcTFRange.min *= referenceScale;
+    result.srcTFRange.max *= referenceScale;
+    if (srcTF == CM_TRANSFER_FUNCTION_LINEAR)
+        for (auto& row : result.convertMatrix)
+            for (auto& value : row)
+                value *= referenceScale;
 
     ctx.m_cmSettingsCache.push_back({
         .srcDescId       = srcId,

@@ -84,3 +84,14 @@ TEST(ColorManagement, EncodingRangeHonorsBlackAndRelativePeak) {
     EXPECT_FLOAT_EQ(d.encodingMinLuminance(), 0);
     EXPECT_FLOAT_EQ(d.encodingMaxLuminance(), 80);
 }
+
+TEST(ColorManagement, ReferenceWhiteScaleAndWindowsException) {
+    SImageDescription source{.luminances = {.min = 0, .max = 10000, .reference = 446}};
+    SImageDescription target{.luminances = {.min = 0, .max = 10000, .reference = 203}};
+    EXPECT_NEAR(referenceLuminanceScale(source, target) * 446, 203, 1e-5);
+    source.isWindows = true;
+    EXPECT_FLOAT_EQ(referenceLuminanceScale(source, target), 1);
+    source.isWindows            = false;
+    source.luminances.reference = 0;
+    EXPECT_FLOAT_EQ(referenceLuminanceScale(source, target), 1);
+}

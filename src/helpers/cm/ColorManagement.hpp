@@ -385,6 +385,8 @@ namespace NColorManagement {
 
     using PImageDescription = WP<const CImageDescription>;
 
+    float             referenceLuminanceScale(const SImageDescription& source, const SImageDescription& target);
+
     RGBAColor         convertColor(RGBAColor color, PImageDescription srcDesc, PImageDescription dstDesc, const Render::SCMSettings& settings);
     CHyprColor        convertColor(const CHyprColor& color, PImageDescription srcDesc, PImageDescription dstDesc, const Render::SCMSettings& settings);
 
