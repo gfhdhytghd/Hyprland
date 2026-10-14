@@ -561,8 +561,7 @@ CColorManagementParametricCreator::CColorManagementParametricCreator(SP<CWpImage
     m_resource->setCreate([this](CWpImageDescriptionCreatorParamsV1* r, uint32_t id) {
         LOG(Log::TRACE, "Create image description from params for id {}", id);
 
-        // FIXME actually check completeness
-        if (!m_valuesSet) {
+        if (!(m_valuesSet & (PC_TF | PC_TF_POWER)) || !(m_valuesSet & PC_PRIMARIES)) {
             r->error(WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_INCOMPLETE_SET, "Missing required settings");
             return;
         }
@@ -573,12 +572,6 @@ CColorManagementParametricCreator::CColorManagementParametricCreator(SP<CWpImage
         if UNLIKELY (!RESOURCE->good()) {
             r->noMemory();
             PROTO::colorManagement->m_imageDescriptions.pop_back();
-            return;
-        }
-
-        // FIXME actually check support
-        if (!m_valuesSet) {
-            RESOURCE->resource()->sendFailed(WP_IMAGE_DESCRIPTION_V1_CAUSE_UNSUPPORTED, "unsupported");
             return;
         }
 
@@ -599,7 +592,7 @@ CColorManagementParametricCreator::CColorManagementParametricCreator(SP<CWpImage
     });
     m_resource->setSetTfNamed([this](CWpImageDescriptionCreatorParamsV1* r, uint32_t tf) {
         LOG(Log::TRACE, "Set image description transfer function to {}", tf);
-        if (m_valuesSet & PC_TF) {
+        if (m_valuesSet & (PC_TF | PC_TF_POWER)) {
             r->error(WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_ALREADY_SET, "Transfer function already set");
             return;
         }
@@ -627,7 +620,7 @@ CColorManagementParametricCreator::CColorManagementParametricCreator(SP<CWpImage
     });
     m_resource->setSetTfPower([this](CWpImageDescriptionCreatorParamsV1* r, uint32_t eexp) {
         LOG(Log::TRACE, "Set image description tf power to {}", eexp);
-        if (m_valuesSet & PC_TF_POWER) {
+        if (m_valuesSet & (PC_TF | PC_TF_POWER)) {
             r->error(WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_ALREADY_SET, "Transfer function power already set");
             return;
         }
