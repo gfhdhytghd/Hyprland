@@ -618,7 +618,8 @@ void CMonitor::applyCMType(NCMType::eCMType cmType, NTransferFunction::eTF cmSdr
 }
 
 bool CMonitor::applyMonitorRuleSoft(Config::CMonitorRule&& pMonitorRule) {
-    m_activeMonitorRule = std::move(pMonitorRule);
+    const auto oldDescription = m_imageDescription;
+    m_activeMonitorRule       = std::move(pMonitorRule);
     m_reservedArea.setStatic(m_activeMonitorRule.m_reservedArea);
     m_transform         = m_activeMonitorRule.m_transform;
     m_supportsWideColor = m_activeMonitorRule.m_supportsWideColor;
@@ -662,6 +663,13 @@ bool CMonitor::applyMonitorRuleSoft(Config::CMonitorRule&& pMonitorRule) {
                 m_imageDescription = CImageDescription::from(SImageDescription{});
             }
         }
+    }
+
+    if (!m_activeMonitorRule.m_iccFile.empty() && oldDescription != m_imageDescription) {
+        if (PROTO::colorManagement)
+            PROTO::colorManagement->onMonitorImageDescriptionChanged(m_self);
+        m_blurFBDirty = true;
+        g_pHyprRenderer->damageMonitor(m_self.lock());
     }
 
     Vector2D xfmd     = m_transform % 2 == 1 ? Vector2D{m_pixelSize.y, m_pixelSize.x} : m_pixelSize;
