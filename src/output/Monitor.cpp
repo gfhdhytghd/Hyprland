@@ -2035,7 +2035,7 @@ uint16_t CMonitor::isDSBlocked(bool full) {
         else if (surfaceIsHDR) {
             const auto& source = PSURFACE->m_colorManagement->imageDescription();
             const auto& target = m_imageDescription->value();
-            if (!inHDR() || source.transferFunction != target.transferFunction || source.luminances.reference != target.luminances.reference ||
+            if (!inHDR() || source.transferFunction != target.transferFunction || source.luminances != target.luminances ||
                 (source.getPrimaries() != target.getPrimaries() && !canNoShaderCM(true)))
                 reasons |= DS_BLOCK_CM;
         }
