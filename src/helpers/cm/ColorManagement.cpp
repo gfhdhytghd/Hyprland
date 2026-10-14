@@ -539,7 +539,7 @@ RGBAColor NColorManagement::convertColor(RGBAColor color, PImageDescription srcD
     color /= std::max(color.c.a, 0.001);
     color = srcDesc->value().transferFunction == CM_TRANSFER_FUNCTION_BT1886 ?
         tfInvBT1886(color, settings.srcTFRange) :
-        (srcDesc->value().transferFunction == CM_TRANSFER_FUNCTION_HLG ? tfInvHLG(color, srcDesc->getPrimaries()->toXYZ().mat()[1]) :
+        (srcDesc->value().transferFunction == CM_TRANSFER_FUNCTION_HLG ? tfInvHLG(color, Hyprgraphics::CMatrix3{srcDesc->getPrimaries()->toXYZ()}.mat()[1]) :
                                                                          toLinearRGB(color, srcDesc->value().transferFunction));
     if (dstDesc->value().icc.present) {
         // color.rgb = applyIcc3DLut(color.rgb, iccLut3D, iccLutSize);
@@ -562,7 +562,7 @@ RGBAColor NColorManagement::convertColor(RGBAColor color, PImageDescription srcD
             color = saturate(color, settings.dstPrimaries2XYZ, settings.sdrSaturation);
             color *= settings.sdrBrightnessMultiplier;
         }
-        color = fromLinearNit(color, dstDesc->value().transferFunction, settings.dstTFRange, dstDesc->getPrimaries()->toXYZ().mat()[1]);
+        color = fromLinearNit(color, dstDesc->value().transferFunction, settings.dstTFRange, Hyprgraphics::CMatrix3{dstDesc->getPrimaries()->toXYZ()}.mat()[1]);
     }
     return color;
 }

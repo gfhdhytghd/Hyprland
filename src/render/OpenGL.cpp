@@ -1281,8 +1281,8 @@ static std::map<std::pair<uint32_t, uint32_t>, std::array<GLfloat, 9>> primaries
 void CHyprOpenGLImpl::passCMUniforms(WP<CShader> shader, const NColorManagement::PImageDescription imageDescription,
                                      const NColorManagement::PImageDescription targetImageDescription, bool modifySDR, float sdrMinLuminance, int sdrMaxLuminance,
                                      const SCMSettings& settings) {
-    const auto sourceXYZ = imageDescription->getPrimaries()->toXYZ().mat();
-    const auto targetXYZ = targetImageDescription->getPrimaries()->toXYZ().mat();
+    const auto sourceXYZ = Hyprgraphics::CMatrix3{imageDescription->getPrimaries()->toXYZ()}.mat();
+    const auto targetXYZ = Hyprgraphics::CMatrix3{targetImageDescription->getPrimaries()->toXYZ()}.mat();
     shader->setUniformFloat3(SHADER_SOURCE_LUMINANCE_COEFFICIENTS, sourceXYZ[1][0], sourceXYZ[1][1], sourceXYZ[1][2]);
     shader->setUniformFloat3(SHADER_TARGET_LUMINANCE_COEFFICIENTS, targetXYZ[1][0], targetXYZ[1][1], targetXYZ[1][2]);
     shader->setUniformFloat2(SHADER_SRC_TF_RANGE, settings.srcTFRange.min, settings.srcTFRange.max);

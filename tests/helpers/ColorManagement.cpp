@@ -15,7 +15,7 @@ TEST(ColorManagement, GenericFilmChannelOrder) {
 TEST(ColorManagement, XYZBasisIsFiniteAndInvertible) {
     const auto xyz    = CPrimaries::from(CM_PRIMARIES_CIE1931_XYZ);
     const auto rgb    = CPrimaries::from(CM_PRIMARIES_SRGB);
-    const auto matrix = xyz->toXYZ().mat();
+    const auto matrix = Hyprgraphics::CMatrix3{xyz->toXYZ()}.mat();
     for (int i = 0; i < 3; ++i)
         for (int j = 0; j < 3; ++j)
             EXPECT_NEAR(matrix[i][j], i == j ? 1.0 : 0.0, 1e-6);
