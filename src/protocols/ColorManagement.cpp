@@ -452,6 +452,12 @@ CColorManagementFeedbackSurface::CColorManagementFeedbackSurface(SP<CWpColorMana
             return;
         }
 
+        const auto preferred = m_surface->getPreferredImageDescription();
+        if (preferred->value().icc.present) {
+            r->error(WP_COLOR_MANAGEMENT_SURFACE_FEEDBACK_V1_ERROR_UNSUPPORTED_FEATURE, "The preferred description is not parametric");
+            return;
+        }
+
         const auto RESOURCE = PROTO::colorManagement->m_imageDescriptions.emplace_back(
             makeShared<CColorManagementImageDescription>(makeShared<CWpImageDescriptionV1>(r->client(), r->version(), id), true));
 
@@ -462,14 +468,8 @@ CColorManagementFeedbackSurface::CColorManagementFeedbackSurface(SP<CWpColorMana
         }
 
         RESOURCE->m_self     = RESOURCE;
-        RESOURCE->m_settings = m_surface->getPreferredImageDescription();
+        RESOURCE->m_settings = preferred;
         m_currentPreferredId = RESOURCE->m_settings->id();
-
-        if (!PROTO::colorManagement->m_debug && RESOURCE->m_settings->value().icc.present) {
-            LOG(Log::ERR, "FIXME: send ICC profile data");
-            // r->error(WP_COLOR_MANAGER_V1_ERROR_UNSUPPORTED_FEATURE, "ICC profiles are not supported");
-            // return;
-        }
 
         RESOURCE->sendMaybeReady();
     });
