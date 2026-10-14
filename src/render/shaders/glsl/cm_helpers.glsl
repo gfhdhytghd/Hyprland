@@ -255,11 +255,11 @@ vec4
     pixColor.rgb = convertMatrix * pixColor.rgb;
     if (srcTF != CM_TRANSFER_FUNCTION_LINEAR)
         pixColor = toNit(pixColor, srcTFRange);
-    pixColor.a = finalAlpha;
-    pixColor.rgb *= pixColor.a;
 #if USE_TONEMAP
     pixColor = tonemap(pixColor, dstxyz, maxLuminance, dstMaxLuminance, dstRefLuminance, srcRefLuminance, tonemapMode);
 #endif
+    pixColor.a = finalAlpha;
+    pixColor.rgb *= finalAlpha;
 
     pixColor = fromLinearNit(pixColor, dstTF, dstTFRange);
 #if USE_SDR_MOD
