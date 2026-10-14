@@ -37,7 +37,13 @@ const SPCPRimaries& NColorManagement::getPrimaries(ePrimaries name) {
 }
 
 CPrimaries::CPrimaries(const SPCPRimaries& primaries, const uint32_t primariesId) : m_id(primariesId), m_primaries(primaries) {
-    m_primaries2XYZ = m_primaries.toXYZ();
+    const auto matrix = rgbToXYZFromPrimaries(m_primaries);
+    if (!matrix) {
+        m_primaries2XYZ = Hyprgraphics::CMatrix3::identity();
+        return;
+    }
+    const auto values = matrix->getMatrix();
+    m_primaries2XYZ   = Hyprgraphics::CMatrix3({{{values[0], values[1], values[2]}, {values[3], values[4], values[5]}, {values[6], values[7], values[8]}}});
 }
 
 WP<const CPrimaries> CPrimaries::from(const SPCPRimaries& primaries) {
@@ -74,7 +80,7 @@ const Hyprgraphics::CMatrix3& CPrimaries::toXYZ() const {
 const Hyprgraphics::CMatrix3& CPrimaries::convertMatrix(const WP<const CPrimaries> dst) const {
     const auto cacheKey = std::pair{m_id, dst->m_id};
     if (!primariesConversion.contains(cacheKey))
-        primariesConversion.emplace(cacheKey, m_primaries.convertMatrix(dst->m_primaries));
+        primariesConversion.emplace(cacheKey, dst->toXYZ().invert() * Hyprgraphics::adaptWhite(m_primaries.white, dst->m_primaries.white) * toXYZ());
 
     return primariesConversion[cacheKey];
 }
@@ -176,9 +182,13 @@ static std::array<float, 3> matByVec(const Mat3x3& M, const std::array<float, 3>
 }
 
 std::optional<Mat3x3> NColorManagement::rgbToXYZFromPrimaries(SPCPRimaries pr) {
-    const auto R = Hyprgraphics::xy2xyz(pr.red);
-    const auto G = Hyprgraphics::xy2xyz(pr.green);
-    const auto B = Hyprgraphics::xy2xyz(pr.blue);
+    // Homogeneous primary coordinates also represent XYZ basis primaries with y=0.
+    const auto primary = [](Hyprgraphics::CColor::xy xy) { return Hyprgraphics::CColor::XYZ{.x = xy.x, .y = xy.y, .z = 1.0 - xy.x - xy.y}; };
+    const auto R       = primary(pr.red);
+    const auto G       = primary(pr.green);
+    const auto B       = primary(pr.blue);
+    if (pr.white.y <= 0)
+        return std::nullopt;
     const auto W = Hyprgraphics::xy2xyz(pr.white);
 
     // P has columns R,G,B
