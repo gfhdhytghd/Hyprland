@@ -28,7 +28,18 @@ TEST(ColorManagementShader, SurfaceAndBlurVariantsCompile) {
                     continue;
                 if (fragment != SH_FRAG_SURFACE && (extra & SH_FEAT_TONEMAP))
                     continue;
-                const auto source = loader.getVariantSource(fragment, {.features = sc<ShaderFeatureFlags>(SH_FEAT_CM | extra), .sourceTF = tf, .targetTF = tf});
+                std::map<std::string, std::string> defines;
+                for (const auto name :
+                     {"RGBA", "DISCARD", "TINT", "ROUNDING", "CM", "TONEMAP", "SDR_MOD", "BLUR", "ICC", "MIRROR", "MOTION_BLUR", "BLUR_ALPHA_MASK", "BLUR_MATTE", "ALT_TONEMAP"})
+                    defines[std::string("USE_") + name] = "0";
+                defines["USE_CM"]          = "1";
+                defines["USE_TONEMAP"]     = extra & SH_FEAT_TONEMAP ? "1" : "0";
+                defines["USE_SDR_MOD"]     = extra & SH_FEAT_SDR_MOD ? "1" : "0";
+                defines["USE_MIRROR"]      = extra & SH_FEAT_MIRROR ? "1" : "0";
+                defines["USE_ALT_TONEMAP"] = extra & SH_FEAT_ALT_TONEMAP ? "1" : "0";
+                defines["SOURCE_TF"]       = std::to_string(sc<int>(tf));
+                defines["TARGET_TF"]       = std::to_string(sc<int>(tf));
+                const auto source          = loader.process(fragments[fragment], defines);
                 ASSERT_FALSE(source.empty());
                 const glslang_input_t input{
                     .language        = GLSLANG_SOURCE_GLSL,
