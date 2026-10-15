@@ -2140,10 +2140,10 @@ bool CMonitor::attemptDirectScanout() {
     }};
 
     // A buffer the CTM alone can't convert to the signalled encoding goes through the hardware DEGAMMA -> CTM -> GAMMA pipeline.
-    const auto& SURFACE_DESCRIPTION = scanoutDescription(PSURFACE);
+    const auto  SURFACE_DESCRIPTION = scanoutDescription(PSURFACE);
     const bool  HAD_HARDWARE_CM     = usesHardwareCM();
     bool        hardwareCMChanged   = false;
-    if (needsCM() && !canNoShaderCM(true) && stageScanoutCM(SURFACE_DESCRIPTION, hardwareCMChanged)) {
+    if (needsCM() && !canNoShaderCM(true) && stageScanoutCM(SURFACE_DESCRIPTION->value(), hardwareCMChanged)) {
         if (hardwareCMChanged)
             LOG(Log::DEBUG, "attemptDirectScanout: converting the buffer with the display hardware");
     } else {
@@ -2696,27 +2696,7 @@ WP<SHardwareCM> CMonitor::hardwareCMFor(const SImageDescription& source) {
         .outputGain    = {USER[0], USER[4], USER[8]},
     };
 
-    auto&      cache    = m_hardwareCMCache;
-    const auto sourceId = CImageDescription::from(effective)->id();
-    const auto targetId = m_imageDescription->id();
-    if (cache.mode != *PNONSHADER || cache.sourceId != sourceId || cache.targetId != targetId || cache.degammaSize != params.degammaSize || cache.gammaSize != params.gammaSize ||
-        cache.supportsCTM != params.supportsCTM || cache.sdrBrightness != params.sdrBrightness || cache.sdrSaturation != params.sdrSaturation ||
-        cache.sdrBlack != m_sdrMinLuminance || cache.outputGain != params.outputGain) {
-        auto result         = buildHardwareCM(effective, m_imageDescription->value(), params);
-        cache.result        = result ? makeUnique<SHardwareCM>(std::move(*result)) : nullptr;
-        cache.mode          = *PNONSHADER;
-        cache.sourceId      = sourceId;
-        cache.targetId      = targetId;
-        cache.degammaSize   = params.degammaSize;
-        cache.gammaSize     = params.gammaSize;
-        cache.supportsCTM   = params.supportsCTM;
-        cache.sdrBrightness = params.sdrBrightness;
-        cache.sdrSaturation = params.sdrSaturation;
-        cache.sdrBlack      = m_sdrMinLuminance;
-        cache.outputGain    = params.outputGain;
-    }
-
-    return cache.result;
+    return m_hardwareCMCache.get(CImageDescription::from(effective), m_imageDescription, params);
 }
 
 bool CMonitor::usesHardwareCM() const {
@@ -2751,12 +2731,12 @@ bool CMonitor::stageCTM(const Mat3x3& ctm) {
     return true;
 }
 
-const SImageDescription& CMonitor::scanoutDescription(SP<CWLSurfaceResource> surface) {
-    return (surface->m_current.imageDescription ? surface->m_current.imageDescription : getDefaultImageDescription())->value();
+PImageDescription CMonitor::scanoutDescription(SP<CWLSurfaceResource> surface) {
+    return surface->m_current.imageDescription ? surface->m_current.imageDescription : getDefaultImageDescription();
 }
 
 bool CMonitor::scanoutCMNeedsUpdate(SP<CWLSurfaceResource> surface) {
-    const auto WANTED = needsCM() && !canNoShaderCM(true) ? hardwareCMFor(scanoutDescription(surface)) : WP<SHardwareCM>{};
+    const auto WANTED = needsCM() && !canNoShaderCM(true) ? hardwareCMFor(scanoutDescription(surface)->value()) : WP<SHardwareCM>{};
     if (!WANTED)
         return usesHardwareCM();
     return !m_hardwareCM || m_ctmUpdated || m_hardwareCM->degamma != WANTED->degamma || m_hardwareCM->gamma != WANTED->gamma || m_hardwareCM->ctm != WANTED->ctm;

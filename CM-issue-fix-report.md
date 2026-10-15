@@ -196,3 +196,19 @@ Codex 第二次复审（硬件 CM）确认的 8 个缺陷均已处理：模式�
 - `8d520e4e5` tests/cm: isolate presentation event listeners between protocol fixtures
 - `f5afb8463` tests/cm: check committed color state after description and extension destruction
 - `75872febd` tests/cm: validate creator errors after the client destroys its creator proxy
+
+## 第四轮：安全审计（hypr-bug `01-fork-cm-hdr.md`）
+
+| ID | 结论 | 处理 |
+|---|---|---|
+| F-CM-01 描述/primaries 全局表无界增长 | 成立（上游已有） | 描述与 primaries 改为引用计数（`PImageDescription` = `SP`），弱引用哈希索引，64 位单调 id 不复用，未知 id 返回空；删除全对矩阵缓存 |
+| F-CM-02 每帧重建硬件 CM | 成立 | 每输出 8 项 LRU（含失败结果），冷构建限速约 1% 渲染时间，期间回退 shader 合成 |
+| F-CM-03 母版 primaries 无校验 | 部分成立 | 非物理色度在 create 时 `failed(unsupported)`；infoframe 中发送“未知”，坐标上限 50000。审计中的“单位混用”“max≥min+10000”不成立 |
+| F-CM-04 病态亮度导致除零 | 成立 | BT.2390 EETF（shader + CPU）在源范围为零、KS≥1 时退化为恒等；正常内容（参考缩放后源峰值 >10000、目标峰值未知）也会触发 |
+| F-CM-05 CM 设置缓存键不全 | 部分成立 | 抽出 `CCMSettingsCache`，键包含所有解析后的输入，不再用裸表面指针 |
+| F-CM-06 subsurface 空指针 | 成立（上游 `get_preferred` 同样可达） | `getPreferredImageDescription`、`get_subsurface`、`t1Parent` 判空；`t1Parent` 改为沿 `surf` 的 role 上溯 |
+| F-CM-07 id 反查下溢 | 成立 | 并入 F-CM-01 |
+| F-CM-08 销毁后描述仍生效 | 不成立 | 规范规定 destroy 等同 unset，双缓冲 |
+| F-CM-09 ICC 死代码 / user-data 强转 | 不成立 | libwayland 已校验参数接口类型 |
+
+测试：718/718 通过（新增 23 个）。

@@ -255,6 +255,11 @@ static double pqSignal(double luminance) {
     return std::pow((0.8359375 + 18.8515625 * Y) / (1.0 + 18.6875 * Y), 78.84375);
 }
 
+static double pqDecodeForTest(double signal) {
+    const auto E = std::pow(signal, 1.0 / 78.84375);
+    return std::pow(std::max(E - 0.8359375, 0.0) / (18.8515625 - 18.6875 * E), 1.0 / 0.1593017578125) * 10000.0;
+}
+
 TEST(ColorManagement, BT2390NormalizesAgainstTheSourceBlack) {
     const auto pq = CImageDescription::from(SImageDescription{.transferFunction = CM_TRANSFER_FUNCTION_ST2084_PQ, .primariesNameSet = true, .primariesNamed = CM_PRIMARIES_BT2020});
     const auto linear =
@@ -265,6 +270,22 @@ TEST(ColorManagement, BT2390NormalizesAgainstTheSourceBlack) {
     const auto signal        = pqSignal(0.1);
     // BT.2390 §5.4: the mastering black LB lands on the target black LMIN.
     EXPECT_NEAR(convertColor(RGBAColor{{.r = signal, .g = signal, .b = signal, .a = 1}}, pq, linear, settings).c.g, 0.2, 1e-4);
+}
+
+TEST(ColorManagement, BT2390StaysFiniteWhenBothPeaksClampToPQWhite) {
+    const auto pq = CImageDescription::from(SImageDescription{.transferFunction = CM_TRANSFER_FUNCTION_ST2084_PQ, .primariesNameSet = true, .primariesNamed = CM_PRIMARIES_BT2020});
+    const auto linear =
+        CImageDescription::from(SImageDescription{.transferFunction = CM_TRANSFER_FUNCTION_LINEAR, .primariesNameSet = true, .primariesNamed = CM_PRIMARIES_BT2020});
+    // A reference-scaled source peak above 10000 cd/m² on a target without a known peak: both ends encode to PQ 1.0.
+    auto settings = pqTonemapSettings(pq, linear, 20300, 10000.005F);
+    for (const double signal : {0.0, 0.5, 1.0}) {
+        const auto out = convertColor(RGBAColor{{.r = signal, .g = signal, .b = signal, .a = 1}}, pq, linear, settings);
+        EXPECT_TRUE(std::isfinite(out.c.g)) << "signal " << signal;
+        EXPECT_NEAR(out.c.g, pqDecodeForTest(signal), 0.05) << "signal " << signal;
+    }
+    // A source black at the PQ ceiling leaves no range to map.
+    settings.srcMinLuminance = 10000;
+    EXPECT_TRUE(std::isfinite(convertColor(RGBAColor{{.r = 1, .g = 1, .b = 1, .a = 1}}, pq, linear, settings).c.g));
 }
 
 TEST(ColorManagement, BT2390UsesTheBT2100ICtCpMatrices) {
@@ -301,4 +322,100 @@ TEST(ColorManagement, WhiteOnAPrimaryIsRejected) {
     EXPECT_FALSE(rgbToXYZFromPrimaries(primaries).has_value());
     EXPECT_TRUE(rgbToXYZFromPrimaries(getPrimaries(CM_PRIMARIES_SRGB)).has_value());
     EXPECT_TRUE(rgbToXYZFromPrimaries(getPrimaries(CM_PRIMARIES_CIE1931_XYZ)).has_value());
+}
+
+TEST(ColorManagement, HDRMetadataSendsNonPhysicalMasteringPrimariesAsUnknown) {
+    SImageDescription d{.transferFunction = CM_TRANSFER_FUNCTION_ST2084_PQ, .primariesNameSet = true, .primariesNamed = CM_PRIMARIES_BT2020};
+    EXPECT_TRUE(isPhysicalDisplayChromaticities(NColorPrimaries::DISPLAY_P3));
+    EXPECT_TRUE(isPhysicalDisplayChromaticities(NColorPrimaries::BT2020));
+    d.masteringPrimaries       = NColorPrimaries::DISPLAY_P3;
+    d.masteringPrimaries.red.x = 2147.483647;
+    EXPECT_FALSE(isPhysicalDisplayChromaticities(d.masteringPrimaries));
+    auto metadata = createHDRMetadata(d).hdmi_metadata_type1;
+    EXPECT_EQ(metadata.display_primaries[0].x, 0);
+    EXPECT_EQ(metadata.white_point.y, 0);
+    // Imaginary primaries are fine for an encoding, not for a mastering display.
+    d.masteringPrimaries      = NColorPrimaries::DISPLAY_P3;
+    d.masteringPrimaries.blue = {.x = 0.0001, .y = -0.077};
+    EXPECT_FALSE(isPhysicalDisplayChromaticities(d.masteringPrimaries));
+    EXPECT_EQ(createHDRMetadata(d).hdmi_metadata_type1.display_primaries[2].y, 0);
+}
+
+TEST(ColorManagement, InternedDescriptionsReleaseTheirPrimariesAndNeverReuseIds) {
+    auto value = SImageDescription{.primaries = NColorPrimaries::BT709, .luminances = {.min = 0.12345F, .max = 913, .reference = 137}};
+    value.primaries.red.x += 0.000123;
+    auto                        description     = CImageDescription::from(value);
+    const auto                  id              = description->id();
+    const auto                  primariesId     = description->getPrimaries()->id();
+    WP<const CImageDescription> weakDescription = description;
+    WP<const CPrimaries>        weakPrimaries   = description->getPrimaries();
+    EXPECT_EQ(CImageDescription::from(value), description);
+    EXPECT_EQ(CImageDescription::from(id), description);
+    EXPECT_EQ(CPrimaries::from(primariesId), description->getPrimaries());
+    description.reset();
+    EXPECT_TRUE(weakDescription.expired());
+    EXPECT_TRUE(weakPrimaries.expired());
+    EXPECT_FALSE(CImageDescription::from(id));
+    EXPECT_FALSE(CPrimaries::from(primariesId));
+    const auto recreated = CImageDescription::from(value);
+    EXPECT_GT(recreated->id(), id);
+    EXPECT_GT(recreated->getPrimaries()->id(), primariesId);
+}
+
+TEST(ColorManagement, DescriptionOwnersKeepSharedValuesAlive) {
+    auto                        description = CImageDescription::from(SImageDescription{.luminances = {.min = 0.125F, .max = 914, .reference = 139}});
+    auto                        owner       = description;
+    const auto                  id          = description->id();
+    WP<const CImageDescription> weak        = description;
+    description.reset();
+    EXPECT_FALSE(weak.expired());
+    EXPECT_EQ(CImageDescription::from(id), owner);
+    owner.reset();
+    EXPECT_TRUE(weak.expired());
+}
+
+TEST(ColorManagement, UnknownIdentitiesAreNull) {
+    EXPECT_FALSE(CImageDescription::from(uint64_t{0}));
+    EXPECT_FALSE(CImageDescription::from(UINT64_MAX));
+    EXPECT_FALSE(CPrimaries::from(uint64_t{0}));
+    EXPECT_FALSE(CPrimaries::from(UINT64_MAX));
+}
+
+TEST(ColorManagement, ChurnDoesNotKeepHistoricalValuesAlive) {
+    for (uint32_t i = 0; i < 4096; ++i) {
+        auto value = SImageDescription{.primaries = NColorPrimaries::BT709};
+        value.primaries.red.x += (i + 1) * 0.0000001;
+        value.luminances.reference = 1000 + i;
+        auto       description     = CImageDescription::from(value);
+        const auto id              = description->id();
+        const auto primariesId     = description->getPrimaries()->id();
+        // Exercise matrix conversion as well: no historical all-pairs cache.
+        auto matrix = description->getPrimaries()->convertMatrix(DEFAULT_SRGB_IMAGE_DESCRIPTION->getPrimaries());
+        EXPECT_TRUE(std::isfinite(matrix.mat()[0][0]));
+        description.reset();
+        EXPECT_FALSE(CImageDescription::from(id));
+        EXPECT_FALSE(CPrimaries::from(primariesId));
+    }
+}
+
+TEST(ColorManagement, ICCDescriptionsRemainDistinctAndReleaseNormally) {
+    SImageDescription value;
+    value.icc.present = true;
+    auto first        = CImageDescription::from(value);
+    auto second       = CImageDescription::from(value);
+    EXPECT_NE(first->id(), second->id());
+    const auto id = first->id();
+    first.reset();
+    EXPECT_FALSE(CImageDescription::from(id));
+    EXPECT_EQ(CImageDescription::from(second->id()), second);
+}
+
+TEST(ColorManagement, InterningUsesTheSameEqualityForNamedPrimariesAndSignedZero) {
+    SImageDescription first{.primariesNameSet = true};
+    auto              second       = first;
+    second.primaries.red.x         = 0.9; // ignored by equality for named primaries
+    first.masteringLuminances.min  = 0.F;
+    second.masteringLuminances.min = -0.F;
+    const auto owner               = CImageDescription::from(first);
+    EXPECT_EQ(CImageDescription::from(second), owner);
 }

@@ -1,6 +1,8 @@
 #include <helpers/cm/HardwareCM.hpp>
 #include <render/types.hpp>
 #include <gtest/gtest.h>
+#include <chrono>
+#include <iostream>
 
 using namespace NColorManagement;
 
@@ -172,4 +174,116 @@ TEST(HardwareCM, DiagonalUserCTMFoldsIntoTheEncoding) {
     EXPECT_NEAR(dim[0], 0.5 * white[0], 1.0 / 65535);
     EXPECT_NEAR(dim[1], white[1], 1.0 / 65535);
     EXPECT_NEAR(dim[2], 0.25 * white[2], 1.0 / 65535);
+}
+
+TEST(HardwareCM, BuildTiming) {
+    const auto          source = sdrSource();
+    const auto          target = hdrOutput();
+    std::vector<double> timings;
+    for (size_t i = 0; i < 21; ++i) {
+        const auto   start   = std::chrono::steady_clock::now();
+        const auto   result  = buildHardwareCM(source->value(), target->value(), AMD_LIKE);
+        const double elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        ASSERT_TRUE(result);
+        if (i > 0)
+            timings.push_back(elapsed);
+    }
+    std::ranges::sort(timings);
+    std::cout << "buildHardwareCM Debug 4096/4096 SDR->PQ, 20 warm calls: min=" << timings.front() << " ms median=" << timings[timings.size() / 2] << " ms max=" << timings.back()
+              << " ms\n";
+}
+
+TEST(HardwareCM, CacheRetainsAlternatingDescriptionsAcrossBudgetDenials) {
+    CHardwareCMCache cache;
+    const auto       first  = sdrSource();
+    const auto       second = sdrSource(CM_TRANSFER_FUNCTION_SRGB);
+    const auto       target = hdrOutput();
+    const auto       start  = std::chrono::steady_clock::time_point{};
+    const auto       a      = cache.get(first, target, AMD_LIKE, start);
+    ASSERT_TRUE(a);
+    // Misses fall back to composition; hits remain available in the same frame.
+    EXPECT_FALSE(cache.get(second, target, AMD_LIKE, start));
+    EXPECT_EQ(cache.get(first, target, AMD_LIKE, start), a);
+    const auto later = start + std::chrono::hours(1);
+    const auto b     = cache.get(second, target, AMD_LIKE, later);
+    ASSERT_TRUE(b);
+    for (size_t i = 0; i < 100; ++i) {
+        EXPECT_EQ(cache.get(first, target, AMD_LIKE, later), a);
+        EXPECT_EQ(cache.get(second, target, AMD_LIKE, later), b);
+    }
+}
+
+TEST(HardwareCM, NegativeCacheHitsDoNotSpendTheRebuildBudget) {
+    CHardwareCMCache cache;
+    const auto       source = sdrSource(CM_TRANSFER_FUNCTION_HLG);
+    const auto       target = hdrOutput();
+    const auto       start  = std::chrono::steady_clock::time_point{};
+    EXPECT_FALSE(cache.get(source, target, AMD_LIKE, start));
+    EXPECT_FALSE(cache.get(sdrSource(), target, AMD_LIKE, start)); // failures also spend the budget
+    const auto later = start + std::chrono::hours(1);
+    EXPECT_FALSE(cache.get(source, target, AMD_LIKE, later));
+    // A cached failure must not build again and block this supported source.
+    EXPECT_TRUE(cache.get(sdrSource(), target, AMD_LIKE, later));
+}
+
+TEST(HardwareCM, CacheKeysCoverEveryHardwareParameterAndTarget) {
+    CHardwareCMCache cache;
+    const auto       source   = sdrSource();
+    const auto       target   = hdrOutput();
+    const auto       now      = std::chrono::steady_clock::time_point{};
+    const auto       original = cache.get(source, target, AMD_LIKE, now);
+    ASSERT_TRUE(original);
+    std::vector<SHardwareCMParams> variants(8, AMD_LIKE);
+    variants[0].degammaSize++;
+    variants[1].gammaSize++;
+    variants[2].supportsCTM   = false;
+    variants[3].sdrBrightness = 1.5F;
+    variants[4].sdrSaturation = 0.5F;
+    variants[5].sdrBlack      = 0.F;
+    variants[6].outputGain[0] = 0.5F;
+    variants[7].sdrBlack.reset();
+    for (const auto& params : variants)
+        EXPECT_FALSE(cache.get(source, target, params, now)); // each is a miss, denied by the budget
+    EXPECT_FALSE(cache.get(source, DEFAULT_SRGB_IMAGE_DESCRIPTION, AMD_LIKE, now));
+    EXPECT_EQ(cache.get(source, target, AMD_LIKE, now), original);
+}
+
+TEST(HardwareCM, LRUIsBoundedAndReleasesDescriptionOwners) {
+    CHardwareCMCache                 cache;
+    std::array<PImageDescription, 9> descriptions;
+    auto                             now = std::chrono::steady_clock::time_point{};
+    for (size_t i = 0; i < descriptions.size(); ++i) {
+        auto value                 = sdrSource()->value();
+        value.luminances.reference = 80 + i;
+        descriptions[i]            = CImageDescription::from(value);
+        cache.get(descriptions[i], hdrOutput(), AMD_LIKE, now);
+        now += std::chrono::hours(1);
+        if (i == 7)
+            cache.get(descriptions[0], hdrOutput(), AMD_LIKE, now); // first becomes MRU
+    }
+    const auto oldestId   = descriptions[1]->id();
+    const auto retainedId = descriptions[0]->id();
+    descriptions[1].reset();
+    descriptions[0].reset();
+    EXPECT_FALSE(CImageDescription::from(oldestId));
+    EXPECT_TRUE(CImageDescription::from(retainedId));
+}
+
+TEST(HardwareCM, BudgetDeniesUniqueDescriptionChurnWithoutRetainingIt) {
+    CHardwareCMCache cache;
+    const auto       source  = sdrSource();
+    const auto       target  = hdrOutput();
+    const auto       now     = std::chrono::steady_clock::time_point{};
+    const auto       initial = cache.get(source, target, AMD_LIKE, now);
+    ASSERT_TRUE(initial);
+    for (uint32_t i = 0; i < 64; ++i) {
+        auto value                 = source->value();
+        value.luminances.reference = 1000 + i;
+        auto       description     = CImageDescription::from(value);
+        const auto id              = description->id();
+        EXPECT_FALSE(cache.get(description, target, AMD_LIKE, now + std::chrono::milliseconds(99)));
+        description.reset();
+        EXPECT_FALSE(CImageDescription::from(id));
+    }
+    EXPECT_EQ(cache.get(source, target, AMD_LIKE, now), initial);
 }

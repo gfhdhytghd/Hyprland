@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <fcntl.h>
+#include <filesystem>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -21,12 +22,12 @@ TEST(Helpers, drmDevIDFromFDCharacterDevice) {
 }
 
 TEST(Helpers, drmDevIDFromFDRejectsRegularFiles) {
-    char      path[] = "/tmp/hyprland-drm-testXXXXXX";
-    const int FD     = mkstemp(path);
+    auto      path = (std::filesystem::temp_directory_path() / "hyprland-drm-testXXXXXX").string();
+    const int FD   = mkstemp(path.data());
     ASSERT_GE(FD, 0);
 
     EXPECT_FALSE(DRM::devIDFromFD(FD).has_value());
 
     close(FD);
-    unlink(path);
+    unlink(path.c_str());
 }

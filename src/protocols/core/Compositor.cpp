@@ -709,10 +709,13 @@ PImageDescription CWLSurfaceResource::getPreferredImageDescription() {
     if (*PFORCE_HDR == 1 || (*PFORCE_HDR == 2 && m_hlSurface && WINDOW && WINDOW->metadata().appID() == "gamescope"))
         return g_pCompositor->getHDRImageDescription();
 
-    auto parent = m_self;
+    // A subsurface follows its toplevel parent; its role can outlive the wl_subsurface object and the parent.
+    auto parent = m_self.lock();
     if (parent->m_role->role() == SURFACE_ROLE_SUBSURFACE) {
-        auto subsurface = sc<CSubsurfaceRole*>(parent->m_role.get())->m_subsurface.lock();
-        parent          = subsurface->t1Parent();
+        const auto SUBSURFACE = sc<CSubsurfaceRole*>(parent->m_role.get())->m_subsurface.lock();
+        const auto T1PARENT   = SUBSURFACE ? SUBSURFACE->t1Parent() : nullptr;
+        if (T1PARENT)
+            parent = T1PARENT;
     }
     PHLMONITORREF monitor;
     if (parent->m_enteredOutputs.size() == 1)

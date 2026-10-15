@@ -370,7 +370,7 @@ CColorManagementFeedbackSurface::CColorManagementFeedbackSurface(SP<CWpColorMana
 
         RESOURCE->m_self     = RESOURCE;
         RESOURCE->m_settings = m_surface->getPreferredImageDescription();
-        m_currentPreferredId = RESOURCE->m_settings->id();
+        m_currentPreferred   = RESOURCE->m_settings;
 
         RESOURCE->sendMaybeReady();
     });
@@ -398,12 +398,15 @@ CColorManagementFeedbackSurface::CColorManagementFeedbackSurface(SP<CWpColorMana
 
         RESOURCE->m_self     = RESOURCE;
         RESOURCE->m_settings = preferred;
-        m_currentPreferredId = surfacePreferred->id();
+        m_currentPreferred   = surfacePreferred;
 
         RESOURCE->sendMaybeReady();
     });
 
-    m_listeners.destroy = m_surface->m_events.destroy.listen([this] { m_surface.reset(); });
+    m_listeners.destroy = m_surface->m_events.destroy.listen([this] {
+        m_surface.reset();
+        m_currentPreferred.reset();
+    });
     m_listeners.enter   = m_surface->m_events.enter.listen([this](const auto& monitor) { onPreferredChanged(); });
     m_listeners.leave   = m_surface->m_events.leave.listen([this](const auto& monitor) { onPreferredChanged(); });
 }
@@ -412,17 +415,18 @@ void CColorManagementFeedbackSurface::onPreferredChanged() {
     if (!m_surface)
         return;
 
-    const auto newId = m_surface->getPreferredImageDescription()->id();
-    if (m_currentPreferredId == newId)
+    const auto preferred = m_surface->getPreferredImageDescription();
+    if (m_currentPreferred == preferred)
         return;
 
+    const auto     newId = preferred->id();
     const uint32_t lo = sc<uint32_t>(newId & 0xFFFFFFFF);
     const uint32_t hi = sc<uint32_t>(newId >> 32);
     if (m_resource->version() > 1)
         m_resource->sendPreferredChanged2(hi, lo);
     else if (!hi)
         m_resource->sendPreferredChanged(lo);
-    m_currentPreferredId = newId;
+    m_currentPreferred = preferred;
 }
 
 bool CColorManagementFeedbackSurface::good() {
@@ -545,6 +549,12 @@ CColorManagementParametricCreator::CColorManagementParametricCreator(SP<CWpImage
         // Validate explicit primaries as sent; getPrimaries() would substitute named primaries for all-zero values.
         if (!rgbToXYZFromPrimaries(m_settings.primariesNameSet ? m_settings.getPrimaries() : m_settings.primaries)) {
             RESOURCE->resource()->sendFailed(WP_IMAGE_DESCRIPTION_V1_CAUSE_UNSUPPORTED, "Primaries do not define an invertible color space");
+            PROTO::colorManagement->destroyResource(this);
+            return;
+        }
+        // The mastering display is a real display, unlike the primary volume which may use imaginary primaries.
+        if ((m_valuesSet & PC_MASTERING_PRIMARIES) && !isPhysicalDisplayChromaticities(m_settings.masteringPrimaries)) {
+            RESOURCE->resource()->sendFailed(WP_IMAGE_DESCRIPTION_V1_CAUSE_UNSUPPORTED, "Mastering display primaries are not physical chromaticities");
             PROTO::colorManagement->destroyResource(this);
             return;
         }

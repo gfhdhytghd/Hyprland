@@ -9,6 +9,13 @@
 #include <type_traits>
 
 namespace Render {
+    class CCMSettingsCacheTestAccessor {
+      public:
+        static auto& entries(CCMSettingsCache& cache) {
+            return cache.m_entries;
+        }
+    };
+
     class CContextMetadataElement : public IPassElement {
       public:
         bool needsLiveBlur(CRenderContext& ctx) override {
@@ -361,7 +368,7 @@ namespace Render {
             EXPECT_EQ(ctx.m_backdropCaptures.size(), 2U);
             EXPECT_FALSE(scope.expired());
             EXPECT_FALSE(fb.expired());
-            ctx.m_cmSettingsCache.emplace_back().srcDescId = 42;
+            CCMSettingsCacheTestAccessor::entries(ctx.m_cmSettingsCache).emplace_back().sourceId = 42;
             throw std::runtime_error("unclosed nested backdrop");
         };
         EXPECT_THROW(nestedDraw(), std::runtime_error);
@@ -371,8 +378,8 @@ namespace Render {
         EXPECT_EQ(ctx.m_backdropCaptures.back().scope, scope.lock());
         EXPECT_EQ(ctx.m_backdropCaptures.back().framebuffer, fb.lock());
         EXPECT_EQ(ctx.m_backdropCaptures.capacity(), capacity);
-        ASSERT_EQ(ctx.m_cmSettingsCache.size(), 1U);
-        EXPECT_EQ(ctx.m_cmSettingsCache[0].srcDescId, 42U);
+        ASSERT_EQ(CCMSettingsCacheTestAccessor::entries(ctx.m_cmSettingsCache).size(), 1U);
+        EXPECT_EQ(CCMSettingsCacheTestAccessor::entries(ctx.m_cmSettingsCache)[0].sourceId, 42U);
     }
 
     TEST(RenderContext, ResetReleasesTargetsAndPassContents) {
@@ -428,10 +435,10 @@ namespace Render {
 
     TEST(RenderContext, ReuseResetsStateAndRetainsScratchCapacity) {
         CRenderContext context;
-        context.m_cmSettingsCache.reserve(16);
+        CCMSettingsCacheTestAccessor::entries(context.m_cmSettingsCache).reserve(16);
         context.m_backdropCaptures.reserve(8);
         context.m_data.renderModif.modifs.reserve(32);
-        const auto cmCapacity       = context.m_cmSettingsCache.capacity();
+        const auto cmCapacity       = CCMSettingsCacheTestAccessor::entries(context.m_cmSettingsCache).capacity();
         const auto backdropCapacity = context.m_backdropCaptures.capacity();
         const auto modifCapacity    = context.m_data.renderModif.modifs.capacity();
 
@@ -454,7 +461,7 @@ namespace Render {
             context.m_data.finalDamage                 = context.m_data.damage;
             context.m_data.renderModif.enabled         = false;
             context.m_data.renderModif.modifs.emplace_back(SRenderModifData::RMOD_TYPE_SCALE, 2.F);
-            context.m_cmSettingsCache.emplace_back();
+            CCMSettingsCacheTestAccessor::entries(context.m_cmSettingsCache).emplace_back();
             context.m_backdropCaptures.emplace_back();
             context.m_blockSurfaceFeedback = true;
             context.m_renderingSnapshot    = true;
@@ -480,7 +487,7 @@ namespace Render {
             EXPECT_TRUE(context.m_data.finalDamage.empty());
             EXPECT_TRUE(context.m_data.renderModif.enabled);
             EXPECT_TRUE(context.m_data.renderModif.modifs.empty());
-            EXPECT_TRUE(context.m_cmSettingsCache.empty());
+            EXPECT_TRUE(CCMSettingsCacheTestAccessor::entries(context.m_cmSettingsCache).empty());
             EXPECT_TRUE(context.m_backdropCaptures.empty());
             EXPECT_FALSE(context.m_blockSurfaceFeedback);
             EXPECT_FALSE(context.m_renderingSnapshot);
@@ -488,7 +495,7 @@ namespace Render {
             EXPECT_FALSE(context.m_gl.fakeFrame);
             EXPECT_FALSE(context.m_gl.offloadedFramebuffer);
             EXPECT_FALSE(context.m_gl.applyFinalShader);
-            EXPECT_EQ(context.m_cmSettingsCache.capacity(), cmCapacity);
+            EXPECT_EQ(CCMSettingsCacheTestAccessor::entries(context.m_cmSettingsCache).capacity(), cmCapacity);
             EXPECT_EQ(context.m_backdropCaptures.capacity(), backdropCapacity);
             EXPECT_EQ(context.m_data.renderModif.modifs.capacity(), modifCapacity);
             context.reset();

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "types.hpp"
+#include "CMSettings.hpp"
 #include "pass/Pass.hpp"
 #include "SurfaceBufferUse.hpp"
 
@@ -65,14 +66,7 @@ namespace Render {
         };
         std::vector<SBackdropCapture> m_backdropCaptures;
 
-        struct SCMSettingsCacheEntry {
-            uint64_t    srcDescId = 0, dstDescId = 0;
-            void*       surfacePtr      = nullptr; // read-only!!
-            bool        modifySDR       = false;
-            float       sdrMinLuminance = -1.F;
-            SCMSettings settings;
-        };
-        std::vector<SCMSettingsCacheEntry> m_cmSettingsCache;
+        CCMSettingsCache                   m_cmSettingsCache;
 
         bool                               m_blockSurfaceFeedback = false;
         bool                               m_renderingSnapshot    = false;

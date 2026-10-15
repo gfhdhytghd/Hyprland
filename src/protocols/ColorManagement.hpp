@@ -79,7 +79,7 @@ class CColorManagementFeedbackSurface {
     SP<CWpColorManagementSurfaceFeedbackV1> m_resource;
     wl_client*                              m_client = nullptr;
 
-    uint64_t                                m_currentPreferredId = 0;
+    NColorManagement::PImageDescription     m_currentPreferred;
 
     struct {
         CHyprSignalListener destroy;

@@ -27,3 +27,24 @@ TEST(ColorManagementState, CachedSubsurfaceStatePreservesDescriptionAndUnset) {
     cached.mergeFrom(pending);
     EXPECT_FALSE(cached.imageDescription);
 }
+
+TEST(ColorManagementState, CommittedAndCachedStatesOwnDescriptionsAfterResourceRelease) {
+    SSurfaceState               current, pending, cached;
+    auto                        resource = CImageDescription::from(SImageDescription{.luminances = {.min = 0.012F, .max = 971, .reference = 143}});
+    const auto                  id       = resource->id();
+    WP<const CImageDescription> weak     = resource;
+    pending.imageDescription             = resource;
+    pending.updated.bits.colorManagement = true;
+    cached.mergeFrom(pending);
+    current.updateFrom(pending);
+    resource.reset();
+    pending.reset();
+    pending.imageDescription.reset();
+    EXPECT_FALSE(weak.expired());
+    EXPECT_EQ(CImageDescription::from(id), current.imageDescription);
+    current.imageDescription.reset();
+    EXPECT_FALSE(weak.expired());
+    cached.imageDescription.reset();
+    EXPECT_TRUE(weak.expired());
+    EXPECT_FALSE(CImageDescription::from(id));
+}

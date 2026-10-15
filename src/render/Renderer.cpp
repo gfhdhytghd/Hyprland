@@ -2076,7 +2076,7 @@ static bool isSDR2HDR(CRenderContext& ctx, const NColorManagement::SImageDescrip
             imageDescription.transferFunction == NColorManagement::CM_TRANSFER_FUNCTION_GAMMA22) &&
         (targetImageDescription.transferFunction == NColorManagement::CM_TRANSFER_FUNCTION_ST2084_PQ ||
          targetImageDescription.transferFunction == NColorManagement::CM_TRANSFER_FUNCTION_HLG ||
-         (targetImageDescription.transferFunction == NColorManagement::CM_TRANSFER_FUNCTION_EXT_LINEAR &&
+         (targetImageDescription.transferFunction == NColorManagement::CM_TRANSFER_FUNCTION_EXT_LINEAR && ctx.m_data.pMonitor &&
           ctx.m_data.pMonitor->m_imageDescription->value().transferFunction == NColorManagement::CM_TRANSFER_FUNCTION_ST2084_PQ));
 }
 
@@ -2087,17 +2087,8 @@ void IHyprRenderer::clearCMSettingsCache(CRenderContext& ctx) {
 SCMSettings IHyprRenderer::getCMSettings(CRenderContext& ctx, const NColorManagement::PImageDescription imageDescription,
                                          const NColorManagement::PImageDescription targetImageDescription, SP<CWLSurfaceResource> surface, bool modifySDR, float sdrMinLuminance,
                                          bool shouldUseSurface) {
-    const auto srcId = imageDescription->id();
-    const auto dstId = targetImageDescription->id();
-    void*      sPtr  = shouldUseSurface ? ctx.m_data.surface.get() : nullptr;
-
-    for (auto const& entry : ctx.m_cmSettingsCache) {
-        if (entry.srcDescId == srcId && entry.dstDescId == dstId && entry.surfacePtr == sPtr && entry.modifySDR == modifySDR && entry.sdrMinLuminance == sdrMinLuminance)
-            return entry.settings;
-    }
-
     const auto                          sdrEOTF = NTransferFunction::fromConfig();
-    NColorManagement::eTransferFunction srcTF;
+    NColorManagement::eTransferFunction srcTF   = imageDescription->value().transferFunction;
 
     const int                           tonemapMode = shouldUseSurface && ctx.m_data.currentWindow ? ctx.m_data.currentWindow->m_ruleApplicator->tonemap().valueOr(1) : 1;
 
@@ -2118,68 +2109,15 @@ SCMSettings IHyprRenderer::getCMSettings(CRenderContext& ctx, const NColorManage
         srcTF = imageDescription->value().transferFunction;
 
     const bool  needsSDRmod = modifySDR && isSDR2HDR(ctx, imageDescription->value(), targetImageDescription->value());
-    const auto& source      = imageDescription->value();
-    const auto& target      = targetImageDescription->value();
-    // Reference whites are anchored for every conversion, including SDR content on HDR outputs.
-    const float referenceScale  = referenceLuminanceScale(source, target);
-    const float sdrBrightness   = needsSDRmod && ctx.m_data.pMonitor->m_sdrBrightness > 0 ? ctx.m_data.pMonitor->m_sdrBrightness : 1.0f;
-    const float sourcePeak      = source.maxCLL > 0 ? source.maxCLL : (source.masteringLuminances.max > 0 ? source.masteringLuminances.max : source.luminances.max);
-    const float maxLuminance    = referenceScale * sourcePeak * sdrBrightness;
-    const auto  dstMaxLuminance = target.masteringLuminances.max > 0 ? target.masteringLuminances.max : (target.luminances.max > 0 ? target.luminances.max : 10000);
-
-    auto        matrix = imageDescription->getPrimaries()->convertMatrix(targetImageDescription->getPrimaries());
-    auto        toXYZ  = targetImageDescription->getPrimaries()->toXYZ();
-
-    const bool  needsMod = needsSDRmod &&
-        ((ctx.m_data.pMonitor->m_sdrSaturation > 0 && ctx.m_data.pMonitor->m_sdrSaturation != 1.0f) ||
-         (ctx.m_data.pMonitor->m_sdrBrightness > 0 && ctx.m_data.pMonitor->m_sdrBrightness != 1.0f));
-
-    const bool needsTonemap = maxLuminance >= dstMaxLuminance * 1.01;
-
-    auto       result = SCMSettings{
-        .sourceTF          = srcTF,
-        .targetTF          = targetImageDescription->value().transferFunction,
-        .srcTFRange        = {.min = source.encodingMinLuminance() * referenceScale, .max = source.encodingMaxLuminance() * referenceScale},
-        .dstTFRange        = {.min = target.encodingMinLuminance(), .max = target.encodingMaxLuminance()},
-        .srcReferenceScale = referenceScale,
-        .srcRefLuminance   = imageDescription->value().luminances.reference,
-        .dstRefLuminance   = targetImageDescription->value().luminances.reference,
-        .convertMatrix     = matrix.mat(),
-
-        .needsTonemap            = tonemapMode != 0 && needsTonemap,
-        .tonemapMode             = tonemapMode,
-        .maxLuminance            = needsTonemap && tonemapMode == 2 ? dstMaxLuminance : maxLuminance,
-        .dstMaxLuminance         = dstMaxLuminance,
-        .srcMaxLuminance         = referenceScale * sourcePeak,
-        .srcMinLuminance         = referenceScale * (source.masteringLuminances.max > 0 ? source.masteringLuminances.min : source.encodingMinLuminance()),
-        .dstPrimaries2XYZ        = toXYZ.mat(),
-        .needsSDRmod             = needsMod,
-        .sdrSaturation           = needsSDRmod && ctx.m_data.pMonitor->m_sdrSaturation > 0 ? ctx.m_data.pMonitor->m_sdrSaturation : 1.0f,
-        .sdrBrightnessMultiplier = sdrBrightness,
-    };
-
-    // sdr_min_luminance sets the absolute SDR black level on HDR outputs.
-    if (needsSDRmod && sdrMinLuminance >= 0) {
-        result.srcTFRange.min  = sdrMinLuminance;
-        result.srcMinLuminance = sdrMinLuminance;
-    }
-
-    // Linear sources skip toNit, so their pixels take the reference-white ratio through the conversion matrix.
-    if (srcTF == CM_TRANSFER_FUNCTION_LINEAR)
-        for (auto& row : result.convertMatrix)
-            for (auto& value : row)
-                value *= referenceScale;
-
-    ctx.m_cmSettingsCache.push_back({
-        .srcDescId       = srcId,
-        .dstDescId       = dstId,
-        .surfacePtr      = sPtr,
-        .modifySDR       = modifySDR,
-        .sdrMinLuminance = sdrMinLuminance,
-        .settings        = result,
-    });
-
-    return result;
+    return ctx.m_cmSettingsCache.get(imageDescription, targetImageDescription,
+                                     {
+                                         .sourceTF        = srcTF,
+                                         .tonemapMode     = tonemapMode,
+                                         .needsSDRmod     = needsSDRmod,
+                                         .sdrBrightness   = ctx.m_data.pMonitor ? ctx.m_data.pMonitor->m_sdrBrightness : 1.F,
+                                         .sdrSaturation   = ctx.m_data.pMonitor ? ctx.m_data.pMonitor->m_sdrSaturation : 1.F,
+                                         .sdrMinLuminance = sdrMinLuminance,
+                                     });
 }
 
 void IHyprRenderer::renderMirrored(CRenderContext& ctx) {
@@ -3581,7 +3519,9 @@ SP<ITexture> IHyprRenderer::renderSplash(const std::function<SP<ITexture>(const 
     return tex;
 }
 
-using ColorConversionKey = std::tuple<float, float, float, float, uint64_t>;
+// Description IDs cover immutable colorimetry. Include the resolved policy too,
+// so monitor/config/window changes cannot bypass the CM settings cache below.
+using ColorConversionKey = std::tuple<float, float, float, float, uint64_t, NColorManagement::eTransferFunction, int, bool, float, float, float>;
 
 struct SColorConversionKeyHash {
     size_t operator()(const ColorConversionKey& key) const {
@@ -3592,11 +3532,7 @@ struct SColorConversionKeyHash {
         // distribute bits and reduce collisions between adjacent fields.
         const auto hashCombine = [&hash](const auto& value) { hash ^= std::hash<std::decay_t<decltype(value)>>{}(value) + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2); };
 
-        hashCombine(std::get<0>(key));
-        hashCombine(std::get<1>(key));
-        hashCombine(std::get<2>(key));
-        hashCombine(std::get<3>(key));
-        hashCombine(std::get<4>(key));
+        std::apply([&](const auto&... values) { (hashCombine(values), ...); }, key);
 
         return hash;
     }
@@ -3622,12 +3558,22 @@ CHyprColor IHyprRenderer::getConvertedColor(CRenderContext& ctx, const CHyprColo
     if (colorConversionCache.size() >= MAX_COLOR_CONVERSION_CACHE_SIZE)
         colorConversionCache.clear();
 
-    const ColorConversionKey key = {color.r, color.g, color.b, color.a, DESCR->id()};
+    const auto               settings = getCMSettings(ctx, DEFAULT_SRGB_IMAGE_DESCRIPTION, DESCR, nullptr, true, ctx.m_data.pMonitor ? ctx.m_data.pMonitor->m_sdrMinLuminance : -1);
+    const ColorConversionKey key      = {color.r,
+                                         color.g,
+                                         color.b,
+                                         color.a,
+                                         DESCR->id(),
+                                         settings.sourceTF,
+                                         settings.tonemapMode,
+                                         settings.needsSDRmod,
+                                         settings.sdrSaturation,
+                                         settings.sdrBrightnessMultiplier,
+                                         settings.srcTFRange.min};
 
     if (const auto IT = colorConversionCache.find(key); IT != colorConversionCache.end())
         return IT->second;
 
-    const auto settings  = getCMSettings(ctx, DEFAULT_SRGB_IMAGE_DESCRIPTION, DESCR, nullptr, true, ctx.m_data.pMonitor ? ctx.m_data.pMonitor->m_sdrMinLuminance : -1);
     const auto converted = convertColor(color, DEFAULT_SRGB_IMAGE_DESCRIPTION, DESCR, settings);
     colorConversionCache.emplace(key, converted);
 

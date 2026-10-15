@@ -1276,8 +1276,6 @@ void CHyprOpenGLImpl::renderTexture(CRenderContext& ctx, SP<ITexture> tex, const
     disableScissor();
 }
 
-static std::map<std::pair<uint32_t, uint32_t>, std::array<GLfloat, 9>> primariesConversionCache;
-
 void CHyprOpenGLImpl::passCMUniforms(WP<CShader> shader, const NColorManagement::PImageDescription imageDescription,
                                      const NColorManagement::PImageDescription targetImageDescription, bool modifySDR, float sdrMinLuminance, const SCMSettings& settings) {
     const auto sourceXYZ = Hyprgraphics::CMatrix3{imageDescription->getPrimaries()->toXYZ()}.mat();
@@ -1297,17 +1295,13 @@ void CHyprOpenGLImpl::passCMUniforms(WP<CShader> shader, const NColorManagement:
     shader->setUniformFloat(SHADER_SDR_BRIGHTNESS, settings.sdrBrightnessMultiplier);
 
     if (!targetImageDescription->value().icc.present) {
-        const auto cacheKey = std::pair{imageDescription->id(), targetImageDescription->id()};
-        if (!primariesConversionCache.contains(cacheKey)) {
-            const auto&                  mat             = settings.convertMatrix;
-            const std::array<GLfloat, 9> glConvertMatrix = {
-                mat[0][0], mat[1][0], mat[2][0], //
-                mat[0][1], mat[1][1], mat[2][1], //
-                mat[0][2], mat[1][2], mat[2][2], //
-            };
-            primariesConversionCache.emplace(cacheKey, glConvertMatrix);
-        }
-        shader->setUniformMatrix3fv(SHADER_CONVERT_MATRIX, 1, false, primariesConversionCache[cacheKey]);
+        const auto&                  convert         = settings.convertMatrix;
+        const std::array<GLfloat, 9> glConvertMatrix = {
+            convert[0][0], convert[1][0], convert[2][0], //
+            convert[0][1], convert[1][1], convert[2][1], //
+            convert[0][2], convert[1][2], convert[2][2], //
+        };
+        shader->setUniformMatrix3fv(SHADER_CONVERT_MATRIX, 1, false, glConvertMatrix);
 
         const auto                   mat                  = settings.dstPrimaries2XYZ;
         const std::array<GLfloat, 9> glTargetPrimariesXYZ = {

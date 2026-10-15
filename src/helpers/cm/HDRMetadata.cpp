@@ -7,7 +7,16 @@ using namespace NColorManagement;
 
 static const hdr_output_metadata NO_HDR_METADATA = {.hdmi_metadata_type1 = hdr_metadata_infoframe{.eotf = 0}};
 
-hdr_output_metadata              NColorManagement::createHDRMetadata(const SImageDescription& settings) {
+bool                             NColorManagement::isPhysicalDisplayChromaticities(const SPCPRimaries& primaries) {
+    // Inside the xy unit triangle, which contains the spectrum locus, and spanning a color space with a positive white mix.
+    for (const auto& xy : {primaries.red, primaries.green, primaries.blue, primaries.white}) {
+        if (!std::isfinite(xy.x) || !std::isfinite(xy.y) || xy.x < 0 || xy.y < 0 || xy.x + xy.y > 1)
+            return false;
+    }
+    return rgbToXYZFromPrimaries(primaries).has_value();
+}
+
+hdr_output_metadata NColorManagement::createHDRMetadata(const SImageDescription& settings) {
     uint8_t eotf = 0;
     switch (settings.transferFunction) {
         case CM_TRANSFER_FUNCTION_GAMMA22:
@@ -19,10 +28,11 @@ hdr_output_metadata              NColorManagement::createHDRMetadata(const SImag
     }
 
     const auto toNits  = [](double value) { return sc<uint16_t>(std::clamp(std::round(value), 0.0, 65535.0)); };
-    const auto to16Bit = [](float value) { return sc<uint16_t>(std::clamp(std::round(value * 50000.0), 0.0, 65535.0)); };
+    const auto to16Bit = [](float value) { return sc<uint16_t>(std::clamp(std::round(value * 50000.0), 0.0, 50000.0)); };
 
-    // CTA-861.3: zero fields mean unknown. The primary volume is the encoding range, not a mastering display.
-    const auto colorimetry = settings.masteringPrimaries;
+    // CTA-861.3: zero fields mean unknown. The primary volume is the encoding range, not a mastering display, and chromaticities
+    // above 50000 (1.0) are reserved, so primaries that can't be a display are sent as unknown.
+    const auto colorimetry = isPhysicalDisplayChromaticities(settings.masteringPrimaries) ? settings.masteringPrimaries : SPCPRimaries{};
     const auto luminances  = settings.masteringLuminances.max > 0 ? settings.masteringLuminances : SImageDescription::SPCMasteringLuminances{.min = 0, .max = 0};
 
     LOG(Log::TRACE, "ColorManagement primaries {},{} {},{} {},{} {},{}", colorimetry.red.x, colorimetry.red.y, colorimetry.green.x, colorimetry.green.y, colorimetry.blue.x,
