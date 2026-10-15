@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstdint>
+#include <chrono>
 #include <optional>
 #include <vector>
 
@@ -17,6 +18,7 @@ namespace NColorManagement {
         float                sdrSaturation = 1.F;
         std::optional<float> sdrBlack;                     // sdr_min_luminance, absolute source black on HDR targets
         std::array<float, 3> outputGain = {1.F, 1.F, 1.F}; // diagonal user CTM, which acts on the encoded output of composited frames
+        bool                 operator==(const SHardwareCMParams&) const = default;
     };
 
     struct SHardwareCM {
@@ -27,6 +29,24 @@ namespace NColorManagement {
             0, 0, 1, //
         }; // row-major, linear source primaries -> linear target primaries
         std::vector<uint16_t> gamma; // interleaved [r,g,b]+, linear light -> target signal, before user ramps
+    };
+
+    // Bounded per-output LRU, including failures. Cache hits are free of rebuild
+    // throttling; misses fall back to composition while the CPU budget recovers.
+    class CHardwareCMCache {
+      public:
+        WP<SHardwareCM> get(PImageDescription source, PImageDescription target, const SHardwareCMParams& params,
+                            std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
+
+      private:
+        struct SEntry {
+            PImageDescription source;
+            PImageDescription target;
+            SHardwareCMParams params;
+            UP<SHardwareCM>   result;
+        };
+        std::vector<SEntry>                   m_entries;
+        std::chrono::steady_clock::time_point m_nextBuild = {};
     };
 
     // Builds a hardware equivalent of the shader conversion, or nothing when the hardware can't reproduce it within half a 10 bit code:

@@ -177,3 +177,31 @@ std::vector<uint16_t> NColorManagement::composeGammaRamp(const std::vector<uint1
     }
     return result;
 }
+
+WP<SHardwareCM> CHardwareCMCache::get(PImageDescription source, PImageDescription target, const SHardwareCMParams& params, std::chrono::steady_clock::time_point now) {
+    if (!source || !target)
+        return {};
+
+    const auto it =
+        std::ranges::find_if(m_entries, [&](const auto& entry) { return entry.source->id() == source->id() && entry.target->id() == target->id() && entry.params == params; });
+    if (it != m_entries.end()) {
+        std::rotate(it, it + 1, m_entries.end());
+        return m_entries.back().result;
+    }
+    if (now < m_nextBuild)
+        return {};
+
+    const auto start   = std::chrono::steady_clock::now();
+    auto       result  = buildHardwareCM(source->value(), target->value(), params);
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    // At most ten admissions/second and about 1% sustained rebuild CPU time.
+    // Charge actual cost, including failed builds, even if one build exceeds the
+    // allowance. There is no per-frame reset that clients can exploit.
+    m_nextBuild = now + std::max(std::chrono::steady_clock::duration(std::chrono::milliseconds(100)), elapsed * 100);
+
+    constexpr size_t CAPACITY = 8;
+    if (m_entries.size() == CAPACITY)
+        m_entries.erase(m_entries.begin());
+    m_entries.push_back({.source = std::move(source), .target = std::move(target), .params = params, .result = result ? makeUnique<SHardwareCM>(std::move(*result)) : nullptr});
+    return m_entries.back().result;
+}

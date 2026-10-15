@@ -24,6 +24,7 @@
 #include "../desktop/reserved/ReservedArea.hpp"
 #include <optional>
 #include "../helpers/cm/ColorManagement.hpp"
+#include "../helpers/cm/HardwareCM.hpp"
 #include "../helpers/signal/Signal.hpp"
 #include "DamageRing.hpp"
 #include <aquamarine/output/Output.hpp>
@@ -415,22 +416,14 @@ namespace Monitor {
 
         bool                                              stageScanoutCM(const NColorManagement::SImageDescription& source, bool& changed);
         bool                                              scanoutCMNeedsUpdate(SP<CWLSurfaceResource> surface);
-        static const NColorManagement::SImageDescription& scanoutDescription(SP<CWLSurfaceResource> surface);
+        static NColorManagement::PImageDescription        scanoutDescription(SP<CWLSurfaceResource> surface);
         void                                              clearScanoutCM();
 
         std::vector<uint16_t>                             m_clientGammaRamp;
         std::vector<uint16_t>                             m_vcgtRamp;
         UP<NColorManagement::SHardwareCM>                 m_hardwareCM;               // active for the current direct scanout
         bool                                              m_hardwareCMFailed = false; // the driver rejected it, stop trying until reconfigured
-        struct {
-            uint64_t                          sourceId = 0, targetId = 0;
-            size_t                            degammaSize = 0, gammaSize = 0;
-            bool                              supportsCTM   = false;
-            std::array<float, 3>              outputGain    = {};
-            float                             sdrBrightness = 0, sdrSaturation = 0, sdrBlack = 0;
-            int64_t                           mode = -1;
-            UP<NColorManagement::SHardwareCM> result;
-        } m_hardwareCMCache;
+        NColorManagement::CHardwareCMCache                m_hardwareCMCache;
         int                 m_modeRetryCount = 0;
         SP<CEventLoopTimer> m_modeRetryTimer;
 

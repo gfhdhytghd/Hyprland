@@ -30,6 +30,9 @@ namespace Render {
 }
 
 namespace NColorManagement {
+    template <typename T>
+    struct SInternTable;
+
     enum eNoShader : uint8_t {
         CM_NS_DISABLE  = 0,
         CM_NS_ALWAYS   = 1,
@@ -202,22 +205,27 @@ namespace NColorManagement {
 
     class CPrimaries {
       public:
-        static WP<const CPrimaries>   from(const SPCPRimaries& primaries);
-        static WP<const CPrimaries>   from(const ePrimaries name);
-        static WP<const CPrimaries>   from(const uint primariesId);
+        static SP<const CPrimaries>   from(const SPCPRimaries& primaries);
+        static SP<const CPrimaries>   from(const ePrimaries name);
+        static SP<const CPrimaries>   from(const uint64_t primariesId);
 
         const SPCPRimaries&           value() const;
-        uint                          id() const;
+        uint64_t                      id() const;
 
         const Hyprgraphics::CMatrix3& toXYZ() const;                                       // toXYZ() * rgb -> xyz
-        const Hyprgraphics::CMatrix3& convertMatrix(const WP<const CPrimaries> dst) const; // convertMatrix(dst) * rgb with "this" primaries -> rgb with dst primaries
+        Hyprgraphics::CMatrix3        convertMatrix(const SP<const CPrimaries> dst) const; // convertMatrix(dst) * rgb with "this" primaries -> rgb with dst primaries
+
+        ~CPrimaries();
+        CPrimaries(const CPrimaries&)            = delete;
+        CPrimaries& operator=(const CPrimaries&) = delete;
 
       private:
-        CPrimaries(const SPCPRimaries& primaries, const uint primariesId);
-        uint                   m_id;
-        SPCPRimaries           m_primaries;
+        CPrimaries(const SPCPRimaries& primaries, const uint64_t primariesId);
+        uint64_t                     m_id = 0;
+        SPCPRimaries                 m_primaries;
+        SP<SInternTable<CPrimaries>> m_table;
 
-        Hyprgraphics::CMatrix3 m_primaries2XYZ;
+        Hyprgraphics::CMatrix3       m_primaries2XYZ;
     };
 
     struct SImageDescription {
@@ -348,22 +356,27 @@ namespace NColorManagement {
 
     class CImageDescription {
       public:
-        static WP<const CImageDescription> from(const SImageDescription& imageDescription);
-        static WP<const CImageDescription> from(const uint64_t imageDescriptionId);
+        static SP<const CImageDescription> from(const SImageDescription& imageDescription);
+        static SP<const CImageDescription> from(const uint64_t imageDescriptionId);
 
-        WP<const CImageDescription>        with(const SImageDescription::SPCLuminances& luminances) const;
+        SP<const CImageDescription>        with(const SImageDescription::SPCLuminances& luminances) const;
 
         const SImageDescription&           value() const;
         uint64_t                           id() const;
 
-        WP<const CPrimaries>               getPrimaries() const;
-        bool                               needsCM(WP<const CImageDescription> target) const;
+        SP<const CPrimaries>               getPrimaries() const;
+        bool                               needsCM(SP<const CImageDescription> target) const;
+
+        ~CImageDescription();
+        CImageDescription(const CImageDescription&)            = delete;
+        CImageDescription& operator=(const CImageDescription&) = delete;
 
       private:
         CImageDescription(const SImageDescription& imageDescription, const uint64_t imageDescriptionId);
-        uint64_t          m_id          = 0;
-        uint              m_primariesId = 0;
-        SImageDescription m_imageDescription;
+        uint64_t                            m_id = 0;
+        SP<const CPrimaries>                m_primaries;
+        SP<SInternTable<CImageDescription>> m_table;
+        SImageDescription                   m_imageDescription;
     };
 
     union RGBAColor {
@@ -387,7 +400,7 @@ namespace NColorManagement {
         }
     };
 
-    using PImageDescription = WP<const CImageDescription>;
+    using PImageDescription = SP<const CImageDescription>;
 
     hdr_output_metadata createHDRMetadata(const SImageDescription& settings);
     // Chromaticities a real (mastering) display can have, which CTA-861.3 metadata can carry.

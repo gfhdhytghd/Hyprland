@@ -15,6 +15,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+using namespace NColorManagement;
+
 // Dispatch real Wayland requests without a GPU, output backend, or desktop session.
 class CColorManagementProtocolTest : public ::testing::Test {
   protected:
@@ -28,7 +30,8 @@ class CColorManagementProtocolTest : public ::testing::Test {
 
     std::unique_ptr<wl_display, decltype(&wl_display_destroy)> m_display{nullptr, wl_display_destroy};
     Hyprutils::OS::CFileDescriptor                             m_socket;
-    wl_client*                                                 m_client = nullptr; // Owned by m_display.
+    wl_client*                                                 m_client           = nullptr; // Owned by m_display.
+    bool                                                       m_installedGlobals = false;
     UP<Event::CEventBus>                                       m_previousBus;
     UP<CCompositor>                                            m_previousCompositor;
     UP<Config::IConfigManager>                                 m_previousConfig;
@@ -49,6 +52,7 @@ void CColorManagementProtocolTest::SetUp() {
     m_client = wl_client_create(m_display.get(), server.get());
     ASSERT_NE(m_client, nullptr);
     server.take();
+    m_installedGlobals           = true;
     m_previousCompositor         = std::move(g_pCompositor);
     g_pCompositor                = makeUnique<CCompositor>(true);
     g_pCompositor->m_wlDisplay   = m_display.get();
@@ -58,21 +62,23 @@ void CColorManagementProtocolTest::SetUp() {
     m_previousConfig             = std::move(Config::mgr());
     Config::mgr()                = makeUnique<Config::Lua::CConfigManager>();
     CConfigValueBase::flushCaches();
-    m_previousBus          = std::move(Event::bus());
-    Event::bus()           = makeUnique<Event::CEventBus>();
-    m_previousColor        = std::move(PROTO::colorManagement);
-    m_previousCore         = std::move(PROTO::compositor);
+    m_previousBus           = std::move(Event::bus());
+    Event::bus()            = makeUnique<Event::CEventBus>();
+    m_previousColor         = std::move(PROTO::colorManagement);
+    m_previousCore          = std::move(PROTO::compositor);
     m_previousSubcompositor = std::move(PROTO::subcompositor);
-    m_previousPresentation = std::move(PROTO::presentation);
-    PROTO::colorManagement = makeUnique<CColorManagementProtocol>(&wp_color_manager_v1_interface, 3, "cm-test");
-    PROTO::compositor      = makeUnique<CWLCompositorProtocol>(&wl_compositor_interface, 6, "cm-core-test");
-    PROTO::subcompositor   = makeUnique<CWLSubcompositorProtocol>(&wl_subcompositor_interface, 1, "cm-subcompositor-test");
-    PROTO::presentation    = makeUnique<CPresentationProtocol>(&wp_presentation_interface, 2, "cm-presentation-test");
+    m_previousPresentation  = std::move(PROTO::presentation);
+    PROTO::colorManagement  = makeUnique<CColorManagementProtocol>(&wp_color_manager_v1_interface, 3, "cm-test");
+    PROTO::compositor       = makeUnique<CWLCompositorProtocol>(&wl_compositor_interface, 6, "cm-core-test");
+    PROTO::subcompositor    = makeUnique<CWLSubcompositorProtocol>(&wl_subcompositor_interface, 1, "cm-subcompositor-test");
+    PROTO::presentation     = makeUnique<CPresentationProtocol>(&wp_presentation_interface, 2, "cm-presentation-test");
 }
 
 void CColorManagementProtocolTest::TearDown() {
     if (m_display)
         wl_display_destroy_clients(m_display.get());
+    if (!m_installedGlobals)
+        return;
     PROTO::colorManagement = std::move(m_previousColor);
     PROTO::compositor      = std::move(m_previousCore);
     PROTO::subcompositor   = std::move(m_previousSubcompositor);
@@ -267,4 +273,42 @@ TEST_F(CColorManagementProtocolTest, PreferredDescriptionOfAnOrphanedSubsurface)
     // The parent goes away while the wl_subsurface and its role stay: the child falls back to its own outputs.
     request(4, 0, {});
     EXPECT_TRUE(child->getPreferredImageDescription());
+}
+
+TEST_F(CColorManagementProtocolTest, ParametricDescriptionIsFreedOnResourceDestroy) {
+    createParams();
+    request(3, 1, {WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_GAMMA22});
+    request(3, 4, {640123, 330000, 300000, 600000, 150000, 60000, 312700, 329000});
+    request(3, 5, {123, 997, 149});
+    request(3, 0, {4});
+    auto resource = CColorManagementImageDescription::fromReference(wl_client_get_object(m_client, 4));
+    ASSERT_TRUE(resource);
+    ASSERT_TRUE(resource->ready());
+    const auto                  id          = resource->m_settings->id();
+    const auto                  primariesId = resource->m_settings->getPrimaries()->id();
+    WP<const CImageDescription> weak        = resource->m_settings;
+    resource.reset();
+    request(4, 0, {});
+    EXPECT_TRUE(weak.expired());
+    EXPECT_FALSE(CImageDescription::from(id));
+    EXPECT_FALSE(CPrimaries::from(primariesId));
+}
+
+TEST_F(CColorManagementProtocolTest, ClientDisconnectReleasesParametricDescription) {
+    createParams();
+    request(3, 1, {WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_GAMMA22});
+    request(3, 4, {640321, 330000, 300000, 600000, 150000, 60000, 312700, 329000});
+    request(3, 0, {4});
+    auto resource = CColorManagementImageDescription::fromReference(wl_client_get_object(m_client, 4));
+    ASSERT_TRUE(resource);
+    ASSERT_TRUE(resource->ready());
+    const auto                  id          = resource->m_settings->id();
+    const auto                  primariesId = resource->m_settings->getPrimaries()->id();
+    WP<const CImageDescription> weak        = resource->m_settings;
+    resource.reset();
+    wl_display_destroy_clients(m_display.get());
+    m_client = nullptr;
+    EXPECT_TRUE(weak.expired());
+    EXPECT_FALSE(CImageDescription::from(id));
+    EXPECT_FALSE(CPrimaries::from(primariesId));
 }

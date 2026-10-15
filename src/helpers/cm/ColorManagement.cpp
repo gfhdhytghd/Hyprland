@@ -4,20 +4,81 @@
 #include "../TransferFunction.hpp"
 #include "../../render/Renderer.hpp"
 #include "render/types.hpp"
-#include <hyprutils/memory/UniquePtr.hpp>
-#include <map>
-#include <vector>
+#include <unordered_map>
 #include <numeric>
 #include <numbers>
 
 using namespace NColorManagement;
 using namespace NTransferFunction;
 
+// The indexes never own their objects. Destruction removes both indexes immediately,
+// including weak control blocks, so create/destroy churn cannot grow the tables.
+// Each object also keeps its index alive through static teardown: global owners
+// can outlive the singleton handle, and the index contains only weak references.
 namespace NColorManagement {
-    // expected to be small
-    static std::vector<UP<const CPrimaries>>                       knownPrimaries;
-    static std::vector<UP<const CImageDescription>>                knownDescriptions;
-    static std::map<std::pair<uint, uint>, Hyprgraphics::CMatrix3> primariesConversion;
+    template <typename T>
+    struct SInternTable {
+        std::unordered_multimap<size_t, WP<const T>> values;
+        std::unordered_map<uint64_t, WP<const T>>    ids;
+        uint64_t                                     nextId = 1;
+
+        void                                         erase(size_t hash, uint64_t id) {
+            const auto [begin, end] = values.equal_range(hash);
+            for (auto it = begin; it != end; ++it) {
+                if (it->second->id() != id)
+                    continue;
+                values.erase(it);
+                break;
+            }
+            ids.erase(id);
+        }
+    };
+
+}
+
+static SP<SInternTable<CPrimaries>>& primariesTable() {
+    static auto table = makeShared<SInternTable<CPrimaries>>();
+    return table;
+}
+
+static SP<SInternTable<CImageDescription>>& descriptionsTable() {
+    static auto table = makeShared<SInternTable<CImageDescription>>();
+    return table;
+}
+
+template <typename T>
+static void hashCombine(size_t& hash, const T& value) {
+    hash ^= std::hash<T>{}(value) + 0x9e3779b9 + (hash << 6) + (hash >> 2);
+}
+
+static size_t primariesHash(const SPCPRimaries& value) {
+    size_t hash = 0;
+    for (const auto& xy : {value.red, value.green, value.blue, value.white}) {
+        hashCombine(hash, xy.x);
+        hashCombine(hash, xy.y);
+    }
+    return hash;
+}
+
+// Keep this in sync with SImageDescription::operator==. ICC descriptions are
+// intentionally not interned by value (their equality is always false).
+static size_t descriptionHash(const SImageDescription& value) {
+    size_t hash = 0;
+    hashCombine(hash, value.isWindows);
+    hashCombine(hash, value.isInternal);
+    hashCombine(hash, sc<uint8_t>(value.transferFunction));
+    hashCombine(hash, value.transferFunctionPower);
+    hashCombine(hash, value.primariesNameSet);
+    hashCombine(hash, value.primariesNameSet ? sc<size_t>(value.primariesNamed) : primariesHash(value.primaries));
+    hashCombine(hash, primariesHash(value.masteringPrimaries));
+    hashCombine(hash, value.luminances.min);
+    hashCombine(hash, value.luminances.max);
+    hashCombine(hash, value.luminances.reference);
+    hashCombine(hash, value.masteringLuminances.min);
+    hashCombine(hash, value.masteringLuminances.max);
+    hashCombine(hash, value.maxCLL);
+    hashCombine(hash, value.maxFALL);
+    return hash;
 }
 
 const SPCPRimaries& NColorManagement::getPrimaries(ePrimaries name) {
@@ -36,7 +97,7 @@ const SPCPRimaries& NColorManagement::getPrimaries(ePrimaries name) {
     }
 }
 
-CPrimaries::CPrimaries(const SPCPRimaries& primaries, const uint32_t primariesId) : m_id(primariesId), m_primaries(primaries) {
+CPrimaries::CPrimaries(const SPCPRimaries& primaries, const uint64_t primariesId) : m_id(primariesId), m_primaries(primaries), m_table(primariesTable()) {
     const auto matrix = rgbToXYZFromPrimaries(m_primaries);
     if (!matrix) {
         m_primaries2XYZ = Hyprgraphics::CMatrix3::identity();
@@ -46,30 +107,41 @@ CPrimaries::CPrimaries(const SPCPRimaries& primaries, const uint32_t primariesId
     m_primaries2XYZ   = Hyprgraphics::CMatrix3({{{values[0], values[1], values[2]}, {values[3], values[4], values[5]}, {values[6], values[7], values[8]}}});
 }
 
-WP<const CPrimaries> CPrimaries::from(const SPCPRimaries& primaries) {
-    for (const auto& known : knownPrimaries) {
-        if (known->value() == primaries)
-            return known;
+SP<const CPrimaries> CPrimaries::from(const SPCPRimaries& primaries) {
+    auto&      table        = primariesTable();
+    const auto hash         = primariesHash(primaries);
+    const auto [begin, end] = table->values.equal_range(hash);
+    for (auto it = begin; it != end; ++it) {
+        if (it->second->value() == primaries)
+            return it->second.lock();
     }
 
-    knownPrimaries.emplace_back(CUniquePointer(new CPrimaries(primaries, knownPrimaries.size() + 1)));
-    return knownPrimaries.back();
+    RASSERT(table->nextId != 0, "Color primaries identity space exhausted");
+    auto result = SP<const CPrimaries>(new CPrimaries(primaries, table->nextId++));
+    table->values.emplace(hash, result);
+    table->ids.emplace(result->id(), result);
+    return result;
 }
 
-WP<const CPrimaries> CPrimaries::from(const ePrimaries name) {
+SP<const CPrimaries> CPrimaries::from(const ePrimaries name) {
     return from(getPrimaries(name));
 }
 
-WP<const CPrimaries> CPrimaries::from(const uint32_t primariesId) {
-    ASSERT(primariesId <= knownPrimaries.size());
-    return knownPrimaries[primariesId - 1];
+SP<const CPrimaries> CPrimaries::from(const uint64_t primariesId) {
+    const auto& ids = primariesTable()->ids;
+    const auto  it  = ids.find(primariesId);
+    return it == ids.end() ? nullptr : it->second.lock();
+}
+
+CPrimaries::~CPrimaries() {
+    m_table->erase(primariesHash(m_primaries), m_id);
 }
 
 const SPCPRimaries& CPrimaries::value() const {
     return m_primaries;
 }
 
-uint CPrimaries::id() const {
+uint64_t CPrimaries::id() const {
     return m_id;
 }
 
@@ -77,17 +149,15 @@ const Hyprgraphics::CMatrix3& CPrimaries::toXYZ() const {
     return m_primaries2XYZ;
 }
 
-const Hyprgraphics::CMatrix3& CPrimaries::convertMatrix(const WP<const CPrimaries> dst) const {
-    const auto cacheKey = std::pair{m_id, dst->m_id};
-    if (!primariesConversion.contains(cacheKey))
-        primariesConversion.emplace(cacheKey, dst->toXYZ().invert() * Hyprgraphics::adaptWhite(m_primaries.white, dst->m_primaries.white) * toXYZ());
-
-    return primariesConversion[cacheKey];
+Hyprgraphics::CMatrix3 CPrimaries::convertMatrix(const SP<const CPrimaries> dst) const {
+    // This small matrix calculation is cached by the shader/hardware settings
+    // caches. A global all-pairs cache would retain client-controlled identities.
+    return dst->toXYZ().invert() * Hyprgraphics::adaptWhite(m_primaries.white, dst->m_primaries.white) * toXYZ();
 }
 
 CImageDescription::CImageDescription(const SImageDescription& imageDescription, const uint64_t imageDescriptionId) :
-    m_id(imageDescriptionId), m_imageDescription(imageDescription) {
-    m_primariesId = CPrimaries::from(m_imageDescription.getPrimaries())->id();
+    m_id(imageDescriptionId), m_table(descriptionsTable()), m_imageDescription(imageDescription) {
+    m_primaries = CPrimaries::from(m_imageDescription.getPrimaries());
 }
 
 PImageDescription CImageDescription::from(const SImageDescription& imageDescription) {
@@ -95,18 +165,32 @@ PImageDescription CImageDescription::from(const SImageDescription& imageDescript
     // PQ's primary volume is its encoding range, not the mastering display peak.
     if (description.transferFunction == CM_TRANSFER_FUNCTION_ST2084_PQ)
         description.luminances.max = std::round(description.luminances.min + HDR_MAX_LUMINANCE);
-    for (const auto& known : knownDescriptions) {
-        if (known->value() == description)
-            return known;
+    auto&      table = descriptionsTable();
+    const auto hash  = descriptionHash(description);
+    if (!description.icc.present) {
+        const auto [begin, end] = table->values.equal_range(hash);
+        for (auto it = begin; it != end; ++it) {
+            if (it->second->value() == description)
+                return it->second.lock();
+        }
     }
 
-    knownDescriptions.emplace_back(UP<CImageDescription>(new CImageDescription(description, knownDescriptions.size() + 1)));
-    return knownDescriptions.back();
+    RASSERT(table->nextId != 0, "Image description identity space exhausted");
+    auto result = SP<const CImageDescription>(new CImageDescription(description, table->nextId++));
+    if (!description.icc.present)
+        table->values.emplace(hash, result);
+    table->ids.emplace(result->id(), result);
+    return result;
 }
 
 PImageDescription CImageDescription::from(const uint64_t imageDescriptionId) {
-    ASSERT(imageDescriptionId <= knownDescriptions.size());
-    return knownDescriptions[imageDescriptionId - 1];
+    const auto& ids = descriptionsTable()->ids;
+    const auto  it  = ids.find(imageDescriptionId);
+    return it == ids.end() ? nullptr : it->second.lock();
+}
+
+CImageDescription::~CImageDescription() {
+    m_table->erase(descriptionHash(m_imageDescription), m_id);
 }
 
 PImageDescription CImageDescription::with(const SImageDescription::SPCLuminances& luminances) const {
@@ -123,11 +207,11 @@ uint64_t CImageDescription::id() const {
     return m_id;
 }
 
-WP<const CPrimaries> CImageDescription::getPrimaries() const {
-    return CPrimaries::from(m_primariesId);
+SP<const CPrimaries> CImageDescription::getPrimaries() const {
+    return m_primaries;
 }
 
-bool CImageDescription::needsCM(WP<const CImageDescription> target) const {
+bool CImageDescription::needsCM(SP<const CImageDescription> target) const {
     if (m_id == target->m_id)
         return false;
 

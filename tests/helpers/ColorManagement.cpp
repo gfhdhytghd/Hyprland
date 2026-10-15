@@ -335,8 +335,87 @@ TEST(ColorManagement, HDRMetadataSendsNonPhysicalMasteringPrimariesAsUnknown) {
     EXPECT_EQ(metadata.display_primaries[0].x, 0);
     EXPECT_EQ(metadata.white_point.y, 0);
     // Imaginary primaries are fine for an encoding, not for a mastering display.
-    d.masteringPrimaries = NColorPrimaries::DISPLAY_P3;
+    d.masteringPrimaries      = NColorPrimaries::DISPLAY_P3;
     d.masteringPrimaries.blue = {.x = 0.0001, .y = -0.077};
     EXPECT_FALSE(isPhysicalDisplayChromaticities(d.masteringPrimaries));
     EXPECT_EQ(createHDRMetadata(d).hdmi_metadata_type1.display_primaries[2].y, 0);
+}
+
+TEST(ColorManagement, InternedDescriptionsReleaseTheirPrimariesAndNeverReuseIds) {
+    auto value = SImageDescription{.primaries = NColorPrimaries::BT709, .luminances = {.min = 0.12345F, .max = 913, .reference = 137}};
+    value.primaries.red.x += 0.000123;
+    auto                        description     = CImageDescription::from(value);
+    const auto                  id              = description->id();
+    const auto                  primariesId     = description->getPrimaries()->id();
+    WP<const CImageDescription> weakDescription = description;
+    WP<const CPrimaries>        weakPrimaries   = description->getPrimaries();
+    EXPECT_EQ(CImageDescription::from(value), description);
+    EXPECT_EQ(CImageDescription::from(id), description);
+    EXPECT_EQ(CPrimaries::from(primariesId), description->getPrimaries());
+    description.reset();
+    EXPECT_TRUE(weakDescription.expired());
+    EXPECT_TRUE(weakPrimaries.expired());
+    EXPECT_FALSE(CImageDescription::from(id));
+    EXPECT_FALSE(CPrimaries::from(primariesId));
+    const auto recreated = CImageDescription::from(value);
+    EXPECT_GT(recreated->id(), id);
+    EXPECT_GT(recreated->getPrimaries()->id(), primariesId);
+}
+
+TEST(ColorManagement, DescriptionOwnersKeepSharedValuesAlive) {
+    auto                        description = CImageDescription::from(SImageDescription{.luminances = {.min = 0.125F, .max = 914, .reference = 139}});
+    auto                        owner       = description;
+    const auto                  id          = description->id();
+    WP<const CImageDescription> weak        = description;
+    description.reset();
+    EXPECT_FALSE(weak.expired());
+    EXPECT_EQ(CImageDescription::from(id), owner);
+    owner.reset();
+    EXPECT_TRUE(weak.expired());
+}
+
+TEST(ColorManagement, UnknownIdentitiesAreNull) {
+    EXPECT_FALSE(CImageDescription::from(uint64_t{0}));
+    EXPECT_FALSE(CImageDescription::from(UINT64_MAX));
+    EXPECT_FALSE(CPrimaries::from(uint64_t{0}));
+    EXPECT_FALSE(CPrimaries::from(UINT64_MAX));
+}
+
+TEST(ColorManagement, ChurnDoesNotKeepHistoricalValuesAlive) {
+    for (uint32_t i = 0; i < 4096; ++i) {
+        auto value = SImageDescription{.primaries = NColorPrimaries::BT709};
+        value.primaries.red.x += (i + 1) * 0.0000001;
+        value.luminances.reference = 1000 + i;
+        auto       description     = CImageDescription::from(value);
+        const auto id              = description->id();
+        const auto primariesId     = description->getPrimaries()->id();
+        // Exercise matrix conversion as well: no historical all-pairs cache.
+        auto matrix = description->getPrimaries()->convertMatrix(DEFAULT_SRGB_IMAGE_DESCRIPTION->getPrimaries());
+        EXPECT_TRUE(std::isfinite(matrix.mat()[0][0]));
+        description.reset();
+        EXPECT_FALSE(CImageDescription::from(id));
+        EXPECT_FALSE(CPrimaries::from(primariesId));
+    }
+}
+
+TEST(ColorManagement, ICCDescriptionsRemainDistinctAndReleaseNormally) {
+    SImageDescription value;
+    value.icc.present = true;
+    auto first        = CImageDescription::from(value);
+    auto second       = CImageDescription::from(value);
+    EXPECT_NE(first->id(), second->id());
+    const auto id = first->id();
+    first.reset();
+    EXPECT_FALSE(CImageDescription::from(id));
+    EXPECT_EQ(CImageDescription::from(second->id()), second);
+}
+
+TEST(ColorManagement, InterningUsesTheSameEqualityForNamedPrimariesAndSignedZero) {
+    SImageDescription first{.primariesNameSet = true};
+    auto              second       = first;
+    second.primaries.red.x         = 0.9; // ignored by equality for named primaries
+    first.masteringLuminances.min  = 0.F;
+    second.masteringLuminances.min = -0.F;
+    const auto owner               = CImageDescription::from(first);
+    EXPECT_EQ(CImageDescription::from(second), owner);
 }
