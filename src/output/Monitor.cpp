@@ -689,6 +689,9 @@ bool CMonitor::applyMonitorRuleSoft(Config::CMonitorRule&& pMonitorRule) {
 
     setMirror(m_activeMonitorRule.m_mirrorOf);
 
+    // Include ICC and SDR adjustments which need not change the image description.
+    Pointer::mgr()->onMonitorImageDescriptionChanged();
+
     return true;
 }
 
@@ -2141,9 +2144,9 @@ bool CMonitor::attemptDirectScanout() {
     }};
 
     // A buffer the CTM alone can't convert to the signalled encoding goes through the hardware DEGAMMA -> CTM -> GAMMA pipeline.
-    const auto  SURFACE_DESCRIPTION = scanoutDescription(PSURFACE);
-    const bool  HAD_HARDWARE_CM     = usesHardwareCM();
-    bool        hardwareCMChanged   = false;
+    const auto SURFACE_DESCRIPTION = scanoutDescription(PSURFACE);
+    const bool HAD_HARDWARE_CM     = usesHardwareCM();
+    bool       hardwareCMChanged   = false;
     if (needsCM() && !canNoShaderCM(true) && stageScanoutCM(SURFACE_DESCRIPTION->value(), hardwareCMChanged)) {
         if (hardwareCMChanged)
             LOG(Log::DEBUG, "attemptDirectScanout: converting the buffer with the display hardware");
@@ -2521,7 +2524,6 @@ bool CMonitor::needsCM() {
     const auto SRC_DESC = getFSImageDescription();
     return SRC_DESC.has_value() && SRC_DESC.value() != m_imageDescription;
 }
-
 
 // TODO support more drm properties
 bool CMonitor::canNoShaderCM(bool forDSmode) {

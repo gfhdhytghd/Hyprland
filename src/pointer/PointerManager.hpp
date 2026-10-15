@@ -18,8 +18,10 @@ namespace Render {
 #include <vector>
 
 class IHID;
+struct SEventLoopDoLaterLock;
 namespace Render {
     class ITexture;
+    class IFramebuffer;
 }
 namespace NColorManagement {
     class CImageDescription;
@@ -46,6 +48,7 @@ namespace Pointer {
     class CPointerManager {
       public:
         CPointerManager();
+        ~CPointerManager();
 
         void attachPointer(SP<IPointer> pointer);
         void attachTouch(SP<ITouch> touch);
@@ -205,24 +208,27 @@ namespace Pointer {
         std::vector<SCursorImageData> m_cursorImages;
 
         Vector2D                      m_pointerPos = {0, 0};
+        UP<SEventLoopDoLaterLock>     m_pendingCursorUpdate;
 
         struct SMonitorPointerState {
             SMonitorPointerState(const PHLMONITOR& m) : monitor(m) {}
             ~SMonitorPointerState() = default;
 
-            PHLMONITORREF           monitor;
+            PHLMONITORREF            monitor;
 
-            int                     softwareLocks  = 0;
-            bool                    hardwareFailed = false;
-            CBox                    box; // logical
-            bool                    entered             = false;
-            bool                    hwApplied           = false;
-            bool                    cursorRendered      = false;
-            bool                    initialPlaneCleared = false;
-            bool                    swRendered          = false;
-            CBox                    swRenderedBox; // logical, monitor local. valid only when swRendered
+            int                      softwareLocks  = 0;
+            bool                     hardwareFailed = false;
+            CBox                     box; // logical
+            bool                     entered             = false;
+            bool                     hwApplied           = false;
+            bool                     cursorRendered      = false;
+            bool                     initialPlaneCleared = false;
+            bool                     swRendered          = false;
+            CBox                     swRenderedBox; // logical, monitor local. valid only when swRendered
 
-            SP<Aquamarine::IBuffer> cursorFrontBuffer;
+            SP<Aquamarine::IBuffer>  cursorFrontBuffer;
+            SP<Render::IFramebuffer> cpuCopyFB;
+            std::vector<uint8_t>     cpuReadback;
         };
 
         std::vector<SP<SMonitorPointerState>> m_monitorStates;

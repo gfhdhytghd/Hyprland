@@ -1,4 +1,5 @@
 #include "PointerManager.hpp"
+#include "CursorBuffer.hpp"
 #include "PointerTransformer.hpp"
 #include "../Compositor.hpp"
 #include "../config/ConfigValue.hpp"
@@ -17,6 +18,7 @@
 #include "../managers/input/InputManager.hpp"
 #include "../render/Renderer.hpp"
 #include "../render/OpenGL.hpp"
+#include "../render/gl/GLFramebuffer.hpp"
 #include "../desktop/state/FocusState.hpp"
 #include "../managers/SeatManager.hpp"
 #include "../helpers/time/Time.hpp"
@@ -24,6 +26,7 @@
 #include "../event/EventBus.hpp"
 #include "../state/MonitorState.hpp"
 #include <climits>
+#include <bit>
 #include <cstring>
 #include <gbm.h>
 #include <cairo/cairo.h>
@@ -106,6 +109,8 @@ CPointerManager::CPointerManager() {
         state->cursorRendered = false;
     });
 }
+
+CPointerManager::~CPointerManager() = default;
 
 void CPointerManager::lockSoftwareAll() {
     for (auto const& state : m_monitorStates)
@@ -391,6 +396,11 @@ void CPointerManager::resetCursorImage(bool apply) {
 }
 
 void CPointerManager::updateCursorBackend() {
+    if (g_pHyprRenderer->context().active()) {
+        onMonitorImageDescriptionChanged();
+        return;
+    }
+
     const auto damageSoftwareLeftover = [](const SP<SMonitorPointerState>& state, const PHLMONITOR& m) {
         if (!state->swRendered)
             return;
@@ -544,7 +554,16 @@ bool Pointer::cpuCursorCopyIsExact(const SP<const NColorManagement::CImageDescri
 }
 
 void CPointerManager::onMonitorImageDescriptionChanged() {
-    updateCursorBackend();
+    if (m_pendingCursorUpdate)
+        return;
+
+    // Monitor rules may still be applying, or a render pass may be active.
+    m_pendingCursorUpdate = g_pEventLoopManager->doLaterLock([this] {
+        m_pendingCursorUpdate.reset();
+        damageIfSoftware();
+        updateCursorBackend();
+        damageIfSoftware();
+    });
 }
 
 SP<Aquamarine::IBuffer> CPointerManager::renderHWCursorBuffer(SP<CPointerManager::SMonitorPointerState> state, SP<Render::ITexture> texture) {
@@ -564,6 +583,7 @@ SP<Aquamarine::IBuffer> CPointerManager::renderHWCursorBuffer(SP<CPointerManager
         return nullptr;
     }
 
+    bool needsConversion = false;
     if (shouldUseCpuBuffer) {
         static auto PENABLECM = CConfigValue<Config::INTEGER>("render:cm_enabled");
 
@@ -572,10 +592,7 @@ SP<Aquamarine::IBuffer> CPointerManager::renderHWCursorBuffer(SP<CPointerManager
             texture->m_imageDescription :
             (SURFACE && SURFACE->m_current.imageDescription ? SURFACE->m_current.imageDescription : NColorManagement::getDefaultImageDescription());
 
-        if (!cpuCursorCopyIsExact(SOURCE, state->monitor->m_imageDescription, *PENABLECM, state->monitor->doesNoShaderCM())) {
-            LOG(Log::TRACE, "CPU cursor buffer can't be colour managed for {}, falling back to sw", state->monitor->m_name);
-            return nullptr;
-        }
+        needsConversion = !cpuCursorCopyIsExact(SOURCE, state->monitor->m_imageDescription, *PENABLECM, state->monitor->doesNoShaderCM());
     }
 
     if (maxSize != Vector2D{-1, -1}) {
@@ -637,94 +654,82 @@ SP<Aquamarine::IBuffer> CPointerManager::renderHWCursorBuffer(SP<CPointerManager
         return nullptr;
     }
 
-    if (shouldUseCpuBuffer) {
-        // get the texture data if available.
-        auto texData = texture->dataCopy();
-        if (texData.empty()) {
-            if (m_currentCursorImage.surface && m_currentCursorImage.surface->resource()->m_role->role() == SURFACE_ROLE_CURSOR) {
-                const auto SURFACE   = m_currentCursorImage.surface->resource();
-                auto&      shmBuffer = CCursorSurfaceRole::cursorPixelData(SURFACE);
+    if (shouldUseCpuBuffer && !needsConversion) {
+        const auto copyExact = [&]() {
+            // Cairo consumes native premultiplied ARGB32. Other formats and
+            // GPU-only textures can still use the renderer/readback path below.
+            if (std::endian::native != std::endian::little || texture->m_drmFormat != DRM_FORMAT_ARGB8888 || texture->m_transform != HYPRUTILS_TRANSFORM_NORMAL)
+                return false;
 
-                bool       flipRB = false;
-
-                if (SURFACE->m_current.texture) {
-                    LOG(Log::TRACE, "Cursor CPU surface: format {}, expecting AR24", NFormatUtils::drmFormatName(SURFACE->m_current.texture->m_drmFormat));
-                    if (!SURFACE->m_current.texture->m_drmFormat)
-                        SURFACE->m_current.texture->m_drmFormat = DRM_FORMAT_ARGB8888; // FIXME assumes DRM_FORMAT_ARGB8888
-                    if (SURFACE->m_current.texture->m_drmFormat == DRM_FORMAT_ABGR8888) {
-                        LOG(Log::TRACE, "Cursor CPU surface format AB24, will flip. WARNING: this will break on big endian!");
-                        flipRB = true;
-                    } else if (SURFACE->m_current.texture->m_drmFormat != DRM_FORMAT_ARGB8888) {
-                        LOG(Log::TRACE, "Cursor CPU surface format rejected, falling back to sw");
-                        return nullptr;
-                    }
-                }
-
-                if (shmBuffer.data())
-                    texData = shmBuffer;
-                else {
-                    texData.resize(texture->m_size.x * 4 * texture->m_size.y);
-                    memset(texData.data(), 0x00, texData.size());
-                }
-
-                if (flipRB) {
-                    for (size_t i = 0; i < shmBuffer.size(); i += 4) {
-                        std::swap(shmBuffer[i], shmBuffer[i + 2]); // little-endian!!!!!!
-                    }
-                }
-            } else {
-                LOG(Log::TRACE, "Cannot use dumb copy on dmabuf cursor buffers");
-                return nullptr;
+            auto texData = texture->dataCopy();
+            if (texData.empty() && m_currentCursorImage.surface) {
+                const auto SURFACE = m_currentCursorImage.surface->resource();
+                if (SURFACE->m_role->role() == SURFACE_ROLE_CURSOR && SURFACE->m_current.buffer && SURFACE->m_current.buffer->shm().success)
+                    texData = CCursorSurfaceRole::cursorPixelData(SURFACE);
             }
-        }
 
-        // then, we just yeet it into the dumb buffer
+            const auto width = sc<size_t>(texture->m_size.x), height = sc<size_t>(texture->m_size.y);
+            if (width == 0 || height == 0 || texData.empty() || texData.size() % height != 0 || texData.size() / height < width * 4)
+                return false;
 
-        const auto DMABUF      = buf->dmabuf();
-        auto [data, fmt, size] = buf->beginDataPtr(0);
+            const auto DMABUF      = buf->dmabuf();
+            auto [data, fmt, size] = buf->beginDataPtr(0);
+            const CScopeGuard unmap([&] { buf->endDataPtr(); });
+            const auto        rowBytes = sc<size_t>(DMABUF.size.x) * 4;
+            const auto        stride   = sc<size_t>(DMABUF.strides[0]);
+            if (!data || fmt != DRM_FORMAT_ARGB8888 || stride < rowBytes || size / stride < sc<size_t>(DMABUF.size.y))
+                return false;
 
-        auto CAIROSURFACE     = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, DMABUF.size.x, DMABUF.size.y);
-        auto CAIRODATASURFACE = cairo_image_surface_create_for_data(texData.data(), CAIRO_FORMAT_ARGB32, texture->m_size.x, texture->m_size.y, texture->m_size.x * 4);
+            const auto        CAIROSURFACE     = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, DMABUF.size.x, DMABUF.size.y);
+            const auto        CAIRODATASURFACE = cairo_image_surface_create_for_data(texData.data(), CAIRO_FORMAT_ARGB32, width, height, texData.size() / height);
+            const auto        CAIRO            = cairo_create(CAIROSURFACE);
+            const CScopeGuard cleanup([&] {
+                cairo_destroy(CAIRO);
+                cairo_surface_destroy(CAIROSURFACE);
+                cairo_surface_destroy(CAIRODATASURFACE);
+            });
 
-        auto CAIRO = cairo_create(CAIROSURFACE);
+            cairo_set_operator(CAIRO, CAIRO_OPERATOR_SOURCE);
+            const auto        PATTERN = cairo_pattern_create_for_surface(CAIRODATASURFACE);
+            const CScopeGuard cleanupPattern([&] { cairo_pattern_destroy(PATTERN); });
+            cairo_pattern_set_filter(PATTERN, CAIRO_FILTER_BILINEAR);
+            const auto matrix = image.cairoMatrix(texture->m_size, state->monitor->m_scale, state->monitor->m_transform, DMABUF.size);
+            cairo_pattern_set_matrix(PATTERN, &matrix);
+            cairo_set_source(CAIRO, PATTERN);
+            cairo_paint(CAIRO);
+            cairo_surface_flush(CAIROSURFACE);
+            if (cairo_status(CAIRO) != CAIRO_STATUS_SUCCESS || cairo_surface_status(CAIRODATASURFACE) != CAIRO_STATUS_SUCCESS)
+                return false;
 
-        cairo_set_operator(CAIRO, CAIRO_OPERATOR_SOURCE);
-        cairo_set_source_rgba(CAIRO, 0, 0, 0, 0);
-        cairo_rectangle(CAIRO, 0, 0, texture->m_size.x, texture->m_size.y);
-        cairo_fill(CAIRO);
-
-        const auto PATTERNPRE = cairo_pattern_create_for_surface(CAIRODATASURFACE);
-        cairo_pattern_set_filter(PATTERNPRE, CAIRO_FILTER_BILINEAR);
-        const auto matrixPre = image.cairoMatrix(texture->m_size, state->monitor->m_scale, state->monitor->m_transform, DMABUF.size);
-
-        cairo_pattern_set_matrix(PATTERNPRE, &matrixPre);
-        cairo_set_source(CAIRO, PATTERNPRE);
-        cairo_paint(CAIRO);
-
-        cairo_surface_flush(CAIROSURFACE);
-
-        cairo_pattern_destroy(PATTERNPRE);
-
-        memcpy(data, cairo_image_surface_get_data(CAIROSURFACE), sc<size_t>(cairo_image_surface_get_height(CAIROSURFACE)) * cairo_image_surface_get_stride(CAIROSURFACE));
-
-        cairo_destroy(CAIRO);
-        cairo_surface_destroy(CAIROSURFACE);
-        cairo_surface_destroy(CAIRODATASURFACE);
-
-        buf->endDataPtr();
-
-        return buf;
+            const auto source       = cairo_image_surface_get_data(CAIROSURFACE);
+            const auto sourceStride = cairo_image_surface_get_stride(CAIROSURFACE);
+            for (size_t y = 0; y < sc<size_t>(DMABUF.size.y); ++y)
+                std::memcpy(data + y * stride, source + y * sourceStride, rowBytes);
+            return true;
+        };
+        if (copyExact())
+            return buf;
     }
 
-    auto RBO = g_pHyprRenderer->getOrCreateRenderbuffer(buf, state->monitor->m_cursorSwapchain->currentOptions().format);
-    if (!RBO) {
-        LOG(Log::TRACE, "Failed to create cursor RB with format {}, mod {}", buf->dmabuf().format, buf->dmabuf().modifier);
-        return nullptr;
+    SP<Render::IFramebuffer> FB;
+    if (shouldUseCpuBuffer) {
+        // Never import/render into the cursor BO: NVIDIA needs the dumb-buffer path.
+        if (!state->cpuCopyFB)
+            state->cpuCopyFB = g_pHyprRenderer->createFB("CPU cursor colour conversion");
+        FB = state->cpuCopyFB;
+        if (!FB || !FB->alloc(maxSize.x, maxSize.y, DRM_FORMAT_ABGR8888))
+            return nullptr;
+    } else {
+        auto RBO = g_pHyprRenderer->getOrCreateRenderbuffer(buf, state->monitor->m_cursorSwapchain->currentOptions().format);
+        if (!RBO) {
+            LOG(Log::TRACE, "Failed to create cursor RB with format {}, mod {}", buf->dmabuf().format, buf->dmabuf().modifier);
+            return nullptr;
+        }
+        FB = RBO->getFB();
     }
 
     // the cursor plane is blended after the FB is encoded into the output's colour space,
     // so tag it - otherwise a raw sRGB cursor gets reinterpreted there, blinding on PQ
-    const auto FB = RBO->getFB();
     FB->setImageDescription(state->monitor->m_imageDescription);
 
     CRegion damageRegion = {0, 0, INT_MAX, INT_MAX};
@@ -746,10 +751,27 @@ SP<Aquamarine::IBuffer> CPointerManager::renderHWCursorBuffer(SP<CPointerManager
     LOG(Log::TRACE, "[pointer] monitor: {}, size: {}, hw buf: {}, scale: {:.2f}, monscale: {:.2f}, xbox: {}", state->monitor->m_name, image.size, cursorSize, image.scale,
         state->monitor->m_scale, xbox.size());
 
-    g_pHyprRenderer->draw(ctx, CTexPassElement::SRenderData{.tex = texture, .box = xbox}, damageRegion);
+    g_pHyprRenderer->draw(
+        ctx, CTexPassElement::SRenderData{.tex = texture, .box = xbox, .surface = m_currentCursorImage.surface ? m_currentCursorImage.surface->resource() : nullptr}, damageRegion);
 
     finishing = true;
     g_pHyprRenderer->endRender();
+
+    if (shouldUseCpuBuffer) {
+        const auto GLFB = dynamicPointerCast<Render::GL::CGLFramebuffer>(FB);
+        if (!GLFB)
+            return nullptr;
+
+        const auto DMABUF = buf->dmabuf();
+        state->cpuReadback.resize(sc<size_t>(maxSize.x) * sc<size_t>(maxSize.y) * 4);
+        if (!GLFB->readPixelsRGBA8(state->cpuReadback))
+            return nullptr;
+
+        auto [data, fmt, size] = buf->beginDataPtr(0);
+        const CScopeGuard unmap([&] { buf->endDataPtr(); });
+        if (!data || fmt != DRM_FORMAT_ARGB8888 || !packCursorARGB8888(state->cpuReadback, {data, size}, maxSize.x, maxSize.y, DMABUF.strides[0]))
+            return nullptr;
+    }
 
     return buf;
 }
@@ -790,8 +812,9 @@ void CPointerManager::renderSoftwareCursorsFor(Render::CRenderContext& ctx, PHLM
     box.y = std::round(box.y);
 
     CTexPassElement::SRenderData data;
-    data.tex = texture;
-    data.box = box.round();
+    data.tex     = texture;
+    data.box     = box.round();
+    data.surface = m_currentCursorImage.surface ? m_currentCursorImage.surface->resource() : nullptr;
 
     g_pHyprRenderer->addPassElement(ctx, makeUnique<CTexPassElement>(std::move(data)));
 
