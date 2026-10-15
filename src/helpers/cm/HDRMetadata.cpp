@@ -7,7 +7,7 @@ using namespace NColorManagement;
 
 static const hdr_output_metadata NO_HDR_METADATA = {.hdmi_metadata_type1 = hdr_metadata_infoframe{.eotf = 0}};
 
-bool NColorManagement::isPhysicalDisplayChromaticities(const SPCPRimaries& primaries) {
+bool                             NColorManagement::isPhysicalDisplayChromaticities(const SPCPRimaries& primaries) {
     // Inside the xy unit triangle, which contains the spectrum locus, and spanning a color space with a positive white mix.
     for (const auto& xy : {primaries.red, primaries.green, primaries.blue, primaries.white}) {
         if (!std::isfinite(xy.x) || !std::isfinite(xy.y) || xy.x < 0 || xy.y < 0 || xy.x + xy.y > 1)
@@ -16,7 +16,7 @@ bool NColorManagement::isPhysicalDisplayChromaticities(const SPCPRimaries& prima
     return rgbToXYZFromPrimaries(primaries).has_value();
 }
 
-hdr_output_metadata              NColorManagement::createHDRMetadata(const SImageDescription& settings) {
+hdr_output_metadata NColorManagement::createHDRMetadata(const SImageDescription& settings) {
     uint8_t eotf = 0;
     switch (settings.transferFunction) {
         case CM_TRANSFER_FUNCTION_GAMMA22:
