@@ -275,6 +275,42 @@ TEST_F(CColorManagementProtocolTest, PreferredDescriptionOfAnOrphanedSubsurface)
     EXPECT_TRUE(child->getPreferredImageDescription());
 }
 
+static SP<CWLSubsurfaceResource> subsurfaceOf(wl_client* client, uint32_t surface) {
+    const auto SURF = CWLSurfaceResource::fromResource(wl_client_get_object(client, surface));
+    return sc<CSubsurfaceRole*>(SURF->m_role.get())->m_subsurface.lock();
+}
+
+TEST_F(CColorManagementProtocolTest, SubsurfaceOfAnOrphanedSubsurface) {
+    createSurface();
+    request(3, 0, {5});
+    PROTO::subcompositor->bindManager(m_client, nullptr, 1, 6);
+    request(6, 1, {7, 5, 4});
+    request(4, 0, {});
+    request(3, 0, {8});
+    // the parent's own parent is gone, so there's no top-level surface to compare against
+    request(6, 1, {9, 8, 5});
+    ASSERT_TRUE(subsurfaceOf(m_client, 8));
+    EXPECT_FALSE(subsurfaceOf(m_client, 8)->t1Parent());
+    EXPECT_EQ(subsurfaceOf(m_client, 8)->posRelativeToParent(), Vector2D{});
+}
+
+TEST_F(CColorManagementProtocolTest, DeeplyNestedSubsurfaceWalksEveryAncestor) {
+    createSurface();
+    request(3, 0, {5});
+    PROTO::subcompositor->bindManager(m_client, nullptr, 1, 6);
+    request(6, 1, {7, 5, 4});
+    request(3, 0, {8});
+    request(6, 1, {9, 8, 5});
+    request(3, 0, {10});
+    request(6, 1, {11, 10, 8});
+    request(7, 1, {100, 0});
+    request(9, 1, {10, 0});
+    request(11, 1, {1, 0});
+    const auto LEAF = subsurfaceOf(m_client, 10);
+    EXPECT_EQ(LEAF->posRelativeToParent(), (Vector2D{111, 0}));
+    EXPECT_EQ(LEAF->t1Parent(), CWLSurfaceResource::fromResource(wl_client_get_object(m_client, 4)));
+}
+
 TEST_F(CColorManagementProtocolTest, ParametricDescriptionIsFreedOnResourceDestroy) {
     createParams();
     request(3, 1, {WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_GAMMA22});

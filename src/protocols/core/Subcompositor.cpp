@@ -125,9 +125,12 @@ Vector2D CWLSubsurfaceResource::posRelativeToParent() {
     // surfaces we've visited and if we hit a surface we've visited we bail out.
     std::vector<SP<CWLSurfaceResource>> surfacesVisited;
 
-    while (surf->m_role->role() == SURFACE_ROLE_SUBSURFACE && std::ranges::find_if(surfacesVisited, [surf](const auto& other) { return surf == other; }) == surfacesVisited.end()) {
+    while (surf && surf->m_role->role() == SURFACE_ROLE_SUBSURFACE &&
+           std::ranges::find_if(surfacesVisited, [surf](const auto& other) { return surf == other; }) == surfacesVisited.end()) {
         surfacesVisited.emplace_back(surf);
-        auto subsurface = sc<CSubsurfaceRole*>(m_parent->m_role.get())->m_subsurface.lock();
+        auto subsurface = sc<CSubsurfaceRole*>(surf->m_role.get())->m_subsurface.lock();
+        if (!subsurface)
+            break;
         pos += subsurface->m_position;
         surf = subsurface->m_parent.lock();
     }
