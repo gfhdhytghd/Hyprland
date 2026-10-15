@@ -2432,7 +2432,7 @@ void IHyprRenderer::handleFullscreenSettings(PHLMONITOR pMonitor) {
     static auto PNONSHADER  = CConfigValue<Config::INTEGER>("render:non_shader_cm");
     static auto PNSINTEROP  = CConfigValue<Config::INTEGER>("render:non_shader_cm_interop");
 
-    const bool  configuredHDR = (pMonitor->m_cmType == NCMType::CM_HDR_EDID || pMonitor->m_cmType == NCMType::CM_HDR);
+    const bool  configuredHDR = NCMType::isHDR(pMonitor->m_cmType);
     bool        wantHDR       = configuredHDR;
 
     const auto  FULLSCREEN_WINDOW = Fullscreen::controller()->getFullscreenWindow(pMonitor);

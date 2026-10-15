@@ -21,3 +21,7 @@ std::string NCMType::toString(eCMType cmType) {
     }
     return "";
 }
+
+bool NCMType::isHDR(eCMType cmType) {
+    return cmType == CM_HDR || cmType == CM_HDR_EDID;
+}
