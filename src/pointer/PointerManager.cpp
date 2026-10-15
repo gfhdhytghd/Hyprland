@@ -538,6 +538,15 @@ bool CPointerManager::setHWCursorBuffer(SP<SMonitorPointerState> state, SP<Aquam
     return true;
 }
 
+bool Pointer::cpuCursorCopyIsExact(const SP<const NColorManagement::CImageDescription>& source, const SP<const NColorManagement::CImageDescription>& output, bool cmEnabled,
+                                   bool noShaderCM) {
+    return !cmEnabled || noShaderCM || !source->needsCM(output);
+}
+
+void CPointerManager::onMonitorImageDescriptionChanged() {
+    updateCursorBackend();
+}
+
 SP<Aquamarine::IBuffer> CPointerManager::renderHWCursorBuffer(SP<CPointerManager::SMonitorPointerState> state, SP<Render::ITexture> texture) {
     if (g_pHyprRenderer->context().active())
         return nullptr;
@@ -553,6 +562,20 @@ SP<Aquamarine::IBuffer> CPointerManager::renderHWCursorBuffer(SP<CPointerManager
     if (maxSize == Vector2D{} || cursorSize.x <= 0 || cursorSize.y <= 0) {
         LOG(Log::TRACE, "hardware cursor has zero max size {}, current {}", maxSize, cursorSize);
         return nullptr;
+    }
+
+    if (shouldUseCpuBuffer) {
+        static auto PENABLECM = CConfigValue<Config::INTEGER>("render:cm_enabled");
+
+        const auto  SURFACE = m_currentCursorImage.surface ? m_currentCursorImage.surface->resource() : nullptr;
+        const auto  SOURCE  = texture->m_imageDescription ?
+            texture->m_imageDescription :
+            (SURFACE && SURFACE->m_current.imageDescription ? SURFACE->m_current.imageDescription : NColorManagement::getDefaultImageDescription());
+
+        if (!cpuCursorCopyIsExact(SOURCE, state->monitor->m_imageDescription, *PENABLECM, state->monitor->doesNoShaderCM())) {
+            LOG(Log::TRACE, "CPU cursor buffer can't be colour managed for {}, falling back to sw", state->monitor->m_name);
+            return nullptr;
+        }
     }
 
     if (maxSize != Vector2D{-1, -1}) {

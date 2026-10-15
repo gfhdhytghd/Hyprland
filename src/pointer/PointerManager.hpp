@@ -21,6 +21,9 @@ class IHID;
 namespace Render {
     class ITexture;
 }
+namespace NColorManagement {
+    class CImageDescription;
+}
 
 AQUAMARINE_FORWARD(IBuffer);
 AQUAMARINE_FORWARD(IOutput);
@@ -35,6 +38,10 @@ AQUAMARINE_FORWARD(IOutput);
 namespace Pointer {
 
     class CPointerTransformer;
+
+    // A CPU-copied cursor reaches the plane unconverted, so it's only exact where the renderer would skip CM as well.
+    bool cpuCursorCopyIsExact(const SP<const NColorManagement::CImageDescription>& source, const SP<const NColorManagement::CImageDescription>& output, bool cmEnabled,
+                              bool noShaderCM);
 
     class CPointerManager {
       public:
@@ -63,6 +70,9 @@ namespace Pointer {
         void unlockSoftwareAll();
         bool softwareLockedFor(PHLMONITOR pMonitor);
         bool hasVisibleHWCursor(PHLMONITOR pMonitor);
+
+        // the hardware cursor is encoded for the output's image description, so it has to be redone when that changes
+        void onMonitorImageDescriptionChanged();
 
         void renderSoftwareCursorsFor(Render::CRenderContext& ctx, PHLMONITOR pMonitor, const Time::steady_tp& now, CRegion& damage /* logical */,
                                       std::optional<Vector2D> overridePos = {} /* monitor-local */, bool screencopy = false, bool forceRender = false);
