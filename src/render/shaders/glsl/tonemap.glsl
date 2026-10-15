@@ -57,12 +57,16 @@ float pqDecode(float signal) {
 float bt2390EETF(float signal, float srcMin, float srcMax, float dstMin, float dstMax) {
     float srcBlack = pqEncode(srcMin);
     float srcRange = pqEncode(srcMax) - srcBlack;
+    // Both ends clamped to the same PQ level: there is no range to map.
+    if (!(srcRange > 0.0))
+        return signal;
     float minLum   = (pqEncode(dstMin) - srcBlack) / srcRange;
     float maxLum   = (pqEncode(dstMax) - srcBlack) / srcRange;
     float E1       = clamp((signal - srcBlack) / srcRange, 0.0, 1.0);
     float KS       = 1.5 * maxLum - 0.5;
     float E2       = E1;
-    if (E1 >= KS) {
+    // KS >= 1 when the target peak covers the source peak after PQ clamping; the curve is then the identity.
+    if (E1 >= KS && KS < 1.0) {
         float T  = (E1 - KS) / (1.0 - KS);
         float T2 = T * T;
         float T3 = T2 * T;

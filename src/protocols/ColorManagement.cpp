@@ -548,6 +548,12 @@ CColorManagementParametricCreator::CColorManagementParametricCreator(SP<CWpImage
             PROTO::colorManagement->destroyResource(this);
             return;
         }
+        // The mastering display is a real display, unlike the primary volume which may use imaginary primaries.
+        if ((m_valuesSet & PC_MASTERING_PRIMARIES) && !isPhysicalDisplayChromaticities(m_settings.masteringPrimaries)) {
+            RESOURCE->resource()->sendFailed(WP_IMAGE_DESCRIPTION_V1_CAUSE_UNSUPPORTED, "Mastering display primaries are not physical chromaticities");
+            PROTO::colorManagement->destroyResource(this);
+            return;
+        }
         RESOURCE->m_settings = CImageDescription::from(m_settings);
 
         RESOURCE->sendMaybeReady();

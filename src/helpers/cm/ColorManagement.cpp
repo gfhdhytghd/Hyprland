@@ -575,12 +575,16 @@ static double pqDecode(double signal) {
 static double bt2390EETF(double signal, double srcMin, double srcMax, double dstMin, double dstMax) {
     const double srcBlack = pqEncode(srcMin);
     const double srcRange = pqEncode(srcMax) - srcBlack;
+    // Both ends clamped to the same PQ level: there is no range to map.
+    if (!(srcRange > 0))
+        return signal;
     const double minLum   = (pqEncode(dstMin) - srcBlack) / srcRange;
     const double maxLum   = (pqEncode(dstMax) - srcBlack) / srcRange;
     const double E1       = std::clamp((signal - srcBlack) / srcRange, 0.0, 1.0);
     const double KS       = 1.5 * maxLum - 0.5;
     double       E2       = E1;
-    if (E1 >= KS) {
+    // KS >= 1 when the target peak covers the source peak after PQ clamping; the curve is then the identity.
+    if (E1 >= KS && KS < 1.0) {
         const double T  = (E1 - KS) / (1.0 - KS);
         const double T2 = T * T;
         const double T3 = T2 * T;

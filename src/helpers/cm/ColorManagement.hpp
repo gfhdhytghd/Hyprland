@@ -390,6 +390,8 @@ namespace NColorManagement {
     using PImageDescription = WP<const CImageDescription>;
 
     hdr_output_metadata createHDRMetadata(const SImageDescription& settings);
+    // Chromaticities a real (mastering) display can have, which CTA-861.3 metadata can carry.
+    bool isPhysicalDisplayChromaticities(const SPCPRimaries& primaries);
 
     float               referenceLuminanceScale(const SImageDescription& source, const SImageDescription& target);
 

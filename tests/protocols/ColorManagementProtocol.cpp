@@ -6,6 +6,7 @@
 #include <protocols/ColorManagement.hpp>
 #include <protocols/PresentationTime.hpp>
 #include <protocols/core/Compositor.hpp>
+#include <protocols/core/Subcompositor.hpp>
 #include <gtest/gtest.h>
 #include <hyprutils/os/FileDescriptor.hpp>
 #include <array>
@@ -34,6 +35,7 @@ class CColorManagementProtocolTest : public ::testing::Test {
     UP<Config::CConfigWatcher>                                 m_previousWatcher;
     UP<CColorManagementProtocol>                               m_previousColor;
     UP<CWLCompositorProtocol>                                  m_previousCore;
+    UP<CWLSubcompositorProtocol>                               m_previousSubcompositor;
     UP<CPresentationProtocol>                                  m_previousPresentation;
 };
 
@@ -60,9 +62,11 @@ void CColorManagementProtocolTest::SetUp() {
     Event::bus()           = makeUnique<Event::CEventBus>();
     m_previousColor        = std::move(PROTO::colorManagement);
     m_previousCore         = std::move(PROTO::compositor);
+    m_previousSubcompositor = std::move(PROTO::subcompositor);
     m_previousPresentation = std::move(PROTO::presentation);
     PROTO::colorManagement = makeUnique<CColorManagementProtocol>(&wp_color_manager_v1_interface, 3, "cm-test");
     PROTO::compositor      = makeUnique<CWLCompositorProtocol>(&wl_compositor_interface, 6, "cm-core-test");
+    PROTO::subcompositor   = makeUnique<CWLSubcompositorProtocol>(&wl_subcompositor_interface, 1, "cm-subcompositor-test");
     PROTO::presentation    = makeUnique<CPresentationProtocol>(&wp_presentation_interface, 2, "cm-presentation-test");
 }
 
@@ -71,6 +75,7 @@ void CColorManagementProtocolTest::TearDown() {
         wl_display_destroy_clients(m_display.get());
     PROTO::colorManagement = std::move(m_previousColor);
     PROTO::compositor      = std::move(m_previousCore);
+    PROTO::subcompositor   = std::move(m_previousSubcompositor);
     PROTO::presentation    = std::move(m_previousPresentation);
     Config::mgr()          = std::move(m_previousConfig);
     Config::watcher()      = std::move(m_previousWatcher);
@@ -240,4 +245,26 @@ TEST_F(CColorManagementProtocolTest, ExplicitZeroPrimariesFail) {
     request(3, 4, {0, 0, 0, 0, 0, 0, 0, 0});
     request(3, 0, {4});
     expectEvent(4, 0); // wp_image_description_v1.failed
+}
+
+TEST_F(CColorManagementProtocolTest, NonPhysicalMasteringPrimariesFail) {
+    createParams();
+    request(3, 1, {WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_ST2084_PQ});
+    request(3, 3, {WP_COLOR_MANAGER_V1_PRIMARIES_BT2020});
+    // Mastering display chromaticities outside the xy unit triangle can't describe a display, nor be sent as HDR metadata.
+    request(3, 6, {INT32_MAX, INT32_MAX, 265000, 690000, 150000, 60000, 312700, 329000});
+    request(3, 0, {4});
+    expectEvent(4, 0); // wp_image_description_v1.failed
+}
+
+TEST_F(CColorManagementProtocolTest, PreferredDescriptionOfAnOrphanedSubsurface) {
+    createSurface();
+    request(3, 0, {5});
+    PROTO::subcompositor->bindManager(m_client, nullptr, 1, 6);
+    request(6, 1, {7, 5, 4}); // child 5 below parent 4
+    const auto child = CWLSurfaceResource::fromResource(wl_client_get_object(m_client, 5));
+    ASSERT_TRUE(child);
+    // The parent goes away while the wl_subsurface and its role stay: the child falls back to its own outputs.
+    request(4, 0, {});
+    EXPECT_TRUE(child->getPreferredImageDescription());
 }
