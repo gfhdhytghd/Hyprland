@@ -47,3 +47,11 @@ TEST(Helpers, cmTypeRoundTrip) {
     EXPECT_EQ(fromString(toString(CM_DP3)), CM_DP3);
     EXPECT_EQ(fromString(toString(CM_ADOBE)), CM_ADOBE);
 }
+
+TEST(Helpers, cmTypeIsHDR) {
+    EXPECT_TRUE(isHDR(CM_HDR));
+    EXPECT_TRUE(isHDR(CM_HDR_EDID));
+    // SDR presets must not carry the panel's HDR luminances, see CMonitor::applyCMType
+    for (const auto type : {CM_AUTO, CM_SRGB, CM_WIDE, CM_EDID, CM_DCIP3, CM_DP3, CM_ADOBE})
+        EXPECT_FALSE(isHDR(type));
+}

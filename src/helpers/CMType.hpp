@@ -19,4 +19,6 @@ namespace NCMType {
 
     std::optional<eCMType> fromString(const std::string cmType);
     std::string            toString(eCMType cmType);
+    // whether the preset drives the output in HDR (PQ) mode
+    bool isHDR(eCMType cmType);
 }
