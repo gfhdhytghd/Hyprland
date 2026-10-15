@@ -6,6 +6,7 @@
 #include <hyprgraphics/egl/Egl.hpp>
 #include <algorithm>
 #include <limits>
+#include <hyprutils/utils/ScopeGuard.hpp>
 
 using namespace Hyprgraphics::Egl;
 using namespace Render::GL;
@@ -240,6 +241,36 @@ bool CGLFramebuffer::readPixels(CHLBufferReference buffer, uint32_t offsetX, uin
     glPixelStorei(GL_PACK_ALIGNMENT, 4);
 
     return true;
+}
+
+bool CGLFramebuffer::readPixelsRGBA8(std::span<uint8_t> destination) {
+    if (!isAllocated() || destination.size() < sc<size_t>(m_size.x) * sc<size_t>(m_size.y) * 4)
+        return false;
+
+    g_pHyprOpenGL->makeEGLCurrent();
+    const CFramebufferBindingGuard bindings{g_pHyprOpenGL};
+    g_pHyprOpenGL->bindFramebuffer(GL_READ_FRAMEBUFFER, getFBID());
+    GLint packAlignment = 0, packRowLength = 0, packSkipRows = 0, packSkipPixels = 0, packBuffer = 0;
+    glGetIntegerv(GL_PACK_ALIGNMENT, &packAlignment);
+    glGetIntegerv(GL_PACK_ROW_LENGTH, &packRowLength);
+    glGetIntegerv(GL_PACK_SKIP_ROWS, &packSkipRows);
+    glGetIntegerv(GL_PACK_SKIP_PIXELS, &packSkipPixels);
+    glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &packBuffer);
+    const Hyprutils::Utils::CScopeGuard restorePack([&] {
+        glPixelStorei(GL_PACK_ALIGNMENT, packAlignment);
+        glPixelStorei(GL_PACK_ROW_LENGTH, packRowLength);
+        glPixelStorei(GL_PACK_SKIP_ROWS, packSkipRows);
+        glPixelStorei(GL_PACK_SKIP_PIXELS, packSkipPixels);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, packBuffer);
+    });
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+    glPixelStorei(GL_PACK_SKIP_ROWS, 0);
+    glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    // Preserve framebuffer row order, just as reading a scanout BO would.
+    glReadPixels(0, 0, m_size.x, m_size.y, GL_RGBA, GL_UNSIGNED_BYTE, destination.data());
+    return glGetError() == GL_NO_ERROR;
 }
 
 CGLFramebuffer::~CGLFramebuffer() {
