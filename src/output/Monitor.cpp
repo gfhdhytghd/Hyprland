@@ -606,6 +606,7 @@ void CMonitor::applyCMType(NCMType::eCMType cmType, NTransferFunction::eTF cmSdr
         m_blurFBDirty = true;
         // the output's colour transform changed, so everything already composited is stale
         g_pHyprRenderer->damageMonitor(m_self.lock());
+        Pointer::mgr()->onMonitorImageDescriptionChanged();
     }
 }
 
