@@ -1284,7 +1284,6 @@ void CHyprOpenGLImpl::passCMUniforms(WP<CShader> shader, const NColorManagement:
     shader->setUniformFloat3(SHADER_TARGET_LUMINANCE_COEFFICIENTS, targetXYZ[1][0], targetXYZ[1][1], targetXYZ[1][2]);
     shader->setUniformFloat2(SHADER_SRC_TF_RANGE, settings.srcTFRange.min, settings.srcTFRange.max);
     shader->setUniformFloat2(SHADER_DST_TF_RANGE, settings.dstTFRange.min, settings.dstTFRange.max);
-    shader->setUniformFloat(SHADER_SRC_REF_LUMINANCE, settings.srcRefLuminance);
     shader->setUniformFloat(SHADER_DST_REF_LUMINANCE, settings.dstRefLuminance);
     shader->setUniformFloat(SHADER_SOURCE_REFERENCE_SCALE, settings.srcReferenceScale);
     shader->setUniformFloat(SHADER_SRC_MIN_LUMINANCE, settings.srcMinLuminance);
@@ -1310,6 +1309,15 @@ void CHyprOpenGLImpl::passCMUniforms(WP<CShader> shader, const NColorManagement:
             mat[0][2], mat[1][2], mat[2][2], //
         };
         shader->setUniformMatrix3fv(SHADER_TARGET_PRIMARIES_XYZ, 1, false, glTargetPrimariesXYZ);
+        if (settings.needsTonemap) {
+            const auto                   inverse              = Hyprgraphics::CMatrix3{mat}.invert().mat();
+            const std::array<GLfloat, 9> glTargetXYZPrimaries = {
+                inverse[0][0], inverse[1][0], inverse[2][0], //
+                inverse[0][1], inverse[1][1], inverse[2][1], //
+                inverse[0][2], inverse[1][2], inverse[2][2], //
+            };
+            shader->setUniformMatrix3fv(SHADER_TARGET_XYZ_PRIMARIES, 1, false, glTargetXYZPrimaries);
+        }
 
         // The unmodified copy is BT.709 SDR: undo the target primaries and map the target reference white to SDR white.
         const float                  mirrorScale    = settings.dstRefLuminance <= 0 ? 1.0f : SDR_REF_LUMINANCE / settings.dstRefLuminance;

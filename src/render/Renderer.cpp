@@ -2220,13 +2220,12 @@ void IHyprRenderer::renderMonitor(PHLMONITOR pMonitor, bool commit) {
     if (pMonitor->m_output->state->state().presentationMode != presentationMode)
         pMonitor->m_output->state->setPresentationMode(presentationMode);
 
-    if (canAttemptDirectScanout) {
-        if (pMonitor->attemptDirectScanout()) {
-            return;
-        } else if (!pMonitor->m_lastScanout.expired() || pMonitor->m_directScanoutIsActive) {
-            pMonitor->handleDSleave();
-            handleFullscreenSettings(pMonitor);
-        }
+    if (canAttemptDirectScanout && pMonitor->attemptDirectScanout())
+        return;
+
+    if (!pMonitor->m_lastScanout.expired() || pMonitor->m_directScanoutIsActive) {
+        pMonitor->handleDSleave();
+        handleFullscreenSettings(pMonitor);
     }
 
     Event::bus()->m_events.render.pre.emit(pMonitor);
@@ -2415,16 +2414,6 @@ void IHyprRenderer::renderMonitor(PHLMONITOR pMonitor, bool commit) {
     }
 }
 
-static const hdr_output_metadata NO_HDR_METADATA = {.hdmi_metadata_type1 = hdr_metadata_infoframe{.eotf = 0}};
-
-static bool                      hdrMetadataEqual(const hdr_output_metadata& a, const hdr_output_metadata& b) {
-    if (a.metadata_type != b.metadata_type)
-        return false;
-
-    static_assert(std::has_unique_object_representations_v<hdr_metadata_infoframe>);
-    return std::memcmp(&a.hdmi_metadata_type1, &b.hdmi_metadata_type1, sizeof(a.hdmi_metadata_type1)) == 0;
-}
-
 void IHyprRenderer::handleFullscreenSettings(PHLMONITOR pMonitor) {
     const auto  oldMetadata = pMonitor->m_output->state->state().hdrMetadata;
     static auto PCT         = CConfigValue<Config::INTEGER>("render:send_content_type");
@@ -2455,14 +2444,8 @@ void IHyprRenderer::handleFullscreenSettings(PHLMONITOR pMonitor) {
                 if (FULLSCREEN_WINDOW && FULLSCREEN_WINDOW->m_ruleApplicator->noAutoHDR().valueOrDefault())
                     wantHDR = configuredHDR;
                 if (surfaceIsHDR && !isWindowsScRGB(surfaceDescription) && !pMonitor->m_lastScanout.expired()) {
-                    // DS HDR: the client's buffer is sent unmodified, so its own metadata describes it.
-                    const auto surfaceMetadata = createHDRMetadata(surfaceDescription);
-                    if (!hdrMetadataEqual(surfaceMetadata, pMonitor->m_output->state->state().hdrMetadata) || pMonitor->m_previousFSWindow != FULLSCREEN_WINDOW ||
-                        pMonitor->m_needsHDRupdate) {
-                        LOG(Log::INFO, "[CM] Updating HDR metadata from surface");
-                        pMonitor->m_output->state->setHDRMetadata(surfaceMetadata);
-                        pMonitor->m_hdrMetadataFromSurface = true;
-                    }
+                    // Preserve active scanout signalling until the next buffer is chosen. attemptDirectScanout
+                    // stages that buffer's metadata; the composited path resolves this again after handleDSleave.
                     hdrIsHandled               = true;
                     pMonitor->m_needsHDRupdate = false;
                 }
@@ -2485,10 +2468,7 @@ void IHyprRenderer::handleFullscreenSettings(PHLMONITOR pMonitor) {
             }
 
             // Composited frames have no known content light levels (CTA-861.3: 0 = unknown).
-            auto composited    = pMonitor->m_imageDescription->value();
-            composited.maxCLL  = 0;
-            composited.maxFALL = 0;
-            const auto WANTED  = wantHDR ? createHDRMetadata(composited) : NO_HDR_METADATA;
+            const auto WANTED  = selectHDRMetadata(pMonitor->m_imageDescription->value(), wantHDR);
             const auto CURRENT = pMonitor->m_output->state->state().hdrMetadata;
 
             // Required in order to clear stale HDR metadata
@@ -2497,7 +2477,8 @@ void IHyprRenderer::handleFullscreenSettings(PHLMONITOR pMonitor) {
 
             if (HDR_CHANGED || INITIAL_SDR || pMonitor->m_hdrMetadataFromSurface || HDR_METADATA_CHANGED) {
                 LOG(Log::INFO, wantHDR ? "[CM] Updating HDR metadata from monitor" : "[CM] Restoring SDR mode");
-                pMonitor->m_output->state->setHDRMetadata(WANTED);
+                if (!hdrMetadataEqual(WANTED, CURRENT))
+                    pMonitor->m_output->state->setHDRMetadata(WANTED);
                 pMonitor->m_hdrMetadataFromSurface = false;
             }
 

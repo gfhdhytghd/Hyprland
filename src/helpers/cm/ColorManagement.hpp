@@ -403,6 +403,8 @@ namespace NColorManagement {
     using PImageDescription = SP<const CImageDescription>;
 
     hdr_output_metadata createHDRMetadata(const SImageDescription& settings);
+    hdr_output_metadata selectHDRMetadata(const SImageDescription& output, bool hdr, PImageDescription scanout = {});
+    bool                hdrMetadataEqual(const hdr_output_metadata& a, const hdr_output_metadata& b);
     // Chromaticities a real (mastering) display can have, which CTA-861.3 metadata can carry.
     bool      isPhysicalDisplayChromaticities(const SPCPRimaries& primaries);
 

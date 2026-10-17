@@ -131,7 +131,6 @@ namespace Render {
         STFRange                             srcTFRange;
         STFRange                             dstTFRange;
         float                                srcReferenceScale = 1; // target / source reference white, already applied to srcTFRange
-        float                                srcRefLuminance = 80;
         float                                dstRefLuminance = 80;
         std::array<std::array<double, 3>, 3> convertMatrix;
 

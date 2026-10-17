@@ -18,7 +18,6 @@ const int         targetTF = TARGET_TF;
 uniform vec2  srcTFRange;
 uniform vec2  dstTFRange;
 
-uniform float srcRefLuminance;
 uniform mat3  convertMatrix;
 
 uniform float sdrBrightnessMultiplier;
@@ -33,7 +32,7 @@ void main() {
     fragColor = fragColor = blurPrepare(texture(tex, v_texcoord), contrast, brightness
 #if USE_CM
                                         ,
-                                        sourceTF, targetTF, convertMatrix, srcTFRange, dstTFRange, srcRefLuminance, sdrBrightnessMultiplier, sdrSaturation
+                                        sourceTF, targetTF, convertMatrix, srcTFRange, dstTFRange, sdrBrightnessMultiplier, sdrSaturation
 #endif
     );
 }

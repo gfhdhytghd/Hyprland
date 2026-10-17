@@ -2092,9 +2092,28 @@ bool CMonitor::attemptDirectScanout() {
     const auto PSURFACE   = PCANDIDATE->getSolitaryResource();
     auto       PBUFFER    = PSURFACE->m_current.buffer.m_buffer;
 
+    // Stage the candidate's signalling before testing or committing its first buffer.
+    const auto  previousMetadata    = m_output->state->state().hdrMetadata;
+    const bool  previousFromSurface = m_hdrMetadataFromSurface;
+    const auto  description         = scanoutDescription(PSURFACE);
+    const bool  fromSurface         = supportsHDR() && inHDR() && description->value().transferFunction == CM_TRANSFER_FUNCTION_ST2084_PQ;
+    const auto  metadata            = selectHDRMetadata(m_imageDescription->value(), inHDR(), fromSurface ? description : PImageDescription{});
+    const bool  metadataChanged     = !hdrMetadataEqual(previousMetadata, metadata);
+    bool        scanoutCommitted    = false;
+    CScopeGuard rollbackMetadata    = {[this, previousMetadata, previousFromSurface, &scanoutCommitted]() {
+        if (scanoutCommitted)
+            return;
+        m_output->state->setHDRMetadata(previousMetadata);
+        m_hdrMetadataFromSurface = previousFromSurface;
+    }};
+    if (metadataChanged)
+        m_output->state->setHDRMetadata(metadata);
+    m_hdrMetadataFromSurface     = fromSurface;
+    const bool signallingChanged = m_output->state->state().committed & (Aquamarine::COutputState::AQ_OUTPUT_STATE_HDR | Aquamarine::COutputState::AQ_OUTPUT_STATE_WCG);
+
     // #TODO this entire bit needs figuring out, vrr goes down the drain without it
     // The same buffer is only resubmitted for cursor updates, so a hardware conversion that needs restaging takes the full path.
-    if (PBUFFER == m_output->state->state().buffer && *PSAME && !scanoutCMNeedsUpdate(PSURFACE)) {
+    if (PBUFFER == m_output->state->state().buffer && *PSAME && !signallingChanged && !scanoutCMNeedsUpdate(PSURFACE)) {
         PSURFACE->presentFeedback(Time::steadyNow(), m_self.lock());
         PROTO::presentation->tagQueued(m_self.lock(), 0, m_tearingState.activelyTearing, m_vrrActive);
 
@@ -2117,6 +2136,7 @@ bool CMonitor::attemptDirectScanout() {
         if (PSURFACE->m_fifo && !m_tearingState.activelyTearing && *PSAMEFIFO)
             PSURFACE->m_stateQueue.unlockFirst(LOCK_REASON_FIFO);
 
+        scanoutCommitted = true;
         return true;
     }
 
@@ -2135,7 +2155,6 @@ bool CMonitor::attemptDirectScanout() {
     const auto  previousFormat           = m_drmFormat;
     const auto  previousBuffer           = m_output->state->state().buffer;
     const auto  previousPresentationMode = m_output->state->state().presentationMode;
-    bool        scanoutCommitted         = false;
     CScopeGuard rollbackState            = {[this, previousFormat, previousBuffer, previousPresentationMode, &scanoutCommitted]() {
         if (scanoutCommitted)
             return;
@@ -2165,7 +2184,7 @@ bool CMonitor::attemptDirectScanout() {
             clearScanoutCM();
     }};
 
-    const bool  NEEDS_TEST = !m_lastScanout || m_drmFormat != params.format || HARDWARE_CM_CHANGED; // do not retest while it's active
+    const bool  NEEDS_TEST = !m_lastScanout || m_drmFormat != params.format || HARDWARE_CM_CHANGED || signallingChanged; // do not retest while it's active
     if (m_drmFormat != params.format) {
         m_output->state->setFormat(params.format);
         m_drmFormat = params.format;
