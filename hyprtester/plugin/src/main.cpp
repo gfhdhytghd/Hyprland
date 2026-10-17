@@ -742,6 +742,63 @@ static SDispatchResult armPopupOpacity(const std::string& cls, float parentFade,
     return {};
 }
 
+// Observe the real workspace passes rather than calling renderWindow directly.
+static SDispatchResult armWorkspacePopups(const std::string& cls, bool focused) {
+    g_popupRenderRecording.reset();
+    const auto WINDOW = windowByClass(cls);
+    if (!WINDOW || !WINDOW->mapped() || !WINDOW->m_monitor || !WINDOW->m_workspace || WINDOW->popupHead()->allMappedChildrenCount() != 2)
+        return {.success = false, .error = "Waiting for popup-render parent and two mapped popups"};
+    if (WINDOW->isFloating() || (Desktop::focusState()->window() == WINDOW) != focused)
+        return {.success = false, .error = "Expected tiled parent with the requested focus state"};
+
+    g_popupRenderRecording                         = makeShared<SPopupRenderRecording>();
+    const WP<SPopupRenderRecording> WEAK_RECORDING = g_popupRenderRecording;
+    const PHLWINDOWREF              WEAK_WINDOW    = WINDOW;
+    g_popupRenderRecording->stage                  = Event::bus()->m_events.render.stage.listen([WEAK_RECORDING, WEAK_WINDOW, focused](Event::SRenderStageEvent event) {
+        const auto RECORDING = WEAK_RECORDING.lock();
+        const auto WINDOW    = WEAK_WINDOW.lock();
+        if (!RECORDING || RECORDING->complete || !WINDOW || event.stage != RENDER_POST_WINDOWS || event.monitor != WINDOW->m_monitor || !event.context)
+            return;
+
+        RECORDING->complete = true;
+        if (WINDOW->isFloating() || (Desktop::focusState()->window() == WINDOW) != focused) {
+            RECORDING->result = {.success = false, .error = "Parent focus or tiled state changed before rendering"};
+            return;
+        }
+
+        if (WINDOW->popupHead()->m_children.size() != 2) {
+            RECORDING->result = {.success = false, .error = "Popup siblings disappeared before rendering"};
+            return;
+        }
+
+        std::array<size_t, 3>                       counts   = {};
+        const std::array<SP<CWLSurfaceResource>, 3> SURFACES = {
+            WINDOW->wlSurface()->resource(),
+            WINDOW->popupHead()->m_children[0]->wlSurface()->resource(),
+            WINDOW->popupHead()->m_children[1]->wlSurface()->resource(),
+        };
+        for (const auto& entry : event.context->get().m_pass.m_passElements) {
+            if (entry.element->type() != EK_SURFACE)
+                continue;
+            const auto& DATA = sc<CSurfacePassElement*>(entry.element.get())->m_data;
+            const auto  IT   = std::ranges::find(SURFACES, DATA.surface);
+            if (IT == SURFACES.end())
+                continue;
+            const auto INDEX = std::distance(SURFACES.begin(), IT);
+            if (INDEX != 0 && counts[0] != 1) {
+                RECORDING->result = {.success = false, .error = "Popup was queued before its parent main surface"};
+                return;
+            }
+            ++counts[INDEX];
+        }
+        RECORDING->result = counts == std::array<size_t, 3>{1, 1, 1} ?
+            SDispatchResult{} :
+            SDispatchResult{.success = false, .error = std::format("Expected parent and both popups exactly once, got {}/{}/{}", counts[0], counts[1], counts[2])};
+    });
+    g_pHyprRenderer->damageMonitor(WINDOW->m_monitor.lock());
+    return {};
+}
+
 static SDispatchResult testDragLifecycle(const std::string& cls) {
     const auto WINDOW = windowByClass(cls);
     if (!WINDOW)
@@ -1636,6 +1693,11 @@ static int luaArmPopupOpacity(lua_State* L) {
     return luaResult(L, armPopupOpacity(CLS, FADE, lua_toboolean(L, 3), lua_toboolean(L, 4), luaL_optstring(L, 5, "")));
 }
 
+static int luaArmWorkspacePopups(lua_State* L) {
+    luaL_checktype(L, 2, LUA_TBOOLEAN);
+    return luaResult(L, armWorkspacePopups(luaL_checkstring(L, 1), lua_toboolean(L, 2)));
+}
+
 static int luaCheckPopupOpacity(lua_State* L) {
     if (!g_popupRenderRecording)
         return luaResult(L, {.success = false, .error = "Popup opacity probe pending"});
@@ -1862,6 +1924,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     addLuaFn("check_monitor_render_recording", ::luaCheckMonitorRenderRecording);
     addLuaFn("reset_monitor_render_recording", ::luaResetMonitorRenderRecording);
     addLuaFn("arm_popup_opacity", ::luaArmPopupOpacity);
+    addLuaFn("arm_workspace_popups", ::luaArmWorkspacePopups);
     addLuaFn("check_popup_opacity", ::luaCheckPopupOpacity);
     addLuaFn("reset_popup_opacity", ::luaResetPopupOpacity);
     addLuaFn("test_drag_lifecycle", ::luaTestDragLifecycle);

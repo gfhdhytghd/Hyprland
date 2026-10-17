@@ -107,6 +107,8 @@ namespace Monitor {
         uint32_t                    m_prevDrmFormat = DRM_FORMAT_INVALID;
 
         CMonitorZoomController      m_zoomController;
+        bool                        m_zoomSoftwareCursorLock = false;
+        int                         m_damageBlinkCleanup     = 0;
 
         bool                        m_dpmsStatus         = true;
         bool                        m_vrrActive          = false; // this can be TRUE even if VRR is not active in the case that this display does not support it.

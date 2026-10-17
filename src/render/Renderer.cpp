@@ -501,9 +501,8 @@ void IHyprRenderer::renderWorkspaceWindows(CRenderContext& ctx, PHLMONITOR pMoni
             continue;
         }
 
-        // render the bad boy
+        // Keep mapped windows for the popup pass; fadeout snapshots have their own pass.
         renderWindow(ctx, w.lock(), pMonitor, w->presentation().renderPresentation(mode), time, true, RENDER_PASS_MAIN);
-        w.reset();
     }
 
     if (lastWindow)
@@ -2163,7 +2162,7 @@ void IHyprRenderer::renderMonitor(PHLMONITOR pMonitor, bool commit) {
     static auto                                           PSOLDAMAGE          = CConfigValue<Config::INTEGER>("debug:render_solitary_wo_damage");
     static auto                                           PVFR                = CConfigValue<Config::INTEGER>("debug:vfr");
 
-    static int                                            damageBlinkCleanup = 0; // because double-buffered
+    auto&                                                 damageBlinkCleanup = pMonitor->m_damageBlinkCleanup; // because double-buffered
 
     const float                                           ZOOMFACTOR = pMonitor->m_cursorZoom->value();
 
@@ -2255,12 +2254,12 @@ void IHyprRenderer::renderMonitor(PHLMONITOR pMonitor, bool commit) {
 
     TRACY_GPU_ZONE("Render");
 
-    static bool zoomLock = false;
+    auto& zoomLock = pMonitor->m_zoomSoftwareCursorLock;
     if (zoomLock && ZOOMFACTOR == 1.f) {
-        Pointer::mgr()->unlockSoftwareAll();
+        Pointer::mgr()->unlockSoftwareForMonitor(pMonitor);
         zoomLock = false;
     } else if (!zoomLock && ZOOMFACTOR != 1.f) {
-        Pointer::mgr()->lockSoftwareAll();
+        Pointer::mgr()->lockSoftwareForMonitor(pMonitor);
         zoomLock = true;
     }
 
