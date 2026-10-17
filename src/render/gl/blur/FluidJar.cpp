@@ -386,6 +386,8 @@ void CFluidJarBlurMaterial::clearBuffers(const std::array<SP<CGLFramebuffer>, 2>
 
 void CFluidJarBlurMaterial::drawInitialize(CRenderContext& ctx, const SState& state, SP<CGLFramebuffer> target) const {
     const auto shader = m_impl.useShader(m_impl.getShaderVariant(SH_FRAG_FLUIDJARINIT));
+    if (!shader)
+        return;
     preparePass(ctx, target, state.particleTextureSize, shader);
     shader->setUniformFloat2(SHADER_FLUIDJAR_RESOLUTION, state.simulationSize.x, state.simulationSize.y);
     shader->setUniformFloat2(SHADER_FLUIDJAR_GRID_SIZE, state.gridSize.x, state.gridSize.y);
@@ -401,6 +403,8 @@ void CFluidJarBlurMaterial::drawResample(CRenderContext& ctx, const SState& stat
 
     bindNearestTexture(source, GL_TEXTURE0);
     const auto shader = m_impl.useShader(m_impl.getShaderVariant(SH_FRAG_FLUIDJARRESAMPLE));
+    if (!shader)
+        return;
     preparePass(ctx, target, state.particleTextureSize, shader);
     shader->setUniformInt(SHADER_FLUIDJAR_PARTICLE_TEX, 0);
     shader->setUniformFloat2(SHADER_FLUIDJAR_RESOLUTION, state.simulationSize.x, state.simulationSize.y);
@@ -428,6 +432,8 @@ void CFluidJarBlurMaterial::drawHistoryResample(CRenderContext& ctx, SP<CGLFrame
     const Vector2D inverseScale  = {1.0 / transform.positionScale.x, 1.0 / transform.positionScale.y};
     const Vector2D inverseOffset = {-transform.positionOffset.x * inverseScale.x, -transform.positionOffset.y * inverseScale.y};
     const auto     shader        = m_impl.useShader(m_impl.getShaderVariant(SH_FRAG_FLUIDJARHISTORYRESAMPLE));
+    if (!shader)
+        return;
     preparePass(ctx, target, target->m_size, shader);
     shader->setUniformInt(SHADER_FLUIDJAR_HISTORY_TEX, 0);
     shader->setUniformFloat2(SHADER_FLUIDJAR_OLD_RESOLUTION, oldSize.x, oldSize.y);
@@ -446,6 +452,8 @@ void CFluidJarBlurMaterial::drawParticleStep(CRenderContext& ctx, SState& state,
     bindNearestTexture(source, GL_TEXTURE0);
     bindNearestTexture(state.graph[state.currentGraph], GL_TEXTURE1);
     const auto shader = m_impl.useShader(m_impl.getShaderVariant(SH_FRAG_FLUIDJARSTEP));
+    if (!shader)
+        return;
     preparePass(ctx, target, state.particleTextureSize, shader);
     shader->setUniformInt(SHADER_FLUIDJAR_PARTICLE_TEX, 0);
     shader->setUniformInt(SHADER_FLUIDJAR_GRAPH_TEX, 1);
@@ -466,6 +474,8 @@ void CFluidJarBlurMaterial::drawGraphStep(CRenderContext& ctx, SState& state) co
     bindNearestTexture(state.particles[state.currentParticles], GL_TEXTURE0);
     bindNearestTexture(state.graph[state.currentGraph], GL_TEXTURE1);
     const auto shader = m_impl.useShader(m_impl.getShaderVariant(SH_FRAG_FLUIDJARGRAPH));
+    if (!shader)
+        return;
     preparePass(ctx, target, state.graphTextureSize, shader);
     shader->setUniformInt(SHADER_FLUIDJAR_PARTICLE_TEX, 0);
     shader->setUniformInt(SHADER_FLUIDJAR_GRAPH_TEX, 1);
@@ -485,6 +495,8 @@ void CFluidJarBlurMaterial::drawTrackingStep(CRenderContext& ctx, SState& state)
     bindNearestTexture(state.graph[state.currentGraph], GL_TEXTURE1);
     bindNearestTexture(state.tracking[state.currentTracking], GL_TEXTURE2);
     const auto shader = m_impl.useShader(m_impl.getShaderVariant(SH_FRAG_FLUIDJARTRACK));
+    if (!shader)
+        return;
     preparePass(ctx, target, state.simulationSize, shader);
     shader->setUniformInt(SHADER_FLUIDJAR_PARTICLE_TEX, 0);
     shader->setUniformInt(SHADER_FLUIDJAR_GRAPH_TEX, 1);
@@ -506,6 +518,8 @@ void CFluidJarBlurMaterial::drawTrackingResample(CRenderContext& ctx, SP<CGLFram
     const Vector2D inverseScale  = {1.0 / transform.positionScale.x, 1.0 / transform.positionScale.y};
     const Vector2D inverseOffset = {-transform.positionOffset.x * inverseScale.x, -transform.positionOffset.y * inverseScale.y};
     const auto     shader        = m_impl.useShader(m_impl.getShaderVariant(SH_FRAG_FLUIDJARTRACKINGRESAMPLE));
+    if (!shader)
+        return;
     preparePass(ctx, target, target->m_size, shader);
     shader->setUniformInt(SHADER_FLUIDJAR_HISTORY_TEX, 0);
     shader->setUniformFloat2(SHADER_FLUIDJAR_OLD_RESOLUTION, oldSize.x, oldSize.y);
@@ -522,6 +536,8 @@ void CFluidJarBlurMaterial::drawVisualStep(CRenderContext& ctx, SState& state, i
     bindNearestTexture(state.tracking[state.currentTracking], GL_TEXTURE2);
     bindNearestTexture(state.visual[state.currentVisual], GL_TEXTURE3);
     const auto shader = m_impl.useShader(m_impl.getShaderVariant(SH_FRAG_FLUIDJARVISUAL));
+    if (!shader)
+        return;
     preparePass(ctx, target, state.simulationSize, shader);
     shader->setUniformInt(SHADER_FLUIDJAR_PARTICLE_TEX, 0);
     shader->setUniformInt(SHADER_FLUIDJAR_GRAPH_TEX, 1);

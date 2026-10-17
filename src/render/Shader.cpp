@@ -56,12 +56,13 @@ GLuint CShader::compileShader(const GLuint& type, std::string src, bool dynamic,
     glShaderSource(shader, 1, &shaderSource, nullptr);
     glCompileShader(shader);
 
-    GLint ok;
+    GLint ok = GL_FALSE;
     glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
 
     if (dynamic) {
         if (ok == GL_FALSE) {
             logShaderError(shader, false, silent);
+            glDeleteShader(shader);
             return 0;
         }
     } else {
@@ -83,8 +84,10 @@ bool CShader::createProgram(const std::string& vert, const std::string& frag, bo
 
     auto fragCompiled = compileShader(GL_FRAGMENT_SHADER, frag, dynamic, silent);
     if (dynamic) {
-        if (fragCompiled == 0)
+        if (fragCompiled == 0) {
+            glDeleteShader(vertCompiled);
             return false;
+        }
     } else
         RASSERT(fragCompiled, "Compiling shader failed. FRAGMENT nullptr! Shader source:\n\n{}", frag);
 
@@ -98,11 +101,12 @@ bool CShader::createProgram(const std::string& vert, const std::string& frag, bo
     glDeleteShader(vertCompiled);
     glDeleteShader(fragCompiled);
 
-    GLint ok;
+    GLint ok = GL_FALSE;
     glGetProgramiv(prog, GL_LINK_STATUS, &ok);
     if (dynamic) {
         if (ok == GL_FALSE) {
             logShaderError(prog, true, silent);
+            glDeleteProgram(prog);
             return false;
         }
     } else {

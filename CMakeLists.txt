@@ -719,6 +719,12 @@ if(BUILD_TESTING OR WITH_TESTS)
   add_executable(hyprland_gtests ${TESTFILES})
   target_compile_options(hyprland_gtests PRIVATE --coverage)
   target_link_options(hyprland_gtests PRIVATE --coverage)
+  # Inject GL failures without a GPU context; wrappers forward normally outside the test.
+  foreach(GL_PROC CreateShader ShaderSource CompileShader GetShaderiv GetShaderInfoLog
+                  DeleteShader CreateProgram AttachShader DetachShader LinkProgram
+                  GetProgramiv GetProgramInfoLog DeleteProgram)
+    target_link_options(hyprland_gtests PRIVATE "-Wl,--wrap=gl${GL_PROC}")
+  endforeach()
   target_include_directories(
     hyprland_gtests
     PUBLIC "./include"

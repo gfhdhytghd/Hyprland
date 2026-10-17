@@ -135,6 +135,8 @@ SP<CGLFramebuffer> CDualKawaseBlurProvider::blurGL(CRenderContext& ctx, SP<CGLFr
         if (!skipCM) {
             const auto settings = blurIntermediateCMSettings(ctx, /* toIntermediate */ true);
             shader              = m_impl.useShader(m_impl.getShaderVariant(SH_FRAG_BLURPREPARE, SH_FEAT_CM, settings.sourceTF, settings.targetTF));
+            if (!shader)
+                return nullptr;
 
             m_impl.passCMUniforms(shader, g_pHyprRenderer->workBufferImageDescription(ctx), getDefaultImageDescription(), false, -1.F, settings);
             shader->setUniformFloat(SHADER_SDR_SATURATION,
@@ -143,6 +145,8 @@ SP<CGLFramebuffer> CDualKawaseBlurProvider::blurGL(CRenderContext& ctx, SP<CGLFr
                                     m_renderData.pMonitor->m_sdrBrightness > 0 && m_renderData.pMonitor->inHDR() ? m_renderData.pMonitor->m_sdrBrightness : 1.0f);
         } else
             shader = m_impl.useShader(m_impl.getShaderVariant(SH_FRAG_BLURPREPARE));
+        if (!shader)
+            return nullptr;
 
         shader->setUniformMatrix3fv(SHADER_PROJ, 1, GL_TRUE, glMatrix.getMatrix());
         shader->setUniformFloat(SHADER_CONTRAST, *PBLURCONTRAST);
@@ -210,12 +214,16 @@ SP<CGLFramebuffer> CDualKawaseBlurProvider::blurGL(CRenderContext& ctx, SP<CGLFr
     CRegion tempDamage{workingDamage};
 
     auto    shader = m_impl.useShader(m_impl.getShaderVariant(SH_FRAG_BLUR1));
+    if (!shader)
+        return nullptr;
     for (auto i = 1; i <= BLUR_PASSES; ++i) {
         tempDamage = workingDamage.copy().scale(1.f / (1 << i));
         drawPass(shader, SH_FRAG_BLUR1, &tempDamage);
     }
 
     shader = m_impl.useShader(m_impl.getShaderVariant(SH_FRAG_BLUR2));
+    if (!shader)
+        return nullptr;
     for (auto i = BLUR_PASSES - 1; i >= 0; --i) {
         tempDamage = workingDamage.copy().scale(1.f / (1 << i));
         drawPass(shader, SH_FRAG_BLUR2, &tempDamage);
@@ -249,6 +257,8 @@ SP<CGLFramebuffer> CDualKawaseBlurProvider::blurGL(CRenderContext& ctx, SP<CGLFr
         if (!skipCM) {
             const auto settings = blurIntermediateCMSettings(ctx, /* toIntermediate */ false);
             shader = m_impl.useShader(m_impl.getShaderVariant(MATERIAL_REQUIREMENTS.finishFragment, SH_FEAT_CM | SH_FEAT_SDR_MOD, settings.sourceTF, settings.targetTF));
+            if (!shader)
+                return nullptr;
 
             m_impl.passCMUniforms(shader, getDefaultImageDescription(), g_pHyprRenderer->workBufferImageDescription(ctx), false, -1.F, settings);
             shader->setUniformFloat(SHADER_SDR_SATURATION,
@@ -257,6 +267,8 @@ SP<CGLFramebuffer> CDualKawaseBlurProvider::blurGL(CRenderContext& ctx, SP<CGLFr
                                     m_renderData.pMonitor->m_sdrBrightness > 0 && m_renderData.pMonitor->inHDR() ? m_renderData.pMonitor->m_sdrBrightness : 1.0f);
         } else
             shader = m_impl.useShader(m_impl.getShaderVariant(MATERIAL_REQUIREMENTS.finishFragment));
+        if (!shader)
+            return nullptr;
 
         shader->setUniformMatrix3fv(SHADER_PROJ, 1, GL_TRUE, glMatrix.getMatrix());
         shader->setUniformFloat(SHADER_NOISE, *PBLURNOISE);

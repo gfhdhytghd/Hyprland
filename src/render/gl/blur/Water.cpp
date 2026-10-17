@@ -309,6 +309,8 @@ void CWaterBlurMaterial::drawStateStep(CRenderContext& ctx, SState& state, float
     const auto monitor = ctx.m_data.pMonitor;
     const auto matrix  = g_pHyprRenderer->projectBoxToTarget(ctx, {0, 0, monitor->m_transformedSize.x, monitor->m_transformedSize.y});
     const auto shader  = m_impl.useShader(m_impl.getShaderVariant(SH_FRAG_WATERSTEP));
+    if (!shader)
+        return;
     shader->setUniformMatrix3fv(SHADER_PROJ, 1, GL_TRUE, matrix.getMatrix());
     shader->setUniformInt(SHADER_WATER_STATE_TEX, 0);
     shader->setUniformFloat2(SHADER_WATER_TEXEL_SIZE, 1.F / state.simulationSize.x, 1.F / state.simulationSize.y);
