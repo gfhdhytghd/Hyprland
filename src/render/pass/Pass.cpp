@@ -347,9 +347,10 @@ void CRenderPass::renderDebugData(CRenderContext& ctx) {
             auto hlSurface = Desktop::View::CWLSurface::fromResource(g_pSeatManager->m_state.pointerFocus.lock());
             if (hlSurface) {
                 auto BOX = hlSurface->getSurfaceBoxGlobal();
-                if (BOX) {
-                    g_pHyprRenderer->draw(ctx, CRectPassElement::SRectData{.box = box, .color = CHyprColor{0.8F, 0.8F, 0.2F, 0.4F}}, m_damage);
-                }
+                if (BOX)
+                    g_pHyprRenderer->draw(
+                        ctx, CRectPassElement::SRectData{.box = BOX->copy().translate(-pMonitor->m_position).scale(pMonitor->m_scale), .color = CHyprColor{0.8F, 0.8F, 0.2F, 0.4F}},
+                        m_damage);
             }
         }
     }

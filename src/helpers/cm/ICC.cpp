@@ -1,4 +1,6 @@
-#include "ColorManagement.hpp"
+#include "ICC.hpp"
+#include <bit>
+#include <cmath>
 #include "../math/Math.hpp"
 #include <cstddef>
 #include <fstream>
@@ -6,9 +8,6 @@
 #include "../../debug/log/Logger.hpp"
 #include "../../render/Texture.hpp"
 #include "../../render/Renderer.hpp"
-
-#include <hyprutils/utils/ScopeGuard.hpp>
-using namespace Hyprutils::Utils;
 
 #include <lcms2.h>
 
@@ -231,23 +230,89 @@ static std::expected<void, std::string> buildIcc3DLut(cmsHPROFILE profile, SImag
     return {};
 }
 
-static constexpr cmsCIExyY buildPrimary(UniqueTransform& xform, std::array<float, 3> rgb) {
-    float xyz_data[3];
+static cmsCIExyY buildPrimary(UniqueTransform& xform, std::array<float, 3> rgb) {
+    float xyz_data[3] = {};
     cmsDoTransform(xform.get(), rgb.data(), xyz_data, 1);
 
     const cmsCIEXYZ xyz{xyz_data[0], xyz_data[1], xyz_data[2]};
-    cmsCIExyY       xyY;
+    cmsCIExyY       xyY{};
 
     cmsXYZ2xyY(&xyY, &xyz);
     return xyY;
 }
 
-static std::expected<void, std::string> buildPrimaries(cmsHPROFILE profile, SImageDescription& image) {
+static std::optional<SPCPRimaries> nativePrimaries(cmsHPROFILE profile) {
+    std::array<cmsCIEXYZ, 4> xyz{};
+    const std::array         tags = {cmsSigRedColorantTag, cmsSigGreenColorantTag, cmsSigBlueColorantTag, cmsSigMediaWhitePointTag};
+    for (size_t i = 0; i < tags.size(); ++i) {
+        const auto value = sc<const cmsCIEXYZ*>(cmsReadTag(profile, tags[i]));
+        if (!value)
+            return std::nullopt;
+        xyz[i] = *value;
+    }
+
+    if (cmsIsTag(profile, cmsSigChromaticAdaptationTag)) {
+        // chad is an s15Fixed16ArrayType containing the row-major native-to-PCS matrix.
+        std::array<uint8_t, 44> raw{};
+        if (cmsReadRawTag(profile, cmsSigChromaticAdaptationTag, raw.data(), raw.size()) != raw.size() || bigEndianU32(raw.data()) != cmsSigS15Fixed16ArrayType)
+            return std::nullopt;
+        std::array<std::array<double, 3>, 3> matrix{};
+        for (size_t row = 0; row < 3; ++row)
+            for (size_t col = 0; col < 3; ++col)
+                matrix[row][col] = std::bit_cast<int32_t>(bigEndianU32(raw.data() + 8 + (row * 3 + col) * 4)) / 65536.0;
+        const auto&  m = matrix;
+        const double det =
+            m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+        if (!std::isfinite(det) || std::abs(det) < 1e-10)
+            return std::nullopt;
+        const auto inverse = Hyprgraphics::CMatrix3{matrix}.invert();
+        // v4 (and most v2) display profiles store a PCS-relative D50 wtpt; some v2 profiles (e.g. ArgyllCMS) store the native white and only adapt the colorants.
+        cmsCIExyY whiteXY{};
+        cmsCIExyY d50XY{};
+        cmsXYZ2xyY(&whiteXY, &xyz[3]);
+        cmsXYZ2xyY(&d50XY, cmsD50_XYZ());
+        const bool whiteIsPCS = std::abs(whiteXY.x - d50XY.x) < 1e-3 && std::abs(whiteXY.y - d50XY.y) < 1e-3;
+        for (size_t i = 0; i < xyz.size(); ++i) {
+            if (i == 3 && !whiteIsPCS)
+                continue;
+            const auto& value  = xyz[i];
+            const auto  native = inverse * Hyprgraphics::CColor::XYZ{.x = value.X, .y = value.Y, .z = value.Z};
+            xyz[i]             = {native.x, native.y, native.z};
+        }
+    } else {
+        // Older profiles may store native media white without a chad tag, but colorants are PCS-relative.
+        for (size_t i = 0; i < 3; ++i) {
+            cmsCIEXYZ native{};
+            if (!cmsAdaptToIlluminant(&native, cmsD50_XYZ(), &xyz[3], &xyz[i]))
+                return std::nullopt;
+            xyz[i] = native;
+        }
+    }
+
+    std::array<Hyprgraphics::CColor::xy, 4> xy{};
+    for (size_t i = 0; i < xyz.size(); ++i) {
+        const auto& value = xyz[i];
+        if (!std::isfinite(value.X) || !std::isfinite(value.Y) || !std::isfinite(value.Z) || value.X + value.Y + value.Z <= 0)
+            return std::nullopt;
+        cmsCIExyY result{};
+        cmsXYZ2xyY(&result, &value);
+        xy[i] = {.x = result.x, .y = result.y};
+    }
+    return SPCPRimaries{.red = xy[0], .green = xy[1], .blue = xy[2], .white = xy[3]};
+}
+
+std::expected<SPCPRimaries, std::string> NColorManagement::iccPrimaries(cmsHPROFILE profile) {
+    if (const auto native = nativePrimaries(profile))
+        return *native;
+
     const int             intent = INTENT_RELATIVE_COLORIMETRIC;
     const cmsUInt32Number flags  = cmsFLAGS_BLACKPOINTCOMPENSATION | cmsFLAGS_HIGHRESPRECALC; // good quality precalc in LCMS
 
     // float->float transform
-    UniqueTransform xform{cmsCreateTransform(profile, TYPE_RGB_FLT, cmsCreateXYZProfile(), TYPE_XYZ_FLT, intent, flags)};
+    UniqueProfile xyzProfile{cmsCreateXYZProfile()};
+    if (!xyzProfile)
+        return std::unexpected("Failed to create XYZ profile");
+    UniqueTransform xform{cmsCreateTransform(profile, TYPE_RGB_FLT, xyzProfile.get(), TYPE_XYZ_FLT, intent, flags)};
     if (!xform)
         return std::unexpected("Failed to create ICC transform");
 
@@ -258,20 +323,15 @@ static std::expected<void, std::string> buildPrimaries(cmsHPROFILE profile, SIma
     const cmsCIExyY blueXY  = buildPrimary(xform, {0.0f, 0.0f, 1.0f});
     const cmsCIExyY whiteXY = buildPrimary(xform, {1.0f, 1.0f, 1.0f});
 
-    image.primaries.red   = {.x = redXY.x, .y = redXY.y};
-    image.primaries.green = {.x = greenXY.x, .y = greenXY.y};
-    image.primaries.blue  = {.x = blueXY.x, .y = blueXY.y};
-    image.primaries.white = {.x = whiteXY.x, .y = whiteXY.y};
-
-    LOG(Log::DEBUG, "Got Red Primaries of: x{} y{}", redXY.x, redXY.y);
-    LOG(Log::DEBUG, "Got Greeen Primaries of: x{} y{}", greenXY.x, greenXY.y);
-    LOG(Log::DEBUG, "Got Blue Primaries of: x{} y{}", blueXY.x, blueXY.y);
-    LOG(Log::DEBUG, "Got White Primaries of: x{} y{}", whiteXY.x, whiteXY.y);
-
-    return {};
+    return SPCPRimaries{
+        .red   = {.x = redXY.x, .y = redXY.y},
+        .green = {.x = greenXY.x, .y = greenXY.y},
+        .blue  = {.x = blueXY.x, .y = blueXY.y},
+        .white = {.x = whiteXY.x, .y = whiteXY.y},
+    };
 }
 
-std::expected<SImageDescription, std::string> SImageDescription::fromICC(const std::filesystem::path& file) {
+std::expected<SImageDescription, std::string> SImageDescription::fromICC(const std::filesystem::path& file, SP<const CImageDescription> previous) {
     static auto     PVCGTENABLED = CConfigValue<Config::INTEGER>("render:icc_vcgt_enabled");
 
     std::error_code ec;
@@ -284,11 +344,10 @@ std::expected<SImageDescription, std::string> SImageDescription::fromICC(const s
     if (image.rawICC.empty())
         return std::unexpected("Failed to read file");
 
-    cmsHPROFILE prof = cmsOpenProfileFromFile(file.string().c_str(), "r");
+    UniqueProfile profile{cmsOpenProfileFromMem(image.rawICC.data(), image.rawICC.size())};
+    const auto    prof = profile.get();
     if (!prof)
         return std::unexpected("CMS failed to open icc file");
-
-    CScopeGuard x([&prof] { cmsCloseProfile(prof); });
 
     // only handle RGB (typical display profiles)
     if (cmsGetColorSpace(prof) != cmsSigRgbData)
@@ -297,11 +356,11 @@ std::expected<SImageDescription, std::string> SImageDescription::fromICC(const s
     LOG(Log::DEBUG, "============= Begin ICC load =============");
     LOG(Log::DEBUG, "ICC size: {} bytes", image.rawICC.size());
 
-    if (const auto RET = buildIcc3DLut(prof, image); !RET)
-        return std::unexpected(RET.error());
-
-    if (const auto RET = buildPrimaries(prof, image); !RET)
-        return std::unexpected(RET.error());
+    const auto primaries = iccPrimaries(prof);
+    if (!primaries)
+        return std::unexpected(primaries.error());
+    image.primaries   = *primaries;
+    image.icc.present = true;
 
     if (*PVCGTENABLED) {
         auto vcgtRes = readVCGT16(prof);
@@ -314,6 +373,13 @@ std::expected<SImageDescription, std::string> SImageDescription::fromICC(const s
             LOG(Log::DEBUG, "ICC profile has no VCGT data");
     } else
         LOG(Log::DEBUG, "Skipping VCGT load, disabled by config");
+
+    // Compare content and effective settings before constructing or uploading the expensive LUT.
+    if (previous && image == previous->value())
+        return previous->value();
+
+    if (const auto RET = buildIcc3DLut(prof, image); !RET)
+        return std::unexpected(RET.error());
 
     LOG(Log::DEBUG, "============= End ICC load =============");
 

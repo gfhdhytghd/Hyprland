@@ -13,6 +13,7 @@ uniform vec3  targetLuminanceCoefficients;
 // Target / source reference white, already applied to the source luminance range.
 uniform float sourceReferenceScale;
 #if USE_TONEMAP
+uniform mat3 targetXYZPrimaries;
 // Source black after reference white anchoring, the BT.2390 EETF black input.
 uniform float srcMinLuminance;
 #endif
@@ -29,6 +30,8 @@ const mat3 BT709toXYZ = mat3(        //
     0.3575843, 0.7151687, 0.1191948, //
     0.1804808, 0.0721923, 0.9505322  //
 );
+const mat3 XYZtoBT709      = mat3(3.24096970749534, -0.9692435172196444, 0.05563015115599572, -1.53738281847333, 1.875967326610972, -0.2039770041610219, -0.4986107824000627,
+                                  0.04155508813874787, 1.056971447040656);
 const vec3 BT709_LUMINANCE = vec3(0.2126390, 0.7151687, 0.0721923);
 #endif
 
@@ -290,7 +293,7 @@ vec3 mapToGamut(vec3 color, vec2 range, vec3 luminanceCoefficients) {
 // Highlights above SDR white are mapped by the BT.2390 EETF, then out-of-gamut colors are clipped preserving hue.
 vec4 toMirror(vec3 nits, float peak, float alpha) {
     vec2 range = vec2(SDR_MIN_LUMINANCE, SDR_MAX_LUMINANCE);
-    vec4 color = tonemap(vec4(mirrorConvertMatrix * nits, 1.0), BT709toXYZ, 0.0, peak, range.y, range.x, 1);
+    vec4 color = tonemap(vec4(mirrorConvertMatrix * nits, 1.0), BT709toXYZ, XYZtoBT709, 0.0, peak, range.y, range.x, 1);
     color.rgb  = mapToGamut(color.rgb, range, BT709_LUMINANCE);
     return fromLinearNit(vec4(color.rgb * alpha, alpha), CM_TRANSFER_FUNCTION_SRGB, range);
 }
@@ -320,7 +323,7 @@ vec4
 #endif
 #if USE_TONEMAP
                        ,
-                       float maxLuminance, float dstMaxLuminance, float dstRefLuminance, float srcRefLuminance, int tonemapMode
+                       float maxLuminance, float dstMaxLuminance, float dstRefLuminance, int tonemapMode
 #endif
 #if USE_SDR_MOD
                        ,
@@ -356,7 +359,7 @@ vec4
     pixColor.rgb *= sdrBrightnessMultiplier;
 #endif
 #if USE_TONEMAP
-    pixColor = tonemap(pixColor, dstxyz, srcMinLuminance, maxLuminance, dstMaxLuminance, dstTFRange.x, tonemapMode);
+    pixColor = tonemap(pixColor, dstxyz, targetXYZPrimaries, srcMinLuminance, maxLuminance, dstMaxLuminance, dstTFRange.x, tonemapMode);
 #endif
     // Linear targets are intermediate buffers that keep extended values; encoded targets get gamut mapped.
     if (dstTF != CM_TRANSFER_FUNCTION_LINEAR && dstTF != CM_TRANSFER_FUNCTION_EXT_LINEAR)

@@ -398,16 +398,18 @@ TEST(ColorManagement, ChurnDoesNotKeepHistoricalValuesAlive) {
     }
 }
 
-TEST(ColorManagement, ICCDescriptionsRemainDistinctAndReleaseNormally) {
+TEST(ColorManagement, ICCDescriptionsShareContentAndReleaseNormally) {
     SImageDescription value;
+    value.rawICC      = {1, 2, 3};
     value.icc.present = true;
     auto first        = CImageDescription::from(value);
     auto second       = CImageDescription::from(value);
-    EXPECT_NE(first->id(), second->id());
+    EXPECT_EQ(first->id(), second->id());
     const auto id = first->id();
     first.reset();
+    EXPECT_EQ(CImageDescription::from(id), second);
+    second.reset();
     EXPECT_FALSE(CImageDescription::from(id));
-    EXPECT_EQ(CImageDescription::from(second->id()), second);
 }
 
 TEST(ColorManagement, InterningUsesTheSameEqualityForNamedPrimariesAndSignedZero) {
@@ -418,4 +420,36 @@ TEST(ColorManagement, InterningUsesTheSameEqualityForNamedPrimariesAndSignedZero
     second.masteringLuminances.min = -0.F;
     const auto owner               = CImageDescription::from(first);
     EXPECT_EQ(CImageDescription::from(second), owner);
+}
+
+TEST(ColorManagement, ScanoutHDRMetadataIsSelectedForThePendingBuffer) {
+    auto output                 = DEFAULT_HDR_IMAGE_DESCRIPTION->value();
+    output.masteringLuminances  = {.min = 0.005F, .max = 600};
+    output.maxCLL               = 900;
+    output.maxFALL              = 300;
+    auto surface                = output;
+    surface.masteringLuminances = {.min = 0.001F, .max = 1000};
+    surface.maxCLL              = 800;
+    surface.maxFALL             = 200;
+    const auto candidate        = CImageDescription::from(surface);
+
+    const auto composited = selectHDRMetadata(output, true);
+    EXPECT_EQ(composited.hdmi_metadata_type1.max_cll, 0);
+    EXPECT_EQ(composited.hdmi_metadata_type1.max_fall, 0);
+    EXPECT_EQ(composited.hdmi_metadata_type1.max_display_mastering_luminance, 600);
+
+    // Entry uses the candidate immediately, without requiring a previously scanned-out frame.
+    const auto scanout = selectHDRMetadata(output, true, candidate);
+    EXPECT_TRUE(hdrMetadataEqual(scanout, createHDRMetadata(surface)));
+    EXPECT_FALSE(hdrMetadataEqual(scanout, composited));
+    surface.maxCLL = 700;
+    EXPECT_FALSE(hdrMetadataEqual(scanout, selectHDRMetadata(output, true, CImageDescription::from(surface))));
+
+    // Leaving or rejecting scanout restores the composited signalling, including unknown CLL/FALL.
+    EXPECT_TRUE(hdrMetadataEqual(selectHDRMetadata(output, true), composited));
+    EXPECT_EQ(selectHDRMetadata(output, false, candidate).hdmi_metadata_type1.eotf, 0);
+    EXPECT_EQ(selectHDRMetadata(output, false, candidate).hdmi_metadata_type1.max_cll, 0);
+    EXPECT_TRUE(hdrMetadataEqual(selectHDRMetadata(output, true, SCRGB_IMAGE_DESCRIPTION), composited));
+    surface.transferFunction = CM_TRANSFER_FUNCTION_HLG;
+    EXPECT_TRUE(hdrMetadataEqual(selectHDRMetadata(output, true, CImageDescription::from(surface)), composited));
 }

@@ -87,3 +87,32 @@ TEST_CASE(popupOpacityInheritsParentFade) {
 TEST_CASE(popupRespectsPassRedirection) {
     CALL_SUBTEST(popupRender, true);
 }
+
+TEST_CASE(tiledPopupsSurviveFocusChanges) {
+    CProcess client(std::format("{}/popup-render", binaryDir), {});
+    client.addEnv("WAYLAND_DISPLAY", WLDISPLAY);
+    ASSERT(client.runAsync(), true);
+    CScopeGuard cleanup([&] {
+        getFromSocket("/eval hl.plugin.test.reset_popup_opacity()");
+        if (Tests::processAlive(client.pid()))
+            kill(client.pid(), SIGKILL);
+    });
+
+    std::string ready;
+    for (size_t i = 0; i < 100; ++i) {
+        ASSERT(Tests::processAlive(client.pid()), true);
+        ready = getFromSocket("/eval hl.plugin.test.arm_workspace_popups('popup-render', true)");
+        if (ready == "ok")
+            break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    OK(ready);
+    EXPECT_OK(waitForPopupProbe());
+
+    const auto OTHER = Tests::spawnKitty("popup-focus-other");
+    ASSERT(OTHER != nullptr, true);
+    Tests::waitUntilWindowsN(2);
+    Tests::sync();
+    OK(getFromSocket("/eval hl.plugin.test.arm_workspace_popups('popup-render', false)"));
+    EXPECT_OK(waitForPopupProbe());
+}

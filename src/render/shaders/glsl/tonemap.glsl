@@ -76,12 +76,12 @@ float bt2390EETF(float signal, float srcMin, float srcMax, float dstMin, float d
     return E3 * srcRange + srcBlack;
 }
 
-vec4 tonemap(vec4 color, mat3 dstXYZ, float srcMinLuminance, float maxLuminance, float dstMaxLuminance, float dstMinLuminance, int tonemapMode) {
+vec4 tonemap(vec4 color, mat3 dstXYZ, mat3 dstXYZInverse, float srcMinLuminance, float maxLuminance, float dstMaxLuminance, float dstMinLuminance, int tonemapMode) {
     if (maxLuminance < dstMaxLuminance * 1.01 || tonemapMode == 2)
         return limitLuminance(color, dstXYZ, dstMaxLuminance);
 
     mat3  toLMS   = XYZtoLMS * dstXYZ;
-    mat3  fromLMS = inverse(dstXYZ) * LMStoXYZ;
+    mat3  fromLMS = dstXYZInverse * LMStoXYZ;
 
     vec3  lms   = fromLinear(vec4((toLMS * color.rgb) / HDR_MAX_LUMINANCE, 1.0), CM_TRANSFER_FUNCTION_ST2084_PQ).rgb;
     vec3  ICtCp = ICtCpPQ * lms;

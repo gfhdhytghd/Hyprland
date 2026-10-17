@@ -20,15 +20,16 @@ TEST(ColorManagementShader, SurfaceAndBlurVariantsCompile) {
     fragments[SH_FRAG_BLURPREPARE] = "blurprepare.frag";
     fragments[SH_FRAG_BLURFINISH]  = "blurfinish.frag";
     fragments[SH_FRAG_PRISMFINISH] = "prismfinish.frag";
+    fragments[SH_FRAG_BORDER1]     = "border.frag";
     CShaderLoader loader(includes, fragments);
-    for (const auto fragment : {SH_FRAG_SURFACE, SH_FRAG_BLURPREPARE, SH_FRAG_BLURFINISH, SH_FRAG_PRISMFINISH}) {
+    for (const auto fragment : {SH_FRAG_SURFACE, SH_FRAG_BLURPREPARE, SH_FRAG_BLURFINISH, SH_FRAG_PRISMFINISH, SH_FRAG_BORDER1}) {
         for (const auto tf : {CM_TRANSFER_FUNCTION_BT1886, CM_TRANSFER_FUNCTION_EXT_LINEAR, CM_TRANSFER_FUNCTION_ST2084_PQ, CM_TRANSFER_FUNCTION_HLG}) {
             for (const auto extra :
                  {0, sc<int>(SH_FEAT_SDR_MOD), sc<int>(SH_FEAT_MIRROR), sc<int>(SH_FEAT_TONEMAP | SH_FEAT_MIRROR), sc<int>(SH_FEAT_TONEMAP | SH_FEAT_SDR_MOD | SH_FEAT_MIRROR),
                   sc<int>(SH_FEAT_ICC | SH_FEAT_MIRROR), sc<int>(SH_FEAT_TONEMAP | SH_FEAT_SDR_MOD | SH_FEAT_ALT_TONEMAP)}) {
                 if (fragment == SH_FRAG_BLURPREPARE && extra != 0)
                     continue;
-                if (fragment != SH_FRAG_SURFACE && (extra & (SH_FEAT_TONEMAP | SH_FEAT_ICC | SH_FEAT_MIRROR)))
+                if (fragment != SH_FRAG_SURFACE && fragment != SH_FRAG_BORDER1 && (extra & (SH_FEAT_TONEMAP | SH_FEAT_ICC | SH_FEAT_MIRROR)))
                     continue;
                 std::map<std::string, std::string> defines;
                 for (const auto name :

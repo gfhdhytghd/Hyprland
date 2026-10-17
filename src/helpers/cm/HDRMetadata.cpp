@@ -2,6 +2,8 @@
 #include <drm_mode.h>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <type_traits>
 
 using namespace NColorManagement;
 
@@ -57,4 +59,25 @@ hdr_output_metadata NColorManagement::createHDRMetadata(const SImageDescription&
                 .max_fall                        = toNits(settings.maxFALL),
             },
     };
+}
+
+// A scanout buffer describes its own light levels; compositing invalidates content light levels.
+hdr_output_metadata NColorManagement::selectHDRMetadata(const SImageDescription& output, bool hdr, PImageDescription scanout) {
+    if (!hdr)
+        return NO_HDR_METADATA;
+    if (scanout && scanout->value().transferFunction == CM_TRANSFER_FUNCTION_ST2084_PQ)
+        return createHDRMetadata(scanout->value());
+
+    auto composited    = output;
+    composited.maxCLL  = 0;
+    composited.maxFALL = 0;
+    return createHDRMetadata(composited);
+}
+
+bool NColorManagement::hdrMetadataEqual(const hdr_output_metadata& a, const hdr_output_metadata& b) {
+    if (a.metadata_type != b.metadata_type)
+        return false;
+
+    static_assert(std::has_unique_object_representations_v<hdr_metadata_infoframe>);
+    return std::memcmp(&a.hdmi_metadata_type1, &b.hdmi_metadata_type1, sizeof(a.hdmi_metadata_type1)) == 0;
 }

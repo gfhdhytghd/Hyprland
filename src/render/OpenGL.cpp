@@ -73,9 +73,9 @@ CBox Render::GL::resolveBlurUV(const CBox& destinationBox, const Vector2D& textu
     return {destinationBox.x / textureSize.x, destinationBox.y / textureSize.y, destinationBox.w / textureSize.x, destinationBox.h / textureSize.y};
 }
 
-static inline void loadGLProc(void* pProc, const char* name) {
+static inline void loadGLProc(void* pProc, const char* name, bool required = true) {
     void* proc = rc<void*>(eglGetProcAddress(name));
-    if (proc == nullptr) {
+    if (proc == nullptr && required) {
         LOG(Log::CRIT, "[Tracy GPU Profiling] eglGetProcAddress({}) failed", name);
         abort();
     }
@@ -307,14 +307,10 @@ CHyprOpenGLImpl::CHyprOpenGLImpl() : m_drmFD(g_pCompositor->m_drmRenderNode.fd >
     loadGLProc(&m_proc.glEGLImageTargetTexture2DOES, "glEGLImageTargetTexture2DOES");
     loadGLProc(&m_proc.eglDebugMessageControlKHR, "eglDebugMessageControlKHR");
     loadGLProc(&m_proc.eglGetPlatformDisplayEXT, "eglGetPlatformDisplayEXT");
-    loadGLProc(&m_proc.eglCreateSyncKHR, "eglCreateSyncKHR");
-    loadGLProc(&m_proc.eglDestroySyncKHR, "eglDestroySyncKHR");
-    loadGLProc(&m_proc.eglDupNativeFenceFDANDROID, "eglDupNativeFenceFDANDROID");
-    loadGLProc(&m_proc.eglWaitSyncKHR, "eglWaitSyncKHR");
-
-    RASSERT(m_proc.eglCreateSyncKHR, "Display driver doesn't support eglCreateSyncKHR");
-    RASSERT(m_proc.eglDupNativeFenceFDANDROID, "Display driver doesn't support eglDupNativeFenceFDANDROID");
-    RASSERT(m_proc.eglWaitSyncKHR, "Display driver doesn't support eglWaitSyncKHR");
+    loadGLProc(&m_proc.eglCreateSyncKHR, "eglCreateSyncKHR", false);
+    loadGLProc(&m_proc.eglDestroySyncKHR, "eglDestroySyncKHR", false);
+    loadGLProc(&m_proc.eglDupNativeFenceFDANDROID, "eglDupNativeFenceFDANDROID", false);
+    loadGLProc(&m_proc.eglWaitSyncKHR, "eglWaitSyncKHR", false);
 
     if (EGLEXTENSIONS.contains("EGL_EXT_device_base") || EGLEXTENSIONS.contains("EGL_EXT_device_enumeration"))
         loadGLProc(&m_proc.eglQueryDevicesEXT, "eglQueryDevicesEXT");
@@ -389,10 +385,11 @@ CHyprOpenGLImpl::CHyprOpenGLImpl() : m_drmFD(g_pCompositor->m_drmRenderNode.fd >
     LOG(Log::DEBUG, "Supported EGL display extensions: ({}) {}", std::ranges::count(EGLEXTENSIONS_DISPLAY, ' '), EGLEXTENSIONS_DISPLAY);
 
 #if defined(__linux__)
-    m_exts.EGL_ANDROID_native_fence_sync_ext = EGLEXTENSIONS_DISPLAY.contains("EGL_ANDROID_native_fence_sync");
+    m_exts.EGL_ANDROID_native_fence_sync_ext = EGLEXTENSIONS_DISPLAY.contains("EGL_ANDROID_native_fence_sync") && m_proc.eglCreateSyncKHR && m_proc.eglDestroySyncKHR &&
+        m_proc.eglDupNativeFenceFDANDROID && m_proc.eglWaitSyncKHR;
 
     if (!m_exts.EGL_ANDROID_native_fence_sync_ext)
-        LOG(Log::WARN, "Your GPU does not support explicit sync via the EGL_ANDROID_native_fence_sync extension.");
+        LOG(Log::WARN, "Explicit sync disabled: EGL native-fence extension or required sync procedures unavailable.");
 #else
     m_exts.EGL_ANDROID_native_fence_sync_ext = false;
     LOG(Log::WARN, "Forcefully disabling explicit sync: BSD is missing support for proper timeline export");
@@ -1218,6 +1215,8 @@ void CHyprOpenGLImpl::renderRectWithDamageInternal(CRenderContext& ctx, const CB
     const auto& glMatrix = g_pHyprRenderer->projectBoxToTarget(ctx, newBox);
 
     auto        shader = useShader(getShaderVariant(SH_FRAG_QUAD, (data.round > 0 ? SH_FEAT_ROUNDING : 0) | globalFeatures(ctx)));
+    if (!shader)
+        return;
     shader->setUniformMatrix3fv(SHADER_PROJ, 1, GL_TRUE, glMatrix.getMatrix());
 
     // premultiply the color as well as we don't work with straight alpha
@@ -1284,7 +1283,6 @@ void CHyprOpenGLImpl::passCMUniforms(WP<CShader> shader, const NColorManagement:
     shader->setUniformFloat3(SHADER_TARGET_LUMINANCE_COEFFICIENTS, targetXYZ[1][0], targetXYZ[1][1], targetXYZ[1][2]);
     shader->setUniformFloat2(SHADER_SRC_TF_RANGE, settings.srcTFRange.min, settings.srcTFRange.max);
     shader->setUniformFloat2(SHADER_DST_TF_RANGE, settings.dstTFRange.min, settings.dstTFRange.max);
-    shader->setUniformFloat(SHADER_SRC_REF_LUMINANCE, settings.srcRefLuminance);
     shader->setUniformFloat(SHADER_DST_REF_LUMINANCE, settings.dstRefLuminance);
     shader->setUniformFloat(SHADER_SOURCE_REFERENCE_SCALE, settings.srcReferenceScale);
     shader->setUniformFloat(SHADER_SRC_MIN_LUMINANCE, settings.srcMinLuminance);
@@ -1310,6 +1308,15 @@ void CHyprOpenGLImpl::passCMUniforms(WP<CShader> shader, const NColorManagement:
             mat[0][2], mat[1][2], mat[2][2], //
         };
         shader->setUniformMatrix3fv(SHADER_TARGET_PRIMARIES_XYZ, 1, false, glTargetPrimariesXYZ);
+        if (settings.needsTonemap) {
+            const auto                   inverse              = Hyprgraphics::CMatrix3{mat}.invert().mat();
+            const std::array<GLfloat, 9> glTargetXYZPrimaries = {
+                inverse[0][0], inverse[1][0], inverse[2][0], //
+                inverse[0][1], inverse[1][1], inverse[2][1], //
+                inverse[0][2], inverse[1][2], inverse[2][2], //
+            };
+            shader->setUniformMatrix3fv(SHADER_TARGET_XYZ_PRIMARIES, 1, false, glTargetXYZPrimaries);
+        }
 
         // The unmodified copy is BT.709 SDR: undo the target primaries and map the target reference white to SDR white.
         const float                  mirrorScale    = settings.dstRefLuminance <= 0 ? 1.0f : SDR_REF_LUMINANCE / settings.dstRefLuminance;
@@ -1359,6 +1366,8 @@ WP<CShader> CHyprOpenGLImpl::renderScreenShaderInternal(CRenderContext& ctx) {
         g_pHyprRenderer->m_crashingInProgress ? getShaderVariant(SH_FRAG_GLITCH) : (m_finalScreenShader->program() ? m_finalScreenShader : getShaderVariant(SH_FRAG_PASSTHRURGBA));
 
     shader = useShader(shader);
+    if (!shader)
+        return nullptr;
 
     if (*PDT == 0 || g_pHyprRenderer->m_crashingInProgress)
         shader->setUniformFloat(SHADER_TIME, g_pHyprRenderer->m_globalTimer.getSeconds() - shader->getInitialTime());
@@ -1439,6 +1448,9 @@ WP<CShader> CHyprOpenGLImpl::renderToFBInternal(CRenderContext& ctx, SP<ITexture
         case TEXTURE_EXTERNAL: shader = getShaderVariant(SH_FRAG_EXT, SH_FEAT_ROUNDING | SH_FEAT_DISCARD | SH_FEAT_TINT | globalFeatures(ctx)); break; // might be unused
         default: RASSERT(false, "tex->m_iTarget unsupported!");
     }
+
+    if (texType == TEXTURE_EXTERNAL && !shader)
+        return nullptr;
 
     if (data.finalMonitorCM || (ctx.m_data.currentWindow && ctx.m_data.currentWindow->m_ruleApplicator->RGBX().valueOrDefault()))
         shaderFeatures &= ~SH_FEAT_RGBA;
@@ -1538,12 +1550,16 @@ WP<CShader> CHyprOpenGLImpl::renderToFBInternal(CRenderContext& ctx, SP<ITexture
         if (!shader)
             shader = getShaderVariant(SH_FRAG_SURFACE, shaderFeatures | globalFeatures(ctx), settings.sourceTF, settings.targetTF);
         shader = useShader(shader);
+        if (!shader)
+            return nullptr;
 
         passCMUniforms(shader, SOURCE_IMAGE_DESCRIPTION, TARGET_IMAGE_DESCRIPTION, true, ctx.m_data.pMonitor->m_sdrMinLuminance, settings);
     } else {
         if (!shader)
             shader = getShaderVariant(SH_FRAG_SURFACE, shaderFeatures | globalFeatures(ctx));
         shader = useShader(shader);
+        if (!shader)
+            return nullptr;
     }
 
     shader->setUniformFloat(SHADER_ALPHA, alpha);
@@ -1663,6 +1679,10 @@ void CHyprOpenGLImpl::renderTextureInternal(CRenderContext& ctx, SP<ITexture> te
     }
 
     auto shader = useScreenShader ? renderScreenShaderInternal(ctx) : renderToFBInternal(ctx, tex, data, tex->m_type, newBox);
+    if (!shader) {
+        tex->unbind();
+        return;
+    }
 
     shader->setUniformMatrix3fv(SHADER_PROJ, 1, GL_TRUE, glMatrix.getMatrix());
     shader->setUniformInt(SHADER_TEX, 0);
@@ -1756,6 +1776,10 @@ void CHyprOpenGLImpl::renderTextureMesh(CRenderContext& ctx, SP<ITexture> tex, c
     }
 
     auto shader = renderToFBInternal(ctx, tex, data, tex->m_type, newBox);
+    if (!shader) {
+        tex->unbind();
+        return;
+    }
 
     shader->setUniformMatrix3fv(SHADER_PROJ, 1, GL_TRUE, glMatrix.getMatrix());
     shader->setUniformInt(SHADER_TEX, 0);
@@ -1822,6 +1846,10 @@ void CHyprOpenGLImpl::renderTexturePrimitive(CRenderContext& ctx, SP<ITexture> t
     }
 
     auto shader = useShader(getShaderVariant(SH_FRAG_PASSTHRURGBA));
+    if (!shader) {
+        tex->unbind();
+        return;
+    }
     shader->setUniformMatrix3fv(SHADER_PROJ, 1, GL_TRUE, glMatrix.getMatrix());
     shader->setUniformInt(SHADER_TEX, 0);
     glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
@@ -1849,6 +1877,8 @@ void CHyprOpenGLImpl::renderTextureMatte(CRenderContext& ctx, SP<ITexture> tex, 
     const auto& glMatrix = g_pHyprRenderer->projectBoxToTarget(ctx, newBox);
 
     auto        shader = useShader(getShaderVariant(SH_FRAG_MATTE, globalFeatures(ctx)));
+    if (!shader)
+        return;
     shader->setUniformMatrix3fv(SHADER_PROJ, 1, GL_TRUE, glMatrix.getMatrix());
     shader->setUniformInt(SHADER_TEX, 0);
     shader->setUniformInt(SHADER_ALPHA_MATTE, 1);
@@ -2052,16 +2082,22 @@ void CHyprOpenGLImpl::renderBorder(CRenderContext& ctx, const CBox& box, const C
     const auto& glMatrix = g_pHyprRenderer->projectBoxToTarget(ctx, newBox);
 
     const auto  BLEND = m_blend;
-    blend(true);
 
     WP<CShader> shader;
 
     const bool  skipCM = !m_cmSupported || !g_pHyprRenderer->workBufferImageDescription(ctx)->needsCM(getDefaultImageDescription());
     if (!skipCM) {
         shader = useShader(getShaderVariant(SH_FRAG_BORDER1, getDecoVariant(ctx)));
+        if (!shader)
+            return;
         passCMUniforms(ctx, shader, getDefaultImageDescription());
     } else
         shader = useShader(getShaderVariant(SH_FRAG_BORDER1, SH_FEAT_ROUNDING | globalFeatures(ctx)));
+
+    if (!shader)
+        return;
+
+    blend(true);
 
     shader->setUniformMatrix3fv(SHADER_PROJ, 1, GL_TRUE, glMatrix.getMatrix());
     shader->setUniform4fv(SHADER_GRADIENT, grad.m_colorsOkLabA.size() / 4, grad.m_colorsOkLabA);
@@ -2135,15 +2171,21 @@ void CHyprOpenGLImpl::renderBorder(CRenderContext& ctx, const CBox& box, const C
     const auto& glMatrix = g_pHyprRenderer->projectBoxToTarget(ctx, newBox);
 
     const auto  BLEND = m_blend;
-    blend(true);
 
     WP<CShader> shader;
     const bool  skipCM = !m_cmSupported || !g_pHyprRenderer->workBufferImageDescription(ctx)->needsCM(getDefaultImageDescription());
     if (!skipCM) {
         shader = useShader(getShaderVariant(SH_FRAG_BORDER1, getDecoVariant(ctx)));
+        if (!shader)
+            return;
         passCMUniforms(ctx, shader, getDefaultImageDescription());
     } else
         shader = useShader(getShaderVariant(SH_FRAG_BORDER1, SH_FEAT_ROUNDING | globalFeatures(ctx)));
+
+    if (!shader)
+        return;
+
+    blend(true);
 
     shader->setUniformMatrix3fv(SHADER_PROJ, 1, GL_TRUE, glMatrix.getMatrix());
     shader->setUniform4fv(SHADER_GRADIENT, grad1.m_colorsOkLabA.size() / 4, grad1.m_colorsOkLabA);
@@ -2213,11 +2255,13 @@ void CHyprOpenGLImpl::renderRoundedShadow(CRenderContext& ctx, const CBox& box, 
 
     const auto& glMatrix = g_pHyprRenderer->projectBoxToTarget(ctx, newBox);
 
-    blend(true);
+    const auto  TF      = m_renderData.currentFB->imageDescription()->value().transferFunction;
+    const bool  needsCM = TF != CM_TRANSFER_FUNCTION_EXT_LINEAR;
+    auto        shader  = useShader(getShaderVariant(SH_FRAG_SHADOW, (needsCM ? SH_FEAT_CM : 0) | globalFeatures(ctx), TF));
+    if (!shader)
+        return;
 
-    const auto TF      = m_renderData.currentFB->imageDescription()->value().transferFunction;
-    const bool needsCM = TF != CM_TRANSFER_FUNCTION_EXT_LINEAR;
-    auto       shader  = useShader(getShaderVariant(SH_FRAG_SHADOW, (needsCM ? SH_FEAT_CM : 0) | globalFeatures(ctx), TF));
+    blend(true);
 
     shader->setUniformMatrix3fv(SHADER_PROJ, 1, GL_TRUE, glMatrix.getMatrix());
 
@@ -2324,9 +2368,11 @@ void CHyprOpenGLImpl::renderInnerGlow(CRenderContext& ctx, const CBox& box, int 
 
     const auto& glMatrix = g_pHyprRenderer->projectBoxToTarget(ctx, newBox);
 
-    blend(true);
+    auto        shader = useShader(getShaderVariant(SH_FRAG_INNER_GLOW, globalFeatures(ctx)));
+    if (!shader)
+        return;
 
-    auto shader = useShader(getShaderVariant(SH_FRAG_INNER_GLOW, globalFeatures(ctx)));
+    blend(true);
 
     shader->setUniformMatrix3fv(SHADER_PROJ, 1, GL_TRUE, glMatrix.getMatrix());
 
@@ -2410,6 +2456,9 @@ bool CHyprOpenGLImpl::saveBufferForMirror(CRenderContext& ctx, const CBox& box) 
 }
 
 WP<CShader> CHyprOpenGLImpl::useShader(WP<CShader> prog) {
+    if (!prog || !prog->program())
+        return nullptr;
+
     if (m_currentProgram == prog->program())
         return prog;
 
@@ -2595,14 +2644,16 @@ WP<CShader> CHyprOpenGLImpl::getShaderVariant(ePreparedFragmentShader frag, cons
 
         const auto fragSrc = g_pShaderLoader->getVariantSource(frag, variant);
 
-        if (!shader->createProgram(m_shaders->TEXVERTSRC, fragSrc, true, true))
+        if (!shader->createProgram(m_shaders->TEXVERTSRC, fragSrc, true, true)) {
             LOG(Log::ERR, "shader features {} failed for {}", variant.features, FRAG_SHADERS[frag]);
+            // Remember failures too, but never expose a shader with program 0 to draws.
+            shader.reset();
+        }
 
         it = variants.emplace(variant, std::move(shader)).first;
         return it->second;
     }
 
-    ASSERT(it->second);
     return it->second;
 }
 
@@ -2672,7 +2723,8 @@ float SRenderModifData::combinedScale() {
 }
 
 UP<CEGLSync> CEGLSync::create() {
-    RASSERT(g_pHyprOpenGL->m_exts.EGL_ANDROID_native_fence_sync_ext, "Tried to create an EGL sync when syncs are not supported on the gpu");
+    if (!g_pHyprOpenGL->explicitSyncSupported())
+        return nullptr;
 
     EGLSyncKHR sync = g_pHyprOpenGL->m_proc.eglCreateSyncKHR(g_pHyprOpenGL->m_eglDisplay, EGL_SYNC_NATIVE_FENCE_ANDROID, nullptr);
 

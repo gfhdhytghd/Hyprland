@@ -35,7 +35,6 @@ SCMSettings CCMSettingsCache::get(PImageDescription imageDescription, PImageDesc
         .srcTFRange        = {.min = source.encodingMinLuminance() * referenceScale, .max = source.encodingMaxLuminance() * referenceScale},
         .dstTFRange        = {.min = target.encodingMinLuminance(), .max = target.encodingMaxLuminance()},
         .srcReferenceScale = referenceScale,
-        .srcRefLuminance   = imageDescription->value().luminances.reference,
         .dstRefLuminance   = targetImageDescription->value().luminances.reference,
         .convertMatrix     = matrix.mat(),
 

@@ -73,7 +73,7 @@ TEST(CMSettings, DescriptionChangesAndEvictionPreserveComputedResults) {
         description.luminances.reference = 300 + i;
         const auto other                 = CImageDescription::from(description);
         const auto computed              = cache.get(other, DEFAULT_HDR_IMAGE_DESCRIPTION, inputs);
-        EXPECT_FLOAT_EQ(computed.srcRefLuminance, 300 + i);
+        EXPECT_FLOAT_EQ(computed.srcReferenceScale, sc<float>(DEFAULT_HDR_IMAGE_DESCRIPTION->value().luminances.reference) / (300 + i));
     }
     const auto rebuilt = cache.get(source, DEFAULT_HDR_IMAGE_DESCRIPTION, inputs);
     EXPECT_FLOAT_EQ(rebuilt.srcReferenceScale, original.srcReferenceScale);
