@@ -398,16 +398,18 @@ TEST(ColorManagement, ChurnDoesNotKeepHistoricalValuesAlive) {
     }
 }
 
-TEST(ColorManagement, ICCDescriptionsRemainDistinctAndReleaseNormally) {
+TEST(ColorManagement, ICCDescriptionsShareContentAndReleaseNormally) {
     SImageDescription value;
+    value.rawICC      = {1, 2, 3};
     value.icc.present = true;
     auto first        = CImageDescription::from(value);
     auto second       = CImageDescription::from(value);
-    EXPECT_NE(first->id(), second->id());
+    EXPECT_EQ(first->id(), second->id());
     const auto id = first->id();
     first.reset();
+    EXPECT_EQ(CImageDescription::from(id), second);
+    second.reset();
     EXPECT_FALSE(CImageDescription::from(id));
-    EXPECT_EQ(CImageDescription::from(second->id()), second);
 }
 
 TEST(ColorManagement, InterningUsesTheSameEqualityForNamedPrimariesAndSignedZero) {

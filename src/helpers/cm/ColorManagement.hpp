@@ -33,6 +33,8 @@ namespace NColorManagement {
     template <typename T>
     struct SInternTable;
 
+    class CImageDescription;
+
     enum eNoShader : uint8_t {
         CM_NS_DISABLE  = 0,
         CM_NS_ALWAYS   = 1,
@@ -197,6 +199,7 @@ namespace NColorManagement {
         uint16_t                             entries   = 0;
         uint16_t                             entrySize = 0;
         std::array<std::vector<uint16_t>, 3> ch;
+        bool                                 operator==(const SVCGTTable16&) const = default;
     };
 
     const SPCPRimaries&   getPrimaries(ePrimaries name);
@@ -229,7 +232,8 @@ namespace NColorManagement {
     };
 
     struct SImageDescription {
-        static std::expected<SImageDescription, std::string> fromICC(const std::filesystem::path& file);
+        // An unchanged reload can retain the previous LUT and its GPU texture.
+        static std::expected<SImageDescription, std::string> fromICC(const std::filesystem::path& file, SP<const CImageDescription> previous = nullptr);
 
         //
         std::vector<uint8_t> rawICC;
@@ -273,18 +277,10 @@ namespace NColorManagement {
             std::optional<SVCGTTable16> vcgt;
         } icc;
 
-        uint32_t maxCLL  = 0;
-        uint32_t maxFALL = 0;
+        uint32_t            maxCLL  = 0;
+        uint32_t            maxFALL = 0;
 
-        bool     operator==(const SImageDescription& d2) const {
-            if (icc.present || d2.icc.present)
-                return false;
-
-            return isWindows == d2.isWindows && isInternal == d2.isInternal && transferFunction == d2.transferFunction && transferFunctionPower == d2.transferFunctionPower &&
-                (primariesNameSet == d2.primariesNameSet && (primariesNameSet ? primariesNamed == d2.primariesNamed : primaries == d2.primaries)) &&
-                masteringPrimaries == d2.masteringPrimaries && luminances == d2.luminances && masteringLuminances == d2.masteringLuminances && maxCLL == d2.maxCLL &&
-                maxFALL == d2.maxFALL;
-        }
+        bool                operator==(const SImageDescription& d2) const;
 
         const SPCPRimaries& getPrimaries() const {
             if (primariesNameSet || primaries == SPCPRimaries{})

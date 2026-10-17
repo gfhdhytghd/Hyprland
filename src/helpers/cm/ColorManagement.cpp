@@ -60,10 +60,24 @@ static size_t primariesHash(const SPCPRimaries& value) {
     return hash;
 }
 
-// Keep this in sync with SImageDescription::operator==. ICC descriptions are
-// intentionally not interned by value (their equality is always false).
+// Keep this in sync with SImageDescription::operator==.
 static size_t descriptionHash(const SImageDescription& value) {
     size_t hash = 0;
+    hashCombine(hash, value.icc.present);
+    if (value.icc.present) {
+        for (const auto byte : value.rawICC)
+            hashCombine(hash, byte);
+        hashCombine(hash, value.icc.lutSize);
+        hashCombine(hash, value.icc.vcgt.has_value());
+        if (value.icc.vcgt) {
+            hashCombine(hash, value.icc.vcgt->channels);
+            hashCombine(hash, value.icc.vcgt->entries);
+            hashCombine(hash, value.icc.vcgt->entrySize);
+            for (const auto& channel : value.icc.vcgt->ch)
+                for (const auto entry : channel)
+                    hashCombine(hash, entry);
+        }
+    }
     hashCombine(hash, value.isWindows);
     hashCombine(hash, value.isInternal);
     hashCombine(hash, sc<uint8_t>(value.transferFunction));
@@ -165,20 +179,17 @@ PImageDescription CImageDescription::from(const SImageDescription& imageDescript
     // PQ's primary volume is its encoding range, not the mastering display peak.
     if (description.transferFunction == CM_TRANSFER_FUNCTION_ST2084_PQ)
         description.luminances.max = std::round(description.luminances.min + HDR_MAX_LUMINANCE);
-    auto&      table = descriptionsTable();
-    const auto hash  = descriptionHash(description);
-    if (!description.icc.present) {
-        const auto [begin, end] = table->values.equal_range(hash);
-        for (auto it = begin; it != end; ++it) {
-            if (it->second->value() == description)
-                return it->second.lock();
-        }
+    auto&      table        = descriptionsTable();
+    const auto hash         = descriptionHash(description);
+    const auto [begin, end] = table->values.equal_range(hash);
+    for (auto it = begin; it != end; ++it) {
+        if (it->second->value() == description)
+            return it->second.lock();
     }
 
     RASSERT(table->nextId != 0, "Image description identity space exhausted");
     auto result = SP<const CImageDescription>(new CImageDescription(description, table->nextId++));
-    if (!description.icc.present)
-        table->values.emplace(hash, result);
+    table->values.emplace(hash, result);
     table->ids.emplace(result->id(), result);
     return result;
 }
@@ -846,4 +857,16 @@ PImageDescription NColorManagement::getDefaultImageDescription() {
         case TF_SRGB: return DEFAULT_SRGB_IMAGE_DESCRIPTION;
         default: UNREACHABLE();
     }
+}
+
+bool SImageDescription::operator==(const SImageDescription& d2) const {
+    if (icc.present != d2.icc.present)
+        return false;
+    // LUT pixels and textures are derived resources; compare their source bytes and effective settings.
+    if (icc.present && (rawICC != d2.rawICC || icc.lutSize != d2.icc.lutSize || icc.vcgt != d2.icc.vcgt))
+        return false;
+
+    return isWindows == d2.isWindows && isInternal == d2.isInternal && transferFunction == d2.transferFunction && transferFunctionPower == d2.transferFunctionPower &&
+        (primariesNameSet == d2.primariesNameSet && (primariesNameSet ? primariesNamed == d2.primariesNamed : primaries == d2.primaries)) &&
+        masteringPrimaries == d2.masteringPrimaries && luminances == d2.luminances && masteringLuminances == d2.masteringLuminances && maxCLL == d2.maxCLL && maxFALL == d2.maxFALL;
 }

@@ -655,7 +655,7 @@ bool CMonitor::applyMonitorRuleSoft(Config::CMonitorRule&& pMonitorRule) {
         m_sdrSaturation = m_activeMonitorRule.m_sdrSaturation;
         m_sdrBrightness = m_activeMonitorRule.m_sdrBrightness;
     } else {
-        auto image = NColorManagement::SImageDescription::fromICC(m_activeMonitorRule.m_iccFile);
+        auto image = NColorManagement::SImageDescription::fromICC(m_activeMonitorRule.m_iccFile, m_imageDescription);
         if (!image) {
             LOG(Log::ERR, "icc for {} ({}) failed: {}", m_name, m_activeMonitorRule.m_iccFile, image.error());
             ErrorOverlay::overlay()->queueError(std::format("failed to apply icc {} to {}: {}", m_activeMonitorRule.m_iccFile, m_name, image.error()));
