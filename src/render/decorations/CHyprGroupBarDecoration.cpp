@@ -352,6 +352,9 @@ static SP<ITexture> renderGradient(Config::CGradientValueData* grad) {
 
     // copy the data to an OpenGL texture we have
     auto tex = g_pHyprRenderer->createTexture(CAIROSURFACE);
+    // the stops are sRGB config colors, like the solid indicator colors
+    if (tex)
+        tex->m_imageDescription = NColorManagement::DEFAULT_SRGB_IMAGE_DESCRIPTION;
 
     // delete cairo
     cairo_destroy(CAIRO);

@@ -2038,8 +2038,9 @@ void CHyprOpenGLImpl::renderTextureWithBlurInternal(CRenderContext& ctx, SP<ITex
 static SShaderVariant getDecoVariant(CRenderContext& ctx) {
     const bool IS_ICC = g_pHyprRenderer->workBufferImageDescription(ctx)->value().icc.present;
     // Decorations are sRGB drawn into the work buffer, the same conversion passCMUniforms sets up for them.
-    const auto settings =
-        g_pHyprRenderer->getCMSettings(ctx, getDefaultImageDescription(), g_pHyprRenderer->workBufferImageDescription(ctx), nullptr, true, ctx.m_data.pMonitor->m_sdrMinLuminance);
+    // Config colors are sRGB like in getConvertedColor, independent of the SDR content EOTF policy.
+    const auto         settings = g_pHyprRenderer->getCMSettings(ctx, DEFAULT_SRGB_IMAGE_DESCRIPTION, g_pHyprRenderer->workBufferImageDescription(ctx), nullptr, true,
+                                                                 ctx.m_data.pMonitor->m_sdrMinLuminance);
 
     ShaderFeatureFlags features = SH_FEAT_ROUNDING | SH_FEAT_CM | globalFeatures(ctx);
     if (IS_ICC)
@@ -2090,12 +2091,12 @@ void CHyprOpenGLImpl::renderBorder(CRenderContext& ctx, const CBox& box, const C
 
     WP<CShader> shader;
 
-    const bool  skipCM = !m_cmSupported || !g_pHyprRenderer->workBufferImageDescription(ctx)->needsCM(getDefaultImageDescription());
+    const bool  skipCM = !m_cmSupported || !g_pHyprRenderer->workBufferImageDescription(ctx)->needsCM(DEFAULT_SRGB_IMAGE_DESCRIPTION);
     if (!skipCM) {
         shader = useShader(getShaderVariant(SH_FRAG_BORDER1, getDecoVariant(ctx)));
         if (!shader)
             return;
-        passCMUniforms(ctx, shader, getDefaultImageDescription());
+        passCMUniforms(ctx, shader, DEFAULT_SRGB_IMAGE_DESCRIPTION);
     } else
         shader = useShader(getShaderVariant(SH_FRAG_BORDER1, SH_FEAT_ROUNDING | globalFeatures(ctx)));
 
@@ -2178,12 +2179,12 @@ void CHyprOpenGLImpl::renderBorder(CRenderContext& ctx, const CBox& box, const C
     const auto  BLEND = m_blend;
 
     WP<CShader> shader;
-    const bool  skipCM = !m_cmSupported || !g_pHyprRenderer->workBufferImageDescription(ctx)->needsCM(getDefaultImageDescription());
+    const bool  skipCM = !m_cmSupported || !g_pHyprRenderer->workBufferImageDescription(ctx)->needsCM(DEFAULT_SRGB_IMAGE_DESCRIPTION);
     if (!skipCM) {
         shader = useShader(getShaderVariant(SH_FRAG_BORDER1, getDecoVariant(ctx)));
         if (!shader)
             return;
-        passCMUniforms(ctx, shader, getDefaultImageDescription());
+        passCMUniforms(ctx, shader, DEFAULT_SRGB_IMAGE_DESCRIPTION);
     } else
         shader = useShader(getShaderVariant(SH_FRAG_BORDER1, SH_FEAT_ROUNDING | globalFeatures(ctx)));
 

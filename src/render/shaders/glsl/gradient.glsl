@@ -5,6 +5,7 @@
 #ifndef GRADIENT_GLSL
 #define GRADIENT_GLSL
 
+// Gradient stops come from sRGB config colors (piecewise IEC 61966-2-1 decode in hyprgraphics), so encode back with the same curve.
 vec4 okLabAToSrgb(vec4 lab) {
     float l_ = lab[0] + lab[1] * 0.3963377774 + lab[2] * 0.2158037573;
     float m_ = lab[0] + lab[1] * (-0.1055613458) + lab[2] * (-0.0638541728);
@@ -16,7 +17,7 @@ vec4 okLabAToSrgb(vec4 lab) {
 
     return vec4(fromLinearRGB(vec3(l * 4.0767416621 + m * -3.3077115913 + s * 0.2309699292, l * (-1.2684380046) + m * 2.6097574011 + s * (-0.3413193965),
                                    l * (-0.0041960863) + m * (-0.7034186147) + s * 1.7076147010),
-                              CM_TRANSFER_FUNCTION_GAMMA22),
+                              CM_TRANSFER_FUNCTION_SRGB),
                 lab[3]);
 }
 
