@@ -148,7 +148,9 @@ struct CmsTransformDeleter {
 using UniqueProfile   = std::unique_ptr<std::remove_pointer_t<cmsHPROFILE>, CmsProfileDeleter>;
 using UniqueTransform = std::unique_ptr<std::remove_pointer_t<cmsHTRANSFORM>, CmsTransformDeleter>;
 
-static UniqueProfile createLinearSRGBProfile() {
+// The LUT is indexed by sRGB-encoded values: a uniform grid in linear light leaves the shadows with a few
+// samples only, and an sRGB output profile then maps to the identity grid.
+static UniqueProfile createSRGBProfile() {
     cmsCIExyYTRIPLE prim{};
     // sRGB / Rec.709 primaries
     prim.Red.x   = 0.6400;
@@ -166,25 +168,27 @@ static UniqueProfile createLinearSRGBProfile() {
     wp.y = 0.3290;
     wp.Y = 1.0; // D65
 
-    cmsToneCurve* lin       = cmsBuildGamma(nullptr, 1.0);
-    cmsToneCurve* curves[3] = {lin, lin, lin};
+    // IEC 61966-2-1 piecewise sRGB, the same curve as tfInvSRGB in cm_helpers.glsl
+    const cmsFloat64Number params[5] = {2.4, 1.0 / 1.055, 0.055 / 1.055, 1.0 / 12.92, 0.04045};
+    cmsToneCurve*          srgb      = cmsBuildParametricToneCurve(nullptr, 4, params);
+    cmsToneCurve*          curves[3] = {srgb, srgb, srgb};
 
-    cmsHPROFILE   p = cmsCreateRGBProfile(&wp, &prim, curves);
+    cmsHPROFILE            p = cmsCreateRGBProfile(&wp, &prim, curves);
 
-    cmsFreeToneCurve(lin);
+    cmsFreeToneCurve(srgb);
     return UniqueProfile{p};
 }
 
-static std::expected<void, std::string> buildIcc3DLut(cmsHPROFILE profile, SImageDescription& image) {
-    UniqueProfile src = createLinearSRGBProfile();
+std::expected<void, std::string> NColorManagement::iccBuildLUTData(cmsHPROFILE profile, SImageDescription& image) {
+    UniqueProfile src = createSRGBProfile();
     if (!src)
-        return std::unexpected("Failed to create linear sRGB profile");
+        return std::unexpected("Failed to create sRGB profile");
 
     // Rendering intent: RELATIVE_COLORIMETRIC is common for displays; add BPC to be safe.
     const int             intent = INTENT_RELATIVE_COLORIMETRIC;
     const cmsUInt32Number flags  = cmsFLAGS_BLACKPOINTCOMPENSATION | cmsFLAGS_HIGHRESPRECALC; // good quality precalc in LCMS
 
-    // float->float transform (linear input, encoded output in dst device space)
+    // float->float transform (sRGB-encoded input, encoded output in dst device space)
     UniqueTransform xform{cmsCreateTransform(src.get(), TYPE_RGB_FLT, profile, TYPE_RGB_FLT, intent, flags)};
     if (!xform)
         return std::unexpected("Failed to create ICC transform");
@@ -224,7 +228,13 @@ static std::expected<void, std::string> buildIcc3DLut(cmsHPROFILE profile, SImag
 
     LOG(Log::DEBUG, "3D LUT constructed, size {}", image.icc.lutDataPacked.size());
 
-    // upload
+    return {};
+}
+
+static std::expected<void, std::string> buildIcc3DLut(cmsHPROFILE profile, SImageDescription& image) {
+    if (const auto RET = iccBuildLUTData(profile, image); !RET)
+        return RET;
+
     image.icc.lutTexture = g_pHyprRenderer->createTexture(image.icc.lutDataPacked, image.icc.lutSize);
 
     return {};

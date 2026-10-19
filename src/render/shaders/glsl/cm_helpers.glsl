@@ -45,16 +45,6 @@ vec4 saturate(vec4 color, mat3 primaries, float saturation) {
 }
 #endif
 
-vec3 applyIcc3DLut(vec3 linearRgb01, highp sampler3D iccLut3D, float iccLutSize) {
-    vec3 x = clamp(linearRgb01, 0.0, 1.0);
-
-    // Map [0..1] to texel centers to avoid edge issues
-    float N     = iccLutSize;
-    vec3  coord = (x * (N - 1.0) + 0.5) / N;
-
-    return texture(iccLut3D, coord).rgb;
-}
-
 vec3 xy2xyz(vec2 xy) {
     if (xy.y == 0.0)
         return vec3(0.0, 0.0, 0.0);
@@ -164,6 +154,17 @@ vec3 tfSRGB(vec3 color) {
 vec3 tfExtSRGB(vec3 color) {
     // EXT sRGB is the sRGB transfer function mirrored around 0.
     return sign(color) * tfSRGB(abs(color));
+}
+
+vec3 applyIcc3DLut(vec3 linearRgb01, highp sampler3D iccLut3D, float iccLutSize) {
+    // the LUT is indexed by sRGB-encoded values, see buildIcc3DLut
+    vec3 x = tfSRGB(clamp(linearRgb01, 0.0, 1.0));
+
+    // Map [0..1] to texel centers to avoid edge issues
+    float N     = iccLutSize;
+    vec3  coord = (x * (N - 1.0) + 0.5) / N;
+
+    return texture(iccLut3D, coord).rgb;
 }
 
 vec3 tfBT1886(vec3 color, vec2 range) {

@@ -34,6 +34,27 @@ TEST_F(CICCProfileTest, RecoversNativeD65AndSRGBPrimaries) {
     }
 }
 
+TEST_F(CICCProfileTest, SRGBProfileLUTIsIdentityInEncodedDomain) {
+    SImageDescription image;
+    const auto        result = iccBuildLUTData(m_profile, image);
+    ASSERT_TRUE(result.has_value()) << result.error();
+
+    const size_t N = image.icc.lutSize;
+    ASSERT_EQ(image.icc.lutDataPacked.size(), N * N * N * 3);
+
+    // An sRGB display must not alter sRGB content, including the shadows a linear-light grid used to crush.
+    for (size_t b = 0; b < N; b += 4) {
+        for (size_t g = 0; g < N; g += 4) {
+            for (size_t r = 0; r < N; ++r) {
+                const size_t o = ((b * N + g) * N + r) * 3;
+                EXPECT_NEAR(image.icc.lutDataPacked[o + 0], r / float(N - 1), 2e-3);
+                EXPECT_NEAR(image.icc.lutDataPacked[o + 1], g / float(N - 1), 2e-3);
+                EXPECT_NEAR(image.icc.lutDataPacked[o + 2], b / float(N - 1), 2e-3);
+            }
+        }
+    }
+}
+
 TEST_F(CICCProfileTest, RecoversCustomWhiteFromSerializedProfile) {
     const cmsCIExyY                                          white{0.314, 0.351, 1.0};
     const cmsCIExyYTRIPLE                                    primaries{{0.68, 0.32, 1.0}, {0.265, 0.69, 1.0}, {0.15, 0.06, 1.0}};
