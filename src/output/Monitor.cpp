@@ -507,13 +507,13 @@ static NColorManagement::eTransferFunction chooseTF(NTransferFunction::eTF tf) {
 }
 
 void CMonitor::applyCMType(NCMType::eCMType cmType, NTransferFunction::eTF cmSdrEotf) {
-    auto                                                              oldImageDescription = m_imageDescription;
-    const auto                                                        chosenSdrEotf       = chooseTF(cmSdrEotf);
+    const bool hdrPreset           = NCMType::isHDR(cmType);
+    auto       oldImageDescription = m_imageDescription;
+    const auto chosenSdrEotf       = chooseTF(cmSdrEotf);
 
-    const auto                                                        masteringPrimaries  = getMasteringPrimaries();
+    const auto masteringPrimaries = getMasteringPrimaries();
     // The EDID HDR luminances can only be reached in PQ mode. An SDR transfer function tops out at its reference white,
     // so advertising them there gives clients headroom that doesn't exist and makes CM tonemap for the HDR peak.
-    const bool                                                        hdrPreset = NCMType::isHDR(cmType);
     const NColorManagement::SImageDescription::SPCMasteringLuminances masteringLuminances =
         hdrPreset ? getMasteringLuminances() : NColorManagement::SImageDescription::SPCMasteringLuminances{};
 

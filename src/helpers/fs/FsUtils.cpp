@@ -4,54 +4,58 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <algorithm>
 
 #include <hyprutils/string/String.hpp>
-#include <hyprutils/string/VarList.hpp>
+#include <hyprutils/string/VarList2.hpp>
 using namespace Hyprutils::String;
 
 std::optional<std::string> NFsUtils::getDataHome() {
-    const auto  DATA_HOME = getenv("XDG_DATA_HOME");
+    const char* const     XDGDATA = std::getenv("XDG_DATA_HOME");
+    std::filesystem::path basePath;
 
-    std::string dataRoot;
+    if (XDGDATA != nullptr && *XDGDATA != '\0') {
+        basePath = XDGDATA;
+        if (!basePath.is_absolute()) {
+            LOG(Log::WARN, "FsUtils::getDataHome: $XDG_DATA_HOME is relative ('{}'), falling back to $HOME", basePath.string());
+            basePath.clear();
+        }
+    }
 
-    if (!DATA_HOME) {
-        const auto HOME = getenv("HOME");
-
-        if (!HOME) {
-            LOG(Log::ERR, "FsUtils::getDataHome: can't get data home: no $HOME or $XDG_DATA_HOME");
+    if (basePath.empty()) {
+        const char* const HOME = std::getenv("HOME");
+        if (HOME == nullptr || *HOME == '\0') {
+            LOG(Log::ERR, "FsUtils::getDataHome: can't get data home: neither $XDG_DATA_HOME nor $HOME is set");
             return std::nullopt;
         }
 
-        dataRoot = HOME + std::string{"/.local/share/"};
-    } else
-        dataRoot = DATA_HOME + std::string{"/"};
+        basePath = std::filesystem::path(HOME) / ".local" / "share";
+    }
 
-    std::error_code ec;
-    if (!std::filesystem::exists(dataRoot, ec) || ec) {
-        LOG(Log::ERR, "FsUtils::getDataHome: can't get data home: inaccessible / missing");
+    const std::filesystem::path hyprlandDataDir = basePath / "hyprland";
+    std::error_code             ec;
+
+    const bool                  created = std::filesystem::create_directories(hyprlandDataDir, ec);
+    if (ec) {
+        LOG(Log::ERR, "FsUtils::getDataHome: failed to create data directory '{}': {}", hyprlandDataDir.string(), ec.message());
         return std::nullopt;
     }
 
-    dataRoot += "hyprland/";
+    if (!std::filesystem::is_directory(hyprlandDataDir, ec) || ec) {
+        LOG(Log::ERR, "FsUtils::getDataHome: path '{}' exists, but is not a directory", hyprlandDataDir.string());
+        return std::nullopt;
+    }
 
-    if (!std::filesystem::exists(dataRoot, ec) || ec) {
-        LOG(Log::DEBUG, "FsUtils::getDataHome: no hyprland data home, creating.");
-        std::filesystem::create_directory(dataRoot, ec);
+    if (created) {
+        LOG(Log::DEBUG, "FsUtils::getDataHome: created new hyprland data directory: {}", hyprlandDataDir.string());
+        std::filesystem::permissions(hyprlandDataDir, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace, ec);
+
         if (ec) {
-            LOG(Log::ERR, "FsUtils::getDataHome: can't create new data home for hyprland");
-            return std::nullopt;
+            LOG(Log::WARN, "FsUtils::getDataHome: couldn't set perms on '{}': {}. Proceeding anyways.", hyprlandDataDir.string(), ec.message());
         }
-        std::filesystem::permissions(dataRoot, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write | std::filesystem::perms::owner_exec, ec);
-        if (ec)
-            LOG(Log::WARN, "FsUtils::getDataHome: couldn't set perms on hyprland data store. Proceeding anyways.");
     }
 
-    if (!std::filesystem::exists(dataRoot, ec) || ec) {
-        LOG(Log::ERR, "FsUtils::getDataHome: no hyprland data home, failed to create.");
-        return std::nullopt;
-    }
-
-    return dataRoot;
+    return hyprlandDataDir.string();
 }
 
 std::optional<std::string> NFsUtils::readFileAsString(const std::string& path) {
@@ -81,28 +85,23 @@ bool NFsUtils::writeToFile(const std::string& path, const std::string& content) 
 }
 
 bool NFsUtils::executableExistsInPath(const std::string& exe) {
-    if (!getenv("PATH"))
+    const char* const path = std::getenv("PATH");
+    if (path == nullptr)
         return false;
 
-    static CVarList paths(getenv("PATH"), 0, ':', true);
+    static CVarList2      paths(std::string{path}, 0, ':', true);
 
-    for (auto& p : paths) {
-        std::string     path = p + std::string{"/"} + exe;
+    std::filesystem::path fullPath;
+    return std::ranges::any_of(paths, [&](std::string_view dir) -> bool {
+        fullPath = dir;
+        fullPath /= exe;
+
         std::error_code ec;
-        if (!std::filesystem::exists(path, ec) || ec)
-            continue;
+        auto            status = std::filesystem::status(fullPath, ec);
 
-        if (!std::filesystem::is_regular_file(path, ec) || ec)
-            continue;
+        if (ec || !std::filesystem::is_regular_file(status))
+            return false;
 
-        auto stat = std::filesystem::status(path, ec);
-        if (ec)
-            continue;
-
-        auto perms = stat.permissions();
-
-        return std::filesystem::perms::none != (perms & std::filesystem::perms::others_exec);
-    }
-
-    return false;
+        return (status.permissions() & std::filesystem::perms::others_exec) != std::filesystem::perms::none;
+    });
 }
