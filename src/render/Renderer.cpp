@@ -2487,6 +2487,12 @@ void IHyprRenderer::handleFullscreenSettings(PHLMONITOR pMonitor) {
 
             pMonitor->m_needsHDRupdate = true;
         }
+    } else if (const auto SDR = selectHDRMetadata(pMonitor->m_imageDescription->value(), false); !hdrMetadataEqual(pMonitor->m_output->state->state().hdrMetadata, SDR)) {
+        // HDR support was withdrawn while HDR was signalled (e.g. supports_hdr = -1): the PQ metadata takes precedence
+        // over Colorspace in KMS, so it has to be cleared along with the fallback to an SDR preset.
+        LOG(Log::INFO, "[CM] HDR no longer supported, restoring SDR mode");
+        pMonitor->m_output->state->setHDRMetadata(SDR);
+        pMonitor->m_hdrMetadataFromSurface = false;
     }
 
     const bool needsWCG = pMonitor->wantsWideColor();
