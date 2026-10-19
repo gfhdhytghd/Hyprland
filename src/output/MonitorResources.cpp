@@ -58,6 +58,9 @@ void CMonitorResources::setImageDescription(NColorManagement::PImageDescription 
     m_sizedWorkBuffers.setImageDescription(imageDescription);
     if (m_mirrorTex)
         m_mirrorTex->m_imageDescription = getMirrorTexImageDescription();
+    // retagging leaves the old encoding in the cached blur and in undamaged work buffer regions (e.g. render:fp16_sdr_tf toggled at runtime)
+    m_monitor->m_blurFBDirty = true;
+    g_pHyprRenderer->damageMonitor(m_monitor.lock());
     invalidateMirrorFB();
 }
 
