@@ -335,6 +335,13 @@ wl_client* CColorManagementSurface::client() {
     return m_client;
 }
 
+// ICC outputs are fed through an sRGB-indexed 3D LUT and surfaces can't carry ICC descriptions (no ICC creator, no ICC
+// source transform), so sRGB is the preferred description that loses nothing. Handing out the ICC one would get the
+// client's profile-encoded pixels decoded as gamma 2.2.
+static PImageDescription preferredForSurfaces(PImageDescription preferred) {
+    return preferred->value().icc.present ? getDefaultImageDescription() : preferred;
+}
+
 CColorManagementFeedbackSurface::CColorManagementFeedbackSurface(SP<CWpColorManagementSurfaceFeedbackV1> resource, SP<CWLSurfaceResource> surface_) :
     m_surface(surface_), m_resource(resource) {
     if UNLIKELY (!good())
@@ -369,7 +376,7 @@ CColorManagementFeedbackSurface::CColorManagementFeedbackSurface(SP<CWpColorMana
         }
 
         RESOURCE->m_self     = RESOURCE;
-        RESOURCE->m_settings = m_surface->getPreferredImageDescription();
+        RESOURCE->m_settings = preferredForSurfaces(m_surface->getPreferredImageDescription());
         m_currentPreferred   = RESOURCE->m_settings;
 
         RESOURCE->sendMaybeReady();
@@ -383,9 +390,7 @@ CColorManagementFeedbackSurface::CColorManagementFeedbackSurface(SP<CWpColorMana
             return;
         }
 
-        const auto surfacePreferred = m_surface->getPreferredImageDescription();
-        // ICC outputs are fed through a linear sRGB 3D LUT, so sRGB is the parametric description that loses nothing.
-        const auto preferred = surfacePreferred->value().icc.present ? getDefaultImageDescription() : surfacePreferred;
+        const auto preferred = preferredForSurfaces(m_surface->getPreferredImageDescription());
 
         const auto RESOURCE = PROTO::colorManagement->m_imageDescriptions.emplace_back(
             makeShared<CColorManagementImageDescription>(makeShared<CWpImageDescriptionV1>(r->client(), r->version(), id), true));
@@ -398,7 +403,7 @@ CColorManagementFeedbackSurface::CColorManagementFeedbackSurface(SP<CWpColorMana
 
         RESOURCE->m_self     = RESOURCE;
         RESOURCE->m_settings = preferred;
-        m_currentPreferred   = surfacePreferred;
+        m_currentPreferred   = preferred;
 
         RESOURCE->sendMaybeReady();
     });
@@ -415,7 +420,7 @@ void CColorManagementFeedbackSurface::onPreferredChanged() {
     if (!m_surface)
         return;
 
-    const auto preferred = m_surface->getPreferredImageDescription();
+    const auto preferred = preferredForSurfaces(m_surface->getPreferredImageDescription());
     if (m_currentPreferred == preferred)
         return;
 
