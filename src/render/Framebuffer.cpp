@@ -21,6 +21,11 @@ bool IFramebuffer::alloc(int w, int h, DRMFormat format) {
     m_size        = {w, h};
     m_drmFormat   = format;
     m_fbAllocated = internalAlloc(w, h, format);
+
+    // a reallocated texture must keep describing the same contents, e.g. the blur FB after blur is toggled off and on
+    if (m_tex && m_imageDescription)
+        m_tex->m_imageDescription = m_imageDescription;
+
     return m_fbAllocated;
 }
 
