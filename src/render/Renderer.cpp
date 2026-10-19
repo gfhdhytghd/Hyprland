@@ -2526,6 +2526,7 @@ void IHyprRenderer::handleFullscreenSettings(PHLMONITOR pMonitor) {
                      FS_DESC.has_value() && (*PNONSHADER != CM_NS_ONDEMAND || !pMonitor->m_lastScanout.expired())) {
                 LOG(Log::INFO, "[CM] Updating fullscreen CTM");
                 pMonitor->m_noShaderCTM = true;
+                pMonitor->m_noShaderCM  = true;
                 pMonitor->m_ctmUpdated  = false;
                 auto conversion         = FS_DESC.value()->getPrimaries()->convertMatrix(pMonitor->m_imageDescription->getPrimaries());
                 if (pMonitor->m_ctm != Mat3x3::identity() && INTEROP) {
@@ -2548,7 +2549,9 @@ void IHyprRenderer::handleFullscreenSettings(PHLMONITOR pMonitor) {
                 pMonitor->stageCTM(CTM);
             } else if (!INTEROP && pMonitor->m_ctm != Mat3x3::identity()) {
                 LOG(Log::INFO, "[CM] Setting identity CTM");
+                // only suppresses the composited CTM (hyprsunset), the content still needs shader CM
                 pMonitor->m_noShaderCTM = true;
+                pMonitor->m_noShaderCM  = false;
                 pMonitor->m_ctmUpdated  = false;
 
                 pMonitor->stageCTM(Mat3x3::identity());
@@ -2559,6 +2562,7 @@ void IHyprRenderer::handleFullscreenSettings(PHLMONITOR pMonitor) {
         if (resetCTM && pMonitor->m_noShaderCTM) {
             LOG(Log::INFO, "[CM] No fullscreen CTM, restoring previous one");
             pMonitor->m_noShaderCTM = false;
+            pMonitor->m_noShaderCM  = false;
             pMonitor->m_ctmUpdated  = true;
         }
     }

@@ -385,6 +385,7 @@ namespace Monitor {
 
         NColorManagement::PImageDescription m_imageDescription = NColorManagement::CImageDescription::from(NColorManagement::SImageDescription{});
         bool                                m_noShaderCTM      = false; // sets drm CTM, restore needed
+        bool                                m_noShaderCM       = false; // the drm CTM performs the CM, shaders skip it
 
         bool                                m_blurFBDirty        = true;
         bool                                m_blurFBShouldRender = false;

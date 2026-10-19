@@ -719,6 +719,7 @@ bool CMonitor::applyMonitorRule(Config::CMonitorRule&& pMonitorRule) {
         m_output->state->setDeGammaLut({});
     m_output->state->setCTM(Mat3x3::identity());
     m_noShaderCTM = false;
+    m_noShaderCM  = false;
     m_ctmUpdated  = true;
     m_previousFSWindow.reset();
 
@@ -2589,7 +2590,7 @@ bool CMonitor::canNoShaderCM(bool forDSmode) {
 }
 
 bool CMonitor::doesNoShaderCM() {
-    return m_noShaderCTM;
+    return m_noShaderCM;
 }
 
 static std::vector<uint16_t> resampleInterleavedToKms(const SVCGTTable16& t, size_t gammaSize) {
@@ -2797,6 +2798,7 @@ void CMonitor::clearScanoutCM() {
     // Restore the composited CTM in the same commit as the LUTs, the renderer recomputes a non-shader CTM on its next pass.
     stageCTM(m_ctm);
     m_noShaderCTM = false;
+    m_noShaderCM  = false;
     m_ctmUpdated  = false;
     m_previousFSWindow.reset();
 }
