@@ -123,10 +123,9 @@ std::vector<CMonitorRule>& CMonitorRuleManager::allMut() {
     return m_rules;
 }
 
-void CMonitorRuleManager::scheduleReload() {
-    if (m_reloadScheduled)
-        return;
-
+// reloadICC: the config was reloaded, so ICC files and ICC settings may have changed behind an unchanged rule
+void CMonitorRuleManager::scheduleReload(bool reloadICC) {
+    m_reloadICC       = m_reloadICC || reloadICC;
     m_reloadScheduled = true;
 }
 
@@ -153,6 +152,10 @@ void CMonitorRuleManager::ensureMonitorStatus() {
                 mustApplySoft = true;
         }
 
+        // fromICC reuses the LUT when the profile content is unchanged
+        if (m_reloadICC && !rule.m_iccFile.empty())
+            mustApplySoft = true;
+
         auto cmp = rule.compare(m->m_activeMonitorRule);
 
         if (!mustApplySoft && cmp == COMPARISON_FULL_MATCH)
@@ -174,6 +177,7 @@ void CMonitorRuleManager::ensureMonitorStatus() {
     }
 
     m_reloadScheduled = false;
+    m_reloadICC       = false;
 
     if (monsForRefresh.empty())
         return;

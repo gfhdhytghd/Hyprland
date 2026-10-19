@@ -816,7 +816,7 @@ void CConfigManager::postConfigReload() {
     // and they'll be taken care of in the newMonitor event
     if (!m_isFirstLaunch) {
         // check
-        Config::monitorRuleMgr()->scheduleReload();
+        Config::monitorRuleMgr()->scheduleReload(true);
         Config::monitorRuleMgr()->ensureMonitorStatus();
         Config::monitorRuleMgr()->ensureVRR();
     }

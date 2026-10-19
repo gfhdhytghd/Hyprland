@@ -8,3 +8,9 @@ TEST(MonitorReferenceLuminance, DefaultsRemainOptInAndChangesAreSoft) {
     changed.m_referenceLuminance = 450;
     EXPECT_EQ(original.compare(changed), Config::COMPARISON_SOFT_MISMATCH);
 }
+
+TEST(MonitorReferenceLuminance, SdrEotfChangeIsSoft) {
+    Config::CMonitorRule original, changed;
+    changed.m_sdrEotf = NTransferFunction::TF_GAMMA22;
+    EXPECT_EQ(original.compare(changed), Config::COMPARISON_SOFT_MISMATCH);
+}

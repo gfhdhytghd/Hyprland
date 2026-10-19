@@ -17,7 +17,7 @@ namespace Config {
         void                             clear();
         void                             add(CMonitorRule&&);
 
-        void                             scheduleReload();
+        void                             scheduleReload(bool reloadICC = false);
 
         void                             ensureMonitorStatus();
         void                             ensureVRR(PHLMONITOR pMonitor = nullptr);
@@ -33,6 +33,7 @@ namespace Config {
       private:
         std::vector<CMonitorRule> m_rules;
         bool                      m_reloadScheduled = false;
+        bool                      m_reloadICC       = false;
 
         struct {
             CHyprSignalListener preChecksRender;

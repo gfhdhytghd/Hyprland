@@ -676,6 +676,10 @@ bool CMonitor::applyMonitorRuleSoft(Config::CMonitorRule&& pMonitorRule) {
         g_pHyprRenderer->damageMonitor(m_self.lock());
     }
 
+    // the VCGT belongs to the active profile, so replacing or removing the ICC must replace or drop it
+    if (m_output)
+        updateVCGTRamps();
+
     Vector2D xfmd     = m_transform % 2 == 1 ? Vector2D{m_pixelSize.y, m_pixelSize.x} : m_pixelSize;
     m_size            = (xfmd / m_scale).round();
     m_transformedSize = xfmd;
@@ -1069,7 +1073,6 @@ bool CMonitor::applyMonitorRule(Config::CMonitorRule&& pMonitorRule) {
         m_splash.reset();
     }
 
-    updateVCGTRamps();
     applyColorLuts();
 
     LOG(Log::DEBUG, "Monitor {} data dump: res {:X}@{:.2f}Hz, scale {:.2f}, transform {}, pos {:X}, 10b {}", m_name, m_pixelSize, m_refreshRate, m_scale, sc<int>(m_transform),
