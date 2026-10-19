@@ -1386,6 +1386,10 @@ SP<ITexture> IHyprRenderer::getBackground(CRenderContext& ctx, PHLMONITOR pMonit
         if (scale < 1.0) {
             auto fb = createFB("BGTex scale");
             fb->alloc(monW, monH);
+            // keep the scaled copy in the wallpaper's own SDR encoding, it's composited like the unscaled texture later
+            const auto DESCRIPTION                = getDefaultImageDescription();
+            backgroundTexture->m_imageDescription = DESCRIPTION;
+            fb->setImageDescription(DESCRIPTION);
 
             GL::CFramebufferBindingGuard bindings{glBackend()};
             auto                         state = ctx.saveDrawState();

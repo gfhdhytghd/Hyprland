@@ -24,17 +24,27 @@ void CGLElementRenderer::draw(CRenderContext& ctx, WP<CClearPassElement> element
     RASSERT(ctx.m_data.pMonitor, "Tried to render without begin()!");
 
     TRACY_GPU_ZONE("RenderClear");
-    const std::array<GLfloat, 4> c = {sc<GLfloat>(color.r), sc<GLfloat>(color.g), sc<GLfloat>(color.b), sc<GLfloat>(color.a)};
+    // clear colors are sRGB, like every other config color; the SDR mirror attachment is sRGB too and takes them as is
+    const auto                   converted = g_pHyprRenderer->getConvertedColor(ctx, color);
+    const std::array<GLfloat, 4> c         = {sc<GLfloat>(converted.r), sc<GLfloat>(converted.g), sc<GLfloat>(converted.b), sc<GLfloat>(converted.a)};
+    const std::array<GLfloat, 4> mirror    = {sc<GLfloat>(color.r), sc<GLfloat>(color.g), sc<GLfloat>(color.b), sc<GLfloat>(color.a)};
+    const bool                   hasMirror = ctx.m_data.currentFB && ctx.m_data.currentFB->getMirrorTexture();
+
+    const auto                   clear = [&] {
+        glClearBufferfv(GL_COLOR, 0, c.data());
+        if (hasMirror)
+            glClearBufferfv(GL_COLOR, 1, mirror.data());
+    };
 
     if (!ctx.m_data.damage.empty()) {
-        ctx.m_data.damage.forEachRect([&ctx, &c](const auto& RECT) {
+        ctx.m_data.damage.forEachRect([&ctx, &clear](const auto& RECT) {
             g_pHyprOpenGL->scissor(ctx, &RECT, ctx.m_data.transformDamage);
-            glClearBufferfv(GL_COLOR, 0, c.data());
+            clear();
         });
 
         g_pHyprOpenGL->disableScissor();
     } else
-        glClearBufferfv(GL_COLOR, 0, c.data());
+        clear();
 };
 
 void CGLElementRenderer::draw(CRenderContext& ctx, WP<CFramebufferElement> element, const CRegion& damage) {
