@@ -124,16 +124,14 @@ static std::string availableModesForOutput(PHLMONITOR pMonitor, eHyprCtlOutputFo
 }
 
 const std::array<const char*, Monitor::CMonitor::SC_CHECKS_COUNT> SOLITARY_REASONS_JSON = {
-    "\"UNKNOWN\"",   "\"NOTIFICATION\"", "\"LOCK\"",      "\"WORKSPACE\"", "\"WINDOWED\"", "\"DND\"",        "\"SPECIAL\"",  "\"ALPHA\"",       "\"OFFSET\"",
-    "\"CANDIDATE\"", "\"OPAQUE\"",       "\"TRANSFORM\"", "\"OVERLAYS\"",  "\"FLOAT\"",    "\"WORKSPACES\"", "\"SURFACES\"", "\"CONFIGERROR\"", "\"FADEOUT\"",
-    "\"IMEPOPUP\"",
+    "\"UNKNOWN\"", "\"NOTIFICATION\"", "\"LOCK\"",     "\"WORKSPACE\"", "\"WINDOWED\"",   "\"DND\"",      "\"SPECIAL\"",     "\"ALPHA\"",   "\"OFFSET\"",   "\"CANDIDATE\"",
+    "\"OPAQUE\"",  "\"TRANSFORM\"",    "\"OVERLAYS\"", "\"FLOAT\"",     "\"WORKSPACES\"", "\"SURFACES\"", "\"CONFIGERROR\"", "\"FADEOUT\"", "\"IMEPOPUP\"",
 };
 
 const std::array<const char*, Monitor::CMonitor::SC_CHECKS_COUNT> SOLITARY_REASONS_TEXT = {
-    "unknown reason",    "notification",     "session lock",     "invalid workspace", "windowed mode", "dnd active",
-    "special workspace", "alpha channel",    "workspace offset", "missing candidate", "not opaque",    "surface transformations",
-    "other overlays",    "floating windows", "other workspaces", "subsurfaces",       "config error",  "fadeout in progress",
-    "IME popup",
+    "unknown reason",   "notification",        "session lock", "invalid workspace",       "windowed mode",  "dnd active",       "special workspace", "alpha channel",
+    "workspace offset", "missing candidate",   "not opaque",   "surface transformations", "other overlays", "floating windows", "other workspaces",  "subsurfaces",
+    "config error",     "fadeout in progress", "IME popup",
 };
 
 std::string CCommandFormatter::getSolitaryBlockedReason(PHLMONITOR m, eHyprCtlOutputFormat format) {

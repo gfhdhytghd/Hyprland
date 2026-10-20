@@ -1,4 +1,5 @@
 #include "InputMethodRelay.hpp"
+#include "InputPopupState.hpp"
 #include "../../desktop/state/FocusState.hpp"
 #include "../../event/EventBus.hpp"
 #include "../../protocols/TextInputV3.hpp"
@@ -105,9 +106,9 @@ void CInputMethodRelay::updateAllPopups() {
     }
 }
 
-bool CInputMethodRelay::hasVisiblePopup() {
+bool CInputMethodRelay::hasVisiblePopup(const CBox& monitorBox) {
     for (auto const& p : m_inputMethodPopups) {
-        if (p->shouldBeRendered())
+        if (p->state().visibleOnMonitor(monitorBox))
             return true;
     }
 

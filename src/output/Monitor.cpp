@@ -1782,7 +1782,7 @@ uint32_t CMonitor::isSolitaryBlocked(bool full) {
     // IME popups are only drawn on the regular scene path; the solitary path renders
     // the fullscreen window alone, and direct scanout cannot composite the popup.
     // Block solitary while one is supposed to be drawn on this monitor.
-    if (Desktop::focusState()->monitor() == m_self && g_pInputManager->m_relay.hasVisiblePopup()) {
+    if (g_pInputManager->m_relay.hasVisiblePopup(logicalBox())) {
         reasons |= SC_IMEPOPUP;
         if (!full)
             return reasons;

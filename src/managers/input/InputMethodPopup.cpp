@@ -1,4 +1,5 @@
 #include "InputMethodPopup.hpp"
+#include "InputPopupState.hpp"
 #include "InputManager.hpp"
 #include "../../Compositor.hpp"
 #include "../../protocols/FractionalScale.hpp"
@@ -27,6 +28,11 @@ SP<Desktop::View::CWLSurface> CInputPopup::queryOwner() {
 }
 
 void CInputPopup::onDestroy() {
+    // The protocol popup may already be expiring, and its owner may have lost focus.
+    // Damage the last known location before removing the solitary blocker.
+    if (!m_lastBoxGlobal.empty())
+        g_pHyprRenderer->damageBox(m_lastBoxGlobal);
+
     g_pInputManager->m_relay.removePopup(this);
 }
 
@@ -156,7 +162,8 @@ CBox CInputPopup::globalBox() {
     }
     CBox parentBox = OWNER->getSurfaceBoxGlobal().value_or(CBox{0, 0, 500, 500});
 
-    return m_lastBoxLocal.copy().translate(parentBox.pos());
+    m_lastBoxGlobal = m_lastBoxLocal.copy().translate(parentBox.pos());
+    return m_lastBoxGlobal;
 }
 
 bool CInputPopup::isVecInPopup(const Vector2D& point) {
@@ -167,12 +174,26 @@ SP<CWLSurfaceResource> CInputPopup::getSurface() {
     return m_surface->resource();
 }
 
-bool CInputPopup::shouldBeRendered() {
+SInputPopupState CInputPopup::state() {
+    if (!m_popup || !m_popup->m_mapped || !m_popup->surface())
+        return {};
+
     const auto OWNER = queryOwner();
 
     if (!OWNER)
-        return false;
+        return {};
 
     const auto KB_FOCUS = g_pSeatManager->m_state.keyboardFocus;
-    return KB_FOCUS && KB_FOCUS == OWNER->resource();
+    if (!KB_FOCUS || KB_FOCUS != OWNER->resource())
+        return {.mapped = true};
+
+    return {
+        .mapped  = true,
+        .focused = true,
+        .box     = globalBox(),
+    };
+}
+
+bool CInputPopup::shouldBeRendered() {
+    return state().visible();
 }

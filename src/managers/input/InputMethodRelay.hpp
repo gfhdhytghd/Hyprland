@@ -19,28 +19,28 @@ class CInputMethodRelay {
   public:
     CInputMethodRelay();
 
-    void               onNewIME(SP<CInputMethodV2>);
-    void               onNewTextInput(WP<CTextInputV3> tiv3);
-    void               onNewTextInput(WP<CTextInputV1> pTIV1);
+    void         onNewIME(SP<CInputMethodV2>);
+    void         onNewTextInput(WP<CTextInputV3> tiv3);
+    void         onNewTextInput(WP<CTextInputV1> pTIV1);
 
-    void               activateIME(CTextInput* pInput, bool shouldCommit = true);
-    void               deactivateIME(CTextInput* pInput, bool shouldCommit = true);
-    void               commitIMEState(CTextInput* pInput);
-    void               removeTextInput(CTextInput* pInput);
+    void         activateIME(CTextInput* pInput, bool shouldCommit = true);
+    void         deactivateIME(CTextInput* pInput, bool shouldCommit = true);
+    void         commitIMEState(CTextInput* pInput);
+    void         removeTextInput(CTextInput* pInput);
 
-    void               onKeyboardFocus(SP<CWLSurfaceResource>);
+    void         onKeyboardFocus(SP<CWLSurfaceResource>);
 
-    CTextInput*        getFocusedTextInput();
+    CTextInput*  getFocusedTextInput();
 
-    void               removePopup(CInputPopup*);
+    void         removePopup(CInputPopup*);
 
-    CInputPopup*       popupFromCoords(const Vector2D& point);
-    CInputPopup*       popupFromSurface(const SP<CWLSurfaceResource> surface);
+    CInputPopup* popupFromCoords(const Vector2D& point);
+    CInputPopup* popupFromSurface(const SP<CWLSurfaceResource> surface);
 
-    void               updateAllPopups();
+    void         updateAllPopups();
 
-    // Whether any IME popup is currently supposed to be drawn on screen.
-    bool               hasVisiblePopup();
+    // Whether a mapped, focused IME popup overlaps the monitor in logical coordinates.
+    bool               hasVisiblePopup(const CBox& monitorBox);
 
     WP<CInputMethodV2> m_inputMethod;
 

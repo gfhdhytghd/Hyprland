@@ -6,6 +6,7 @@
 #include "../../helpers/signal/Signal.hpp"
 
 class CInputMethodPopupV2;
+struct SInputPopupState;
 
 class CInputPopup {
   public:
@@ -16,9 +17,9 @@ class CInputPopup {
 
     bool isVecInPopup(const Vector2D& point);
 
-    // If a popup's base surface (ti -> owner) is not focused,
-    // don't show the popup.
+    // Only mapped popups whose base surface (ti -> owner) is focused are visible.
     bool                   shouldBeRendered();
+    SInputPopupState       state();
 
     CBox                   globalBox();
     SP<CWLSurfaceResource> getSurface();
@@ -36,6 +37,7 @@ class CInputPopup {
     WP<CInputMethodPopupV2>       m_popup;
     SP<Desktop::View::CWLSurface> m_surface;
     CBox                          m_lastBoxLocal;
+    CBox                          m_lastBoxGlobal;
     MONITORID                     m_lastMonitor = MONITOR_INVALID;
 
     struct {
