@@ -1,15 +1,52 @@
-name: Do not open issues, go to discussions please!
-description: Do not open an issue
+name: Bug report
+description: Report a bug in this fork
 body:
-  - type: checkboxes
+  - type: markdown
     attributes:
-      label: Please close this issue.
-      description: Users cannot open issues. I want my issue to be closed.
-      options:
-        - label: Yes, I want this issue to be closed.
-          required: true
+      value: |
+        Issues are open to everyone. AI-assisted reports are welcome, see "AI usage in this fork" in AGENTS.md.
+        For bugs that also happen on upstream Hyprland, please say so and link any upstream report.
 
   - type: textarea
-    id: body
+    id: description
     attributes:
-      label: Issue body
+      label: Description
+      description: What happens, and what did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: Steps, config snippets and the clients involved.
+    validations:
+      required: true
+
+  - type: textarea
+    id: version
+    attributes:
+      label: Version
+      description: Output of `hyprctl version`, and the aquamarine fork commit you built against (see README "Building this fork").
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: outputs
+    attributes:
+      label: Outputs and color management
+      description: For display / HDR / color issues, the output of `hyprctl monitors all` and your monitor rules (cm, sdr_eotf, luminances, icc, bitdepth) and `render:` settings.
+      render: shell
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs, crash reports
+      description: Relevant parts of the Hyprland log or a crash report. Attach large files instead of pasting them.
+
+  - type: textarea
+    id: ai
+    attributes:
+      label: AI use
+      description: Did you use AI to investigate or write this report? Which model(s)?

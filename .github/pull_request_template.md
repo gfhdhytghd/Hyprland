@@ -1,11 +1,9 @@
 <!--
-WARNING: PRs from unvouched users (new contributors) will be automatically closed.
-You MUST be vouched to be able to open PRs. Check out the PR guidelines
-on our wiki: https://wiki.hyprland.org/Contributing-and-Debugging/PR-Guidelines/
+PRs are open to everyone. Check out the PR guidelines
+on the wiki: https://wiki.hyprland.org/Contributing-and-Debugging/PR-Guidelines/
+and AGENTS.md. AI-assisted PRs are welcome, see "AI usage in this fork" in AGENTS.md.
 
-AI-assisted PRs are welcome, see "AI usage in this fork" in AGENTS.md.
-
-i18n: If your PR is about i18n (localisation), and it touches files other than src/i18n/*, please make sure the title starts with `i18n:`. PRs for this topic are exempt from the vouch requirement.
+i18n: If your PR is about i18n (localisation), and it touches files other than src/i18n/*, please make sure the title starts with `i18n:`.
 -->
 
 
