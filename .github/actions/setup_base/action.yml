@@ -100,10 +100,12 @@ runs:
       run: |
         git clone https://github.com/hyprwm/hyprgraphics && cd hyprgraphics && cmake -DCMAKE_BUILD_TYPE:STRING=Release -DCMAKE_INSTALL_PREFIX:PATH=/usr -B build && cmake --build build --target hyprgraphics && cmake --install build
 
-    - name: Get aquamarine-git
+    # This fork needs the DRM color pipeline API from the aquamarine fork (IOutput::supportsCTM,
+    # getSupportedColorspaces, DEGAMMA LUTs, HDR metadata clearing), see README "Building this fork".
+    - name: Get aquamarine-git (gfhdhytghd fork)
       shell: bash
       run: |
-        git clone https://github.com/hyprwm/aquamarine && cd aquamarine && cmake -DCMAKE_BUILD_TYPE:STRING=Release -DCMAKE_INSTALL_PREFIX:PATH=/usr -B build && cmake --build build --target aquamarine && cmake --install build
+        git clone -b drm-color-pipeline https://github.com/gfhdhytghd/aquamarine && cd aquamarine && cmake -DCMAKE_BUILD_TYPE:STRING=Release -DCMAKE_INSTALL_PREFIX:PATH=/usr -B build && cmake --build build --target aquamarine && cmake --install build
 
     - name: Get Xorg pacman pkgs
       shell: bash

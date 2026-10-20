@@ -17,6 +17,41 @@ This is my own experimental branch for HDR issue fix.
 
 </div>
 
+# Building this fork
+
+This fork's HDR / color-management work needs DRM color pipeline support that upstream aquamarine doesn't have yet. Build it against the [aquamarine fork](https://github.com/gfhdhytghd/aquamarine), branch `drm-color-pipeline`:
+
+- `IOutput::supportsCTM()` and `IOutput::getSupportedColorspaces()` (connector Colorspace values matched by name)
+- working DEGAMMA / GAMMA LUTs and CTM with correct blob lifetime
+- clearing `HDR_OUTPUT_METADATA` (property set to 0) when returning to SDR
+
+The fork keeps aquamarine's version at `0.15.1` but bumps the SOVERSION to 15, so pkg-config accepts a stock aquamarine 0.15.x and the build then fails on the missing API. Make sure the fork is the one found.
+
+Everything else is built as described in the [installation guide][Install] (manual / CMake build).
+
+**Install the aquamarine fork into a separate prefix** (no root needed):
+
+```sh
+git clone -b drm-color-pipeline https://github.com/gfhdhytghd/aquamarine
+cmake -S aquamarine -B aquamarine/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$HOME/.local/aquamarine-hdr"
+cmake --build aquamarine/build -j"$(nproc)"
+cmake --install aquamarine/build
+```
+
+**Build Hyprland against it:**
+
+```sh
+export PKG_CONFIG_PATH="$HOME/.local/aquamarine-hdr/lib/pkgconfig:$PKG_CONFIG_PATH"
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j"$(nproc)"
+```
+
+The binary in `build/` carries a RUNPATH to the fork. `cmake --install` strips it, so for an installed Hyprland either add `-DCMAKE_INSTALL_RPATH="$HOME/.local/aquamarine-hdr/lib"` at configure time or start it with `LD_LIBRARY_PATH="$HOME/.local/aquamarine-hdr/lib"`. Installing the fork to `/usr` instead is not recommended: its library file is also named `libaquamarine.so.0.15.1`, so it overwrites the file the distribution's `libaquamarine.so.14` symlink points to, and everything built against SOVERSION 14 (a distribution Hyprland, hyprlock, …) then loads an ABI-incompatible library until rebuilt.
+
+**Nix:** the flake already pins the aquamarine fork (`github:gfhdhytghd/aquamarine/drm-color-pipeline`), so `nix build` needs no extra steps.
+
+**CI** builds against the same branch (`.github/actions/setup_base`, `flake.nix`).
+
 # Features
 
 - All of the eyecandy: gradient borders, many types of blur, animations, glow, shadows and much more

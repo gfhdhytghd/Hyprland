@@ -8,7 +8,8 @@
     systems.url = "github:nix-systems/default-linux";
 
     aquamarine = {
-      url = "github:hyprwm/aquamarine";
+      # DRM color pipeline API this fork needs, see README "Building this fork"
+      url = "github:gfhdhytghd/aquamarine/drm-color-pipeline";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.systems.follows = "systems";
       inputs.hyprutils.follows = "hyprutils";
