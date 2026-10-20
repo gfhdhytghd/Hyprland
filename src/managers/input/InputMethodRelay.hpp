@@ -39,6 +39,9 @@ class CInputMethodRelay {
 
     void               updateAllPopups();
 
+    // Whether any IME popup is currently supposed to be drawn on screen.
+    bool               hasVisiblePopup();
+
     WP<CInputMethodV2> m_inputMethod;
 
   private:

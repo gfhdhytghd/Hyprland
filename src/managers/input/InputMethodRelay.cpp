@@ -105,6 +105,15 @@ void CInputMethodRelay::updateAllPopups() {
     }
 }
 
+bool CInputMethodRelay::hasVisiblePopup() {
+    for (auto const& p : m_inputMethodPopups) {
+        if (p->shouldBeRendered())
+            return true;
+    }
+
+    return false;
+}
+
 void CInputMethodRelay::activateIME(CTextInput* pInput, bool shouldCommit) {
     if (m_inputMethod.expired())
         return;
