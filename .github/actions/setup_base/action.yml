@@ -105,7 +105,7 @@ runs:
     - name: Get aquamarine-git (gfhdhytghd fork)
       shell: bash
       run: |
-        git clone -b drm-color-pipeline https://github.com/gfhdhytghd/aquamarine && cd aquamarine && cmake -DCMAKE_BUILD_TYPE:STRING=Release -DCMAKE_INSTALL_PREFIX:PATH=/usr -B build && cmake --build build --target aquamarine && cmake --install build
+        git clone -b master https://github.com/gfhdhytghd/aquamarine && cd aquamarine && cmake -DCMAKE_BUILD_TYPE:STRING=Release -DCMAKE_INSTALL_PREFIX:PATH=/usr -B build && cmake --build build --target aquamarine && cmake --install build
 
     - name: Get Xorg pacman pkgs
       shell: bash

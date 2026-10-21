@@ -92,7 +92,7 @@ hl.monitor({
 
 Codex 对第二轮的独立复审确认了 6 个缺陷和 3 个可疑点，均已修复并加测试：HLG 系统 gamma < 1 时黑色为 NaN；reference 缩放改变了 HLG 解码 gamma（改为按源自身峰值解码后再缩放）；mirror 中模糊背景未经转换；blur prepare/finish 不互逆；BT.2390 忽略已知源黑（改用 mastering 黑或编码黑）；ICtCp 改用 BT.2100 Table 7 精确矩阵；CPU 端补齐 alt tonemap；mirror 不再因源与目标描述相同而跳过 CM；装饰 shader 的特性与 uniform 方向统一（上游已有的 bug，边框此前拿不到 sdrbrightness/sdrsaturation）；白点落在原色上的描述被拒绝。
 
-硬件 CM（依赖 aquamarine `drm-color-pipeline` 分支，ABI 15）：
+硬件 CM（依赖 aquamarine fork 的 `master` 分支，ABI 15）：
 - `src/helpers/cm/HardwareCM.*`：为 SDR 直接扫描输出构造 DEGAMMA → CTM → GAMMA。只接受逐通道可表示、无需 tone mapping、无负 CTM 系数的情况，并在软件中模拟 KMS 流水线（16 位量化、线性插值、CTM 钳位），对灰阶、原色、二次色斜坡和色立方与 shader 等价的 CPU 路径比较，误差超过半个 10 位码值即拒绝，回退 shader 合成。AMD 式 4096 项 LUT、SDR 黑 0.2 时通过；256 项或 SDR 黑 0 时被拒绝。
 - gamma-control 与 ICC VCGT 曲线在编码之后合成到同一 GAMMA 槽；对角用户 CTM（如 hyprsunset）折叠进编码，非对角时不走硬件路径。
 - 硬件不支持 CTM 时不再提交非单位 CTM（否则新 aquamarine 会让每次提交失败）。

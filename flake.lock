@@ -25,7 +25,7 @@
       },
       "original": {
         "owner": "gfhdhytghd",
-        "ref": "drm-color-pipeline",
+        "ref": "master",
         "repo": "aquamarine",
         "type": "github"
       }
