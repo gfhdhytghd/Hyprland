@@ -7,6 +7,7 @@
 #include <hyprutils/path/Path.hpp>
 #include <numbers>
 #include <random>
+#include <regex>
 #include <pango/pangocairo.h>
 #include "OpenGL.hpp"
 #include <hyprgraphics/egl/Egl.hpp>
@@ -656,7 +657,8 @@ void CHyprOpenGLImpl::initDRMFormats() {
     m_drmFormats = dmaFormats;
 
     // FP16 needs both a half float renderable color buffer and the drm format
-    m_fp16Supported = !isLegacy() && m_exts.EXT_color_buffer_half_float && std::ranges::any_of(m_drmFormats, [](const auto& fmt) { return fmt.drmFormat == DRM_FORMAT_ABGR16161616F; });
+    m_fp16Supported =
+        !isLegacy() && m_exts.EXT_color_buffer_half_float && std::ranges::any_of(m_drmFormats, [](const auto& fmt) { return fmt.drmFormat == DRM_FORMAT_ABGR16161616F; });
 
     if (!m_fp16Supported)
         LOG(Log::WARN, "Your GPU does not support rendering to FP16 buffers, some effects and CM settings might be unavailable.");
@@ -719,7 +721,7 @@ EGLImageKHR CHyprOpenGLImpl::createEGLImage(const Aquamarine::SDMABUFAttrs& attr
 void CHyprOpenGLImpl::beginSimple(CRenderContext& ctx, PHLMONITOR pMonitor, const CRegion& damage, SP<IRenderbuffer> rb, SP<IFramebuffer> fb) {
     ctx.m_data.pMonitor = pMonitor;
 
-    const GLenum RESETSTATUS = glGetGraphicsResetStatus();
+    const GLenum RESETSTATUS = isLegacy() ? GL_NO_ERROR : glGetGraphicsResetStatus();
     if (RESETSTATUS != GL_NO_ERROR) {
         std::string errStr = "";
         switch (RESETSTATUS) {
@@ -765,7 +767,7 @@ void CHyprOpenGLImpl::makeEGLCurrent() {
 bool CHyprOpenGLImpl::begin(CRenderContext& ctx, PHLMONITOR pMonitor, const CRegion& damage_, SP<IFramebuffer> fb, std::optional<CRegion> finalDamage) {
     ctx.m_data.pMonitor = pMonitor;
 
-    const GLenum RESETSTATUS = glGetGraphicsResetStatus();
+    const GLenum RESETSTATUS = isLegacy() ? GL_NO_ERROR : glGetGraphicsResetStatus();
     if (RESETSTATUS != GL_NO_ERROR) {
         std::string errStr = "";
         switch (RESETSTATUS) {
@@ -976,47 +978,6 @@ void CHyprOpenGLImpl::end(CRenderContext& ctx) {
     }
 }
 
-static const std::vector<std::string> SHADER_INCLUDES = {
-    "defines.h",       "constants.h",      "cm_helpers.glsl", "rounding.glsl", "CM.glsl",         "tonemap.glsl",     "gain.glsl",     "border.glsl",      "shadow.glsl",
-    "inner_glow.glsl", "blurprepare.glsl", "blur1.glsl",      "blur2.glsl",    "blurFinish.glsl", "motion_blur.glsl", "gradient.glsl", "glassFinish.glsl", "fluidJar.glsl",
-};
-
-// order matters, see ePreparedFragmentShader
-const std::array<std::string, SH_FRAG_LAST> FRAG_SHADERS = {
-    "quad.frag",
-    "passthru.frag",
-    "rgbamatte.frag",
-    "ext.frag",
-    "blur1.frag",
-    "blur2.frag",
-    "blurprepare.frag",
-    "blurfinish.frag",
-    "shadow.frag",
-    "inner_glow.frag",
-    "surface.frag",
-    "border.frag",
-    "glitch.frag",
-    "frostfinish.frag",
-    "ripplefinish.frag",
-    "dropsfinish.frag",
-    "waterstep.frag",
-    "waterfinish.frag",
-    "fluidjarinit.frag",
-    "fluidjarstep.frag",
-    "fluidjargraph.frag",
-    "fluidjartrack.frag",
-    "fluidjarvisual.frag",
-    "fluidjarresample.frag",
-    "fluidjarhistoryresample.frag",
-    "fluidjartrackingresample.frag",
-    "fluidjarfinish.frag",
-    "prismfinish.frag",
-    "heatshimmerfinish.frag",
-    "acrylicfinish.frag",
-    "aurorafinish.frag",
-    "hazefinish.frag",
-};
-
 bool CHyprOpenGLImpl::initShaders(const std::string& path) {
     auto              shaders = makeShared<SPreparedShaders>();
     static const auto PCM     = CConfigValue<Config::INTEGER>("render:cm_enabled");
@@ -1074,6 +1035,16 @@ void CHyprOpenGLImpl::applyScreenShader(const std::string& path) {
     }
 
     std::string fragmentShader((std::istreambuf_iterator<char>(infile)), (std::istreambuf_iterator<char>()));
+
+    if (isLegacy()) {
+        // Strip comments before checking the version directive.
+        const auto  source = std::regex_replace(fragmentShader, std::regex(R"(/\*[\s\S]*?\*/|//[^\n]*)"), "");
+        std::smatch version;
+        if (std::regex_search(source, version, std::regex(R"(#\s*version\s+([^\r\n]+))")) && Hyprutils::String::trim(version[1].str()) != "100") {
+            ErrorOverlay::overlay()->queueError("Screen shader: the legacy GLES2 renderer requires GLSL ES 1.00 (#version 100 or no #version)");
+            return;
+        }
+    }
 
     if (!m_finalScreenShader->createProgram(              //
             fragmentShader.starts_with("#version 320 es") // do not break existing custom shaders

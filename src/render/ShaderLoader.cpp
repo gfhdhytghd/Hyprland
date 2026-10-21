@@ -16,6 +16,47 @@
 
 using namespace Render;
 
+const std::vector<std::string> Render::SHADER_INCLUDES = {
+    "defines.h",       "constants.h",      "cm_helpers.glsl", "rounding.glsl", "CM.glsl",         "tonemap.glsl",     "gain.glsl",     "border.glsl",      "shadow.glsl",
+    "inner_glow.glsl", "blurprepare.glsl", "blur1.glsl",      "blur2.glsl",    "blurFinish.glsl", "motion_blur.glsl", "gradient.glsl", "glassFinish.glsl", "fluidJar.glsl",
+};
+
+// order matters, see ePreparedFragmentShader
+const std::array<std::string, SH_FRAG_LAST> Render::FRAG_SHADERS = {
+    "quad.frag",
+    "passthru.frag",
+    "rgbamatte.frag",
+    "ext.frag",
+    "blur1.frag",
+    "blur2.frag",
+    "blurprepare.frag",
+    "blurfinish.frag",
+    "shadow.frag",
+    "inner_glow.frag",
+    "surface.frag",
+    "border.frag",
+    "glitch.frag",
+    "frostfinish.frag",
+    "ripplefinish.frag",
+    "dropsfinish.frag",
+    "waterstep.frag",
+    "waterfinish.frag",
+    "fluidjarinit.frag",
+    "fluidjarstep.frag",
+    "fluidjargraph.frag",
+    "fluidjartrack.frag",
+    "fluidjarvisual.frag",
+    "fluidjarresample.frag",
+    "fluidjarhistoryresample.frag",
+    "fluidjartrackingresample.frag",
+    "fluidjarfinish.frag",
+    "prismfinish.frag",
+    "heatshimmerfinish.frag",
+    "acrylicfinish.frag",
+    "aurorafinish.frag",
+    "hazefinish.frag",
+};
+
 std::expected<std::string, std::string> Render::toGLES2(const std::string& source, bool fragment) {
     static const std::regex OUTPUT_RE(R"(^\s*(?:layout\s*\(\s*location\s*=\s*(\d+)\s*\)\s*)?out\s+(\w+)\s+(\w+)\s*;\s*$)");
     static const std::regex IN_RE(R"(^(\s*)in(\s))");

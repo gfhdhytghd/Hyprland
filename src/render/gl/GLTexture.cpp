@@ -24,9 +24,11 @@ static bool isSwizzle(const SPixelFormat* format, const std::array<GLint, 4>& rg
 // the 8-bit and 565 types exist.
 static std::optional<SUploadFormat> uploadFormat(const SPixelFormat* format) {
     if (!g_pHyprOpenGL->isLegacy())
-        return SUploadFormat{.internalFormat = g_pHyprOpenGL->textureInternalFormat(format), .format = sc<GLenum>(format->glFormat), .type = sc<GLenum>(format->glType), .swizzle = true};
+        return SUploadFormat{
+            .internalFormat = g_pHyprOpenGL->textureInternalFormat(format), .format = sc<GLenum>(format->glFormat), .type = sc<GLenum>(format->glType), .swizzle = true};
 
-    if (format->glType != GL_UNSIGNED_BYTE && format->glType != GL_UNSIGNED_SHORT_5_6_5)
+    if ((format->glFormat != GL_RGBA && format->glFormat != GL_RGB && format->glFormat != GL_BGRA_EXT) ||
+        (format->glType != GL_UNSIGNED_BYTE && format->glType != GL_UNSIGNED_SHORT_5_6_5))
         return std::nullopt;
 
     if (format->glFormat == GL_RGBA && format->glType == GL_UNSIGNED_BYTE && isSwizzle(format, SWIZZLE_BGRA, SWIZZLE_BGR1))

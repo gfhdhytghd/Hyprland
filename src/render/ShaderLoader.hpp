@@ -80,6 +80,9 @@ namespace Render {
         SH_FRAG_LAST,
     };
 
+    extern const std::vector<std::string>              SHADER_INCLUDES;
+    extern const std::array<std::string, SH_FRAG_LAST> FRAG_SHADERS;
+
     // Turn preprocessed GLSL ES 3.00 into GLSL ES 1.00 for the legacy renderer. Fails on constructs without a GLES2
     // equivalent, e.g. several fragment outputs.
     std::expected<std::string, std::string> toGLES2(const std::string& source, bool fragment);

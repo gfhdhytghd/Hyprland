@@ -444,10 +444,21 @@ void CShader::setUniformMatrix3fv(eShaderUniform location, GLsizei count, GLbool
     }
 
     cached = SUniformMatrix3Data{.count = count, .transpose = transpose, .value = value};
+    if (g_pHyprOpenGL->isLegacy() && transpose) {
+        for (size_t row = 0; row < 3; ++row) {
+            for (size_t col = row + 1; col < 3; ++col)
+                std::swap(value[row * 3 + col], value[col * 3 + row]);
+        }
+        transpose = GL_FALSE;
+    }
     GLCALL(glUniformMatrix3fv(m_uniformLocations[location], count, transpose, value.data()));
 }
 
 void CShader::setUniformMatrix4x2fv(eShaderUniform location, GLsizei count, GLboolean transpose, std::array<GLfloat, 8> value) {
+    // Non-square matrices have no GLES2 uniform type.
+    if (g_pHyprOpenGL->isLegacy())
+        return;
+
     if (m_uniformLocations.at(location) == -1)
         return;
 

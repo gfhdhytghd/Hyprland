@@ -285,6 +285,17 @@ SP<ITexture> CHyprGLRenderer::createTexture(const int width, const int height, u
 }
 
 SP<ITexture> CHyprGLRenderer::createTexture(cairo_surface_t* cairo) {
+    if (g_pHyprOpenGL->isLegacy() && cairo_image_surface_get_format(cairo) == CAIRO_FORMAT_RGB96F) {
+        const auto SURFACE = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, cairo_image_surface_get_width(cairo), cairo_image_surface_get_height(cairo));
+        const auto CONTEXT = cairo_create(SURFACE);
+        cairo_set_source_surface(CONTEXT, cairo, 0, 0);
+        cairo_paint(CONTEXT);
+        cairo_destroy(CONTEXT);
+        auto texture = createTexture(SURFACE);
+        cairo_surface_destroy(SURFACE);
+        return texture;
+    }
+
     g_pHyprOpenGL->makeEGLCurrent();
     const auto CAIROFORMAT = cairo_image_surface_get_format(cairo);
     auto       tex         = makeShared<CGLTexture>();
