@@ -2480,19 +2480,23 @@ void IHyprRenderer::handleFullscreenSettings(PHLMONITOR pMonitor) {
 
             if (HDR_CHANGED || INITIAL_SDR || pMonitor->m_hdrMetadataFromSurface || HDR_METADATA_CHANGED) {
                 LOG(Log::INFO, wantHDR ? "[CM] Updating HDR metadata from monitor" : "[CM] Restoring SDR mode");
-                if (!hdrMetadataEqual(WANTED, CURRENT))
+                // The first frame always stages SDR: a previous DRM master (e.g. a compositor that crashed in HDR) may have
+                // left HDR metadata on the connector that the zero-initialized output state can't know about.
+                if (INITIAL_SDR || !hdrMetadataEqual(WANTED, CURRENT))
                     pMonitor->m_output->state->setHDRMetadata(WANTED);
                 pMonitor->m_hdrMetadataFromSurface = false;
             }
 
             pMonitor->m_needsHDRupdate = true;
         }
-    } else if (const auto SDR = selectHDRMetadata(pMonitor->m_imageDescription->value(), false); !hdrMetadataEqual(pMonitor->m_output->state->state().hdrMetadata, SDR)) {
-        // HDR support was withdrawn while HDR was signalled (e.g. supports_hdr = -1): the PQ metadata takes precedence
-        // over Colorspace in KMS, so it has to be cleared along with the fallback to an SDR preset.
-        LOG(Log::INFO, "[CM] HDR no longer supported, restoring SDR mode");
+    } else if (const auto SDR = selectHDRMetadata(pMonitor->m_imageDescription->value(), false);
+               !pMonitor->m_needsHDRupdate || !hdrMetadataEqual(pMonitor->m_output->state->state().hdrMetadata, SDR)) {
+        // HDR support was withdrawn while HDR was signalled (e.g. supports_hdr = -1), or a previous DRM master left HDR
+        // metadata behind: the PQ metadata takes precedence over Colorspace in KMS, so it has to be cleared.
+        LOG(Log::INFO, "[CM] HDR not supported, restoring SDR mode");
         pMonitor->m_output->state->setHDRMetadata(SDR);
         pMonitor->m_hdrMetadataFromSurface = false;
+        pMonitor->m_needsHDRupdate         = true;
     }
 
     const bool needsWCG = pMonitor->wantsWideColor();
