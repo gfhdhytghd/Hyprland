@@ -1580,8 +1580,6 @@ SP<ITexture> IHyprRenderer::loadAsset(const std::string& filename) {
 }
 
 SP<ITexture> IHyprRenderer::getBlurTexture(PHLMONITORREF pMonitor) {
-    if (glBackend() && glBackend()->isLegacy())
-        return nullptr;
     return pMonitor->resources()->m_blurFB->getTexture();
 }
 
@@ -1982,10 +1980,6 @@ Mat3x3 IHyprRenderer::projectBoxToTarget(CRenderContext& ctx, const CBox& box, s
 }
 
 SP<IFramebuffer> IHyprRenderer::blurMainFramebuffer(CRenderContext& ctx, float strength, const CRegion& originalDamage, const SBlurContext& context) {
-    // the legacy GLES2 renderer has no blur, callers draw without the blurred background
-    if (glBackend() && glBackend()->isLegacy())
-        return nullptr;
-
     const auto renderTarget = ctx.m_data.currentFB;
     const auto blurSource   = !ctx.m_backdropCaptures.empty() && ctx.m_backdropCaptures.back().framebuffer ? ctx.m_backdropCaptures.back().framebuffer : renderTarget;
 

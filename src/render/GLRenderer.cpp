@@ -10,6 +10,7 @@
 #include "../protocols/core/DataDevice.hpp"
 #include "../protocols/core/Compositor.hpp"
 #include "../debug/Overlay.hpp"
+#include "errorOverlay/Overlay.hpp"
 #include "../desktop/state/WindowState.hpp"
 #include "../desktop/view/window/Window.hpp"
 #include "../desktop/view/window/WindowPresentation.hpp"
@@ -390,7 +391,16 @@ SP<IFramebuffer> CHyprGLRenderer::blurFramebuffer(CRenderContext& ctx, SP<IFrame
 void CHyprGLRenderer::refreshBlurProvider() {
     static auto PBLURTYPE = CConfigValue<Config::INTEGER>("decoration:blur:variant");
 
-    const auto  type = sc<eBlurType>(*PBLURTYPE);
+    auto        type = sc<eBlurType>(*PBLURTYPE);
+    if (g_pHyprOpenGL->isLegacy() && type != eBlurType::BLUR_DUAL_KAWASE) {
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            LOG(Log::WARN, "Legacy GLES2 supports only dual Kawase blur; falling back to dual Kawase");
+            ErrorOverlay::overlay()->queueError("Legacy GLES2 supports only dual Kawase blur; using dual Kawase for decoration:blur:variant");
+        }
+        type = eBlurType::BLUR_DUAL_KAWASE;
+    }
     if (m_blur && m_blur->type() == type)
         return;
 
@@ -490,8 +500,6 @@ bool CHyprGLRenderer::reloadShaders(const std::string& path) {
 }
 
 SP<ITexture> CHyprGLRenderer::getBlurTexture(PHLMONITORREF pMonitor) {
-    if (g_pHyprOpenGL->isLegacy())
-        return nullptr;
     return pMonitor->resources()->m_blurFB->getTexture();
 }
 

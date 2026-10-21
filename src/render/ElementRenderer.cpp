@@ -1,6 +1,7 @@
 #include "ElementRenderer.hpp"
 #include "SceneResources.hpp"
 #include "Renderer.hpp"
+#include "OpenGL.hpp"
 #include "../layout/LayoutManager.hpp"
 #include "../desktop/view/window/Window.hpp"
 #include "../desktop/view/window/WindowEffectsController.hpp"
@@ -647,10 +648,13 @@ void IElementRenderer::drawTransformedWindow(CRenderContext& ctx, WP<CTransforme
     bool            applyTransformers = PWINDOW && !element->m_data.standalone && !element->m_data.renderingSnapshot;
     const CBox      MONITORBOX        = CBox{{}, pMonitor->m_size};
 
-    SMotionBlurData motionBlur         = applyTransformers ? element->m_data.motionBlur : SMotionBlurData{};
-    const CBox      visualBox          = applyTransformers ? (motionBlur.enabled ? motionBlur.extents() : element->m_data.transformedBox) : element->m_data.currentBox;
-    const bool      HASRENDERMODIFIERS = renderData.renderModif.enabled && !renderData.renderModif.modifs.empty();
-    CBox            visibleOutput      = HASRENDERMODIFIERS ? visualBox : visualBox.intersection(MONITORBOX);
+    SMotionBlurData motionBlur = applyTransformers ? element->m_data.motionBlur : SMotionBlurData{};
+    // Motion blur with a blurred background requires textureSize, unavailable on GLES2.
+    if (const auto backend = g_pHyprRenderer->glBackend(); backend && backend->isLegacy())
+        motionBlur = {};
+    const CBox visualBox          = applyTransformers ? (motionBlur.enabled ? motionBlur.extents() : element->m_data.transformedBox) : element->m_data.currentBox;
+    const bool HASRENDERMODIFIERS = renderData.renderModif.enabled && !renderData.renderModif.modifs.empty();
+    CBox       visibleOutput      = HASRENDERMODIFIERS ? visualBox : visualBox.intersection(MONITORBOX);
     if (visibleOutput.empty())
         return;
 

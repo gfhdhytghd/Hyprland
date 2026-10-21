@@ -96,3 +96,39 @@ TEST_F(CGLES2ShaderTest, AllLegacyVariantsCompile) {
         }
     }
 }
+
+TEST_F(CGLES2ShaderTest, KawaseVariantsCompile) {
+    CShaderLoader loader(SHADER_INCLUDES, FRAG_SHADERS, "", true);
+    for (const auto frag : {SH_FRAG_BLUR1, SH_FRAG_BLUR2, SH_FRAG_BLURPREPARE, SH_FRAG_BLURFINISH}) {
+        SCOPED_TRACE(FRAG_SHADERS[frag]);
+        validate(loader.getVariantSource(frag, {}), GLSLANG_STAGE_FRAGMENT);
+    }
+}
+
+TEST_F(CGLES2ShaderTest, BlurBlendVariantsCompile) {
+    CShaderLoader loader(SHADER_INCLUDES, FRAG_SHADERS, "", true);
+    for (const auto frag : {SH_FRAG_SURFACE, SH_FRAG_EXT}) {
+        for (ShaderFeatureFlags base = 0; base < 16; ++base) {
+            for (const ShaderFeatureFlags blur :
+                 std::array<ShaderFeatureFlags, 5>{SH_FEAT_BLUR_ALPHA_MASK, SH_FEAT_BLUR, SH_FEAT_BLUR | SH_FEAT_BLUR_ALPHA_MASK, SH_FEAT_BLUR | SH_FEAT_BLUR_MATTE,
+                                                   SH_FEAT_BLUR | SH_FEAT_BLUR_ALPHA_MASK | SH_FEAT_BLUR_MATTE}) {
+                SCOPED_TRACE(FRAG_SHADERS[frag] + " features=" + std::to_string(base | blur));
+                const auto source = loader.getVariantSource(frag, {.features = sc<ShaderFeatureFlags>(base | blur)});
+                EXPECT_EQ(source.find("uniform sampler2D blurredBG") != std::string::npos, (blur & SH_FEAT_BLUR) != 0);
+                EXPECT_EQ(source.find("uniform samplerExternalOES tex") != std::string::npos, frag == SH_FRAG_EXT);
+                EXPECT_EQ(source.find("legacyBlurMask") != std::string::npos, (base & SH_FEAT_DISCARD) != 0 && (blur & SH_FEAT_BLUR) != 0);
+                EXPECT_EQ(source.find("uniform sampler2D blurAlphaMatte") != std::string::npos, (blur & SH_FEAT_BLUR_MATTE) != 0);
+                validate(source, GLSLANG_STAGE_FRAGMENT);
+            }
+        }
+    }
+}
+
+TEST_F(CGLES2ShaderTest, UnsupportedFeaturesFallBack) {
+    CShaderLoader loader(SHADER_INCLUDES, FRAG_SHADERS, "", true);
+    const auto    features = SH_FEAT_RGBA | SH_FEAT_BLUR | SH_FEAT_BLUR_ALPHA_MASK | SH_FEAT_BLUR_MATTE | SH_FEAT_ROUNDING;
+    const auto    fallback = loader.getVariantSource(SH_FRAG_SURFACE, {.features = sc<ShaderFeatureFlags>(features)});
+    EXPECT_EQ(loader.getVariantSource(SH_FRAG_SURFACE, {.features = sc<ShaderFeatureFlags>(features | SH_FEAT_MOTION_BLUR | SH_FEAT_CM | SH_FEAT_ICC | SH_FEAT_MIRROR)}), fallback);
+    EXPECT_EQ(fallback.find("textureSize"), std::string::npos);
+    validate(fallback, GLSLANG_STAGE_FRAGMENT);
+}

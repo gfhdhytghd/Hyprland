@@ -261,7 +261,7 @@ std::string CShaderLoader::getVariantSource(ePreparedFragmentShader frag, SShade
 
     // features the legacy renderer never enables, see CHyprOpenGLImpl::isLegacy()
     if (m_gles2)
-        variant.features &= ~(SH_FEAT_ICC | SH_FEAT_MIRROR | SH_FEAT_BLUR | SH_FEAT_MOTION_BLUR | SH_FEAT_BLUR_ALPHA_MASK | SH_FEAT_BLUR_MATTE);
+        variant.features &= ~(SH_FEAT_ICC | SH_FEAT_MIRROR | SH_FEAT_MOTION_BLUR);
 
     // without CM the transfer functions are unused, keep them at the default so we don't cache
     // several variants of identical source
@@ -273,7 +273,13 @@ std::string CShaderLoader::getVariantSource(ePreparedFragmentShader frag, SShade
     if (!m_fragVariants[frag].contains(variant)) {
         ASSERT(m_fragFiles[frag].length());
         m_overrideDefines = getDefines(variant);
-        auto source       = processSource(m_fragFiles[frag]);
+        if (m_gles2)
+            m_overrideDefines += "#define LEGACY_GLES2 1\n";
+        // External textures use the same blur blend on GLES2.
+        const bool legacyExternal = m_gles2 && frag == SH_FRAG_EXT;
+        if (legacyExternal)
+            m_overrideDefines += "#define LEGACY_EXTERNAL 1\n";
+        auto source       = processSource(m_fragFiles[legacyExternal ? SH_FRAG_SURFACE : frag]);
         m_overrideDefines = "";
 
         if (m_gles2) {

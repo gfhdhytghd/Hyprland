@@ -398,7 +398,7 @@ CHyprOpenGLImpl::CHyprOpenGLImpl() : m_drmFD(g_pCompositor->m_drmRenderNode.fd >
         m_eglContextVersion = EGL_CONTEXT_GLES_2_0;
 
     if (isLegacy()) {
-        LOG(Log::WARN, "Running the legacy GLES2 renderer: blur, color management, HDR, FP16, ICC profiles and the unmodified copy are unavailable");
+        LOG(Log::WARN, "Running the legacy GLES2 renderer: color management, HDR, FP16, ICC profiles and the unmodified copy are unavailable");
 
         RASSERT(m_extensions.contains("GL_OES_vertex_array_object"), "The legacy renderer requires GL_OES_vertex_array_object");
         RASSERT(m_extensions.contains("GL_EXT_unpack_subimage"), "The legacy renderer requires GL_EXT_unpack_subimage");
@@ -1467,11 +1467,16 @@ WP<CShader> CHyprOpenGLImpl::renderToFBInternal(CRenderContext& ctx, SP<ITexture
         case TEXTURE_RGBX: shaderFeatures &= ~SH_FEAT_RGBA; break;
 
         // TODO set correct features
-        case TEXTURE_EXTERNAL: shader = getShaderVariant(SH_FRAG_EXT, SH_FEAT_ROUNDING | SH_FEAT_DISCARD | SH_FEAT_TINT | globalFeatures(ctx)); break; // might be unused
+        case TEXTURE_EXTERNAL:
+            if (isLegacy())
+                shaderFeatures |= SH_FEAT_RGBA;
+            else
+                shader = getShaderVariant(SH_FRAG_EXT, SH_FEAT_ROUNDING | SH_FEAT_DISCARD | SH_FEAT_TINT | globalFeatures(ctx));
+            break;
         default: RASSERT(false, "tex->m_iTarget unsupported!");
     }
 
-    if (texType == TEXTURE_EXTERNAL && !shader)
+    if (texType == TEXTURE_EXTERNAL && !isLegacy() && !shader)
         return nullptr;
 
     if (data.finalMonitorCM || (ctx.m_data.currentWindow && ctx.m_data.currentWindow->m_ruleApplicator->RGBX().valueOrDefault()))
@@ -1518,10 +1523,10 @@ WP<CShader> CHyprOpenGLImpl::renderToFBInternal(CRenderContext& ctx, SP<ITexture
         return WORK_BUFFER_IMAGE_DESCRIPTION;
     }();
 
-    if (data.blur && data.blurredBG && (*PBLEND || data.forceBlurBlend))
+    if (data.blur && data.blurredBG && (isLegacy() || *PBLEND || data.forceBlurBlend))
         shaderFeatures |= SH_FEAT_BLUR;
 
-    if (data.blur && data.blurredBG && data.blurAlphaMatte && (*PBLEND || data.forceBlurBlend))
+    if (data.blur && data.blurredBG && data.blurAlphaMatte && (isLegacy() || *PBLEND || data.forceBlurBlend))
         shaderFeatures |= SH_FEAT_BLUR_MATTE;
 
     if (data.forceBlurBlend)
@@ -1578,7 +1583,7 @@ WP<CShader> CHyprOpenGLImpl::renderToFBInternal(CRenderContext& ctx, SP<ITexture
         passCMUniforms(shader, SOURCE_IMAGE_DESCRIPTION, TARGET_IMAGE_DESCRIPTION, true, ctx.m_data.pMonitor->m_sdrMinLuminance, settings);
     } else {
         if (!shader)
-            shader = getShaderVariant(SH_FRAG_SURFACE, shaderFeatures | globalFeatures(ctx));
+            shader = getShaderVariant(isLegacy() && texType == TEXTURE_EXTERNAL ? SH_FRAG_EXT : SH_FRAG_SURFACE, shaderFeatures | globalFeatures(ctx));
         shader = useShader(shader);
         if (!shader)
             return nullptr;
@@ -1932,7 +1937,7 @@ void CHyprOpenGLImpl::renderTextureWithBlurInternal(CRenderContext& ctx, SP<ITex
 
     static auto PBLEND        = CConfigValue<Config::INTEGER>("render:use_shader_blur_blend");
     const auto  NEEDS_STENCIL = data.discardMode != 0 && (!data.blockBlurOptimization || (data.discardMode & DISCARD_ALPHA));
-    const bool  SHADERBLEND   = *PBLEND || data.forceBlurBlend;
+    const bool  SHADERBLEND   = isLegacy() || *PBLEND || data.forceBlurBlend;
     if (!SHADERBLEND && data.blurredBG) {
 
         if (NEEDS_STENCIL) {
@@ -2023,17 +2028,55 @@ void CHyprOpenGLImpl::renderTextureWithBlurInternal(CRenderContext& ctx, SP<ITex
             setCapStatus(GL_STENCIL_TEST, false);
     }
 
+    CRegion blurClipRegion = data.clipRegion;
+    if (isLegacy()) {
+        const auto surface = Desktop::View::CWLSurface::fromResource(data.surface);
+        if (surface && surface->m_hasBackgroundEffect && !surface->m_blurRegion.empty()) {
+            CRegion protocolBlur = surface->m_blurRegion.copy();
+            protocolBlur.intersect(CBox{0, 0, box.width, box.height});
+            protocolBlur.scale(m_renderData.pMonitor->m_scale);
+            protocolBlur.translate(box.pos());
+            m_renderData.renderModif.applyToRegion(protocolBlur);
+
+            // Draw the rest of the surface without blur, preserving protocol clipping.
+            CRegion surfaceClip = data.damage->copy();
+            if (!data.clipRegion.empty())
+                surfaceClip.intersect(data.clipRegion);
+            CRegion unblurred = surfaceClip.copy().subtract(protocolBlur);
+            if (!unblurred.empty()) {
+                auto plain          = data;
+                plain.blur          = false;
+                plain.discardActive = false;
+                plain.allowDim      = true;
+                plain.allowCustomUV = true;
+                plain.noAA          = false;
+                plain.a             = data.a * data.overallA;
+                plain.clipRegion    = unblurred;
+                renderTextureInternal(ctx, tex, box, plain);
+            }
+            blurClipRegion = surfaceClip.intersect(protocolBlur);
+            if (blurClipRegion.empty()) {
+                disableScissor();
+                return;
+            }
+        }
+    }
+
+    static auto PBLURIGNOREOPACITY = CConfigValue<Config::INTEGER>("decoration:blur:ignore_opacity");
+    const float blurAlpha          = isLegacy() ? (*PBLURIGNOREOPACITY ? data.blurA : data.a * data.blurA) * data.overallA : 1.F;
+
     // draw window
     renderTextureInternal(ctx, tex, box,
                           STextureRenderData{
                               .blur           = SHADERBLEND,
+                              .blurA          = blurAlpha,
                               .blurredBG      = data.blurredBG,
                               .blurAlphaMatte = data.blurAlphaMatte,
                               .damage         = data.damage,
                               .a              = data.a * data.overallA,
                               .round          = data.round,
                               .roundingPower  = data.roundingPower,
-                              .discardActive  = SHADERBLEND && NEEDS_STENCIL,
+                              .discardActive  = SHADERBLEND && NEEDS_STENCIL && (!isLegacy() || data.blurredBG),
                               .allowCustomUV  = true,
                               .allowDim       = true,
                               .noAA           = false,
@@ -2041,7 +2084,7 @@ void CHyprOpenGLImpl::renderTextureWithBlurInternal(CRenderContext& ctx, SP<ITex
                               .wrapY          = data.wrapY,
                               .discardMode    = data.discardMode,
                               .discardOpacity = data.discardOpacity,
-                              .clipRegion     = data.clipRegion,
+                              .clipRegion     = blurClipRegion,
                               .currentLS      = data.currentLS,
 
                               .primarySurfaceUVTopLeft     = ctx.m_data.primarySurfaceUVTopLeft,
