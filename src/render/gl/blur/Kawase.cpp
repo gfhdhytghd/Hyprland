@@ -153,7 +153,7 @@ SP<CGLFramebuffer> CDualKawaseBlurProvider::blurGL(CRenderContext& ctx, SP<CGLFr
         shader->setUniformFloat(SHADER_BRIGHTNESS, *PBLURBRIGHTNESS);
         shader->setUniformInt(SHADER_TEX, 0);
 
-        glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
+        g_pHyprOpenGL->m_proc.glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
 
         if (!workingDamage.empty()) {
             workingDamage.forEachRect([this, &ctx](const auto& RECT) {
@@ -162,7 +162,7 @@ SP<CGLFramebuffer> CDualKawaseBlurProvider::blurGL(CRenderContext& ctx, SP<CGLFr
             });
         }
 
-        glBindVertexArray(0);
+        g_pHyprOpenGL->m_proc.glBindVertexArray(0);
         currentRenderToFB = PPREPAREDFB;
     }
 
@@ -190,7 +190,7 @@ SP<CGLFramebuffer> CDualKawaseBlurProvider::blurGL(CRenderContext& ctx, SP<CGLFr
             shader->setUniformFloat2(SHADER_HALFPIXEL, 0.5f / (m_renderData.pMonitor->m_transformedSize.x * 2.f), 0.5f / (m_renderData.pMonitor->m_transformedSize.y * 2.f));
         shader->setUniformInt(SHADER_TEX, 0);
 
-        glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
+        g_pHyprOpenGL->m_proc.glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
 
         if (!passDamage->empty()) {
             passDamage->forEachRect([this, &ctx](const auto& RECT) {
@@ -199,7 +199,7 @@ SP<CGLFramebuffer> CDualKawaseBlurProvider::blurGL(CRenderContext& ctx, SP<CGLFr
             });
         }
 
-        glBindVertexArray(0);
+        g_pHyprOpenGL->m_proc.glBindVertexArray(0);
 
         if (currentRenderToFB != PMIRRORFB)
             currentRenderToFB = PMIRRORFB;
@@ -278,7 +278,7 @@ SP<CGLFramebuffer> CDualKawaseBlurProvider::blurGL(CRenderContext& ctx, SP<CGLFr
             shader->setUniformInt(SHADER_SHARP_TEX, 1);
         m_material->bindFinish(ctx, shader, materialContext);
 
-        glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
+        g_pHyprOpenGL->m_proc.glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
 
         if (!outputDamage.empty()) {
             outputDamage.forEachRect([this, &ctx](const auto& RECT) {
@@ -287,7 +287,7 @@ SP<CGLFramebuffer> CDualKawaseBlurProvider::blurGL(CRenderContext& ctx, SP<CGLFr
             });
         }
 
-        glBindVertexArray(0);
+        g_pHyprOpenGL->m_proc.glBindVertexArray(0);
 
         if (currentRenderToFB != PMIRRORFB)
             currentRenderToFB = PMIRRORFB;

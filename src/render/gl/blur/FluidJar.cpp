@@ -392,9 +392,9 @@ void CFluidJarBlurMaterial::drawInitialize(CRenderContext& ctx, const SState& st
     shader->setUniformFloat2(SHADER_FLUIDJAR_RESOLUTION, state.simulationSize.x, state.simulationSize.y);
     shader->setUniformFloat2(SHADER_FLUIDJAR_GRID_SIZE, state.gridSize.x, state.gridSize.y);
     shader->setUniformInt(SHADER_FLUIDJAR_PARTICLE_COUNT, state.particleCount);
-    glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
+    g_pHyprOpenGL->m_proc.glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    glBindVertexArray(0);
+    g_pHyprOpenGL->m_proc.glBindVertexArray(0);
 }
 
 void CFluidJarBlurMaterial::drawResample(CRenderContext& ctx, const SState& state, SP<CGLFramebuffer> source, SP<CGLFramebuffer> target, const Vector2D& oldGridSize,
@@ -416,9 +416,9 @@ void CFluidJarBlurMaterial::drawResample(CRenderContext& ctx, const SState& stat
     shader->setUniformFloat2(SHADER_FLUIDJAR_VELOCITY_SCALE, transform.velocityScale.x, transform.velocityScale.y);
     shader->setUniformFloat4(SHADER_FLUIDJAR_WALL_VELOCITIES, wallVelocities[0], wallVelocities[1], wallVelocities[2], wallVelocities[3]);
     shader->setUniformFloat(SHADER_FLUIDJAR_MASS, std::clamp(*PFLUIDMASS, 0.1F, 10.F));
-    glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
+    g_pHyprOpenGL->m_proc.glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    glBindVertexArray(0);
+    g_pHyprOpenGL->m_proc.glBindVertexArray(0);
 }
 
 void CFluidJarBlurMaterial::drawHistoryResample(CRenderContext& ctx, SP<CGLFramebuffer> source, SP<CGLFramebuffer> target, const Vector2D& oldSize,
@@ -439,9 +439,9 @@ void CFluidJarBlurMaterial::drawHistoryResample(CRenderContext& ctx, SP<CGLFrame
     shader->setUniformFloat2(SHADER_FLUIDJAR_OLD_RESOLUTION, oldSize.x, oldSize.y);
     shader->setUniformFloat4(SHADER_FLUIDJAR_HISTORY_TRANSFORM, inverseScale.x, inverseScale.y, inverseOffset.x, inverseOffset.y);
     shader->setUniformFloat4(SHADER_FLUIDJAR_HISTORY_FALLBACK, fallback[0], fallback[1], fallback[2], fallback[3]);
-    glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
+    g_pHyprOpenGL->m_proc.glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    glBindVertexArray(0);
+    g_pHyprOpenGL->m_proc.glBindVertexArray(0);
 }
 
 void CFluidJarBlurMaterial::drawParticleStep(CRenderContext& ctx, SState& state, float dt) const {
@@ -463,9 +463,9 @@ void CFluidJarBlurMaterial::drawParticleStep(CRenderContext& ctx, SState& state,
     shader->setUniformFloat(SHADER_FLUIDJAR_DT, dt);
     shader->setUniformFloat(SHADER_FLUIDJAR_MASS, std::clamp(*PFLUIDMASS, 0.1F, 10.F));
     shader->setUniformFloat4(SHADER_FLUIDJAR_WALL_VELOCITIES, state.wallVelocities[0], state.wallVelocities[1], state.wallVelocities[2], state.wallVelocities[3]);
-    glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
+    g_pHyprOpenGL->m_proc.glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    glBindVertexArray(0);
+    g_pHyprOpenGL->m_proc.glBindVertexArray(0);
     state.currentParticles = 1 - state.currentParticles;
 }
 
@@ -483,9 +483,9 @@ void CFluidJarBlurMaterial::drawGraphStep(CRenderContext& ctx, SState& state) co
     shader->setUniformFloat2(SHADER_FLUIDJAR_GRID_SIZE, state.gridSize.x, state.gridSize.y);
     shader->setUniformInt(SHADER_FLUIDJAR_PARTICLE_COUNT, state.particleCount);
     shader->setUniformInt(SHADER_FLUIDJAR_FRAME, sc<int>(state.simulationFrame));
-    glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
+    g_pHyprOpenGL->m_proc.glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    glBindVertexArray(0);
+    g_pHyprOpenGL->m_proc.glBindVertexArray(0);
     state.currentGraph = 1 - state.currentGraph;
 }
 
@@ -505,9 +505,9 @@ void CFluidJarBlurMaterial::drawTrackingStep(CRenderContext& ctx, SState& state)
     shader->setUniformFloat2(SHADER_FLUIDJAR_GRID_SIZE, state.gridSize.x, state.gridSize.y);
     shader->setUniformInt(SHADER_FLUIDJAR_PARTICLE_COUNT, state.particleCount);
     shader->setUniformInt(SHADER_FLUIDJAR_FRAME, sc<int>(state.simulationFrame));
-    glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
+    g_pHyprOpenGL->m_proc.glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    glBindVertexArray(0);
+    g_pHyprOpenGL->m_proc.glBindVertexArray(0);
     state.currentTracking = 1 - state.currentTracking;
 }
 
@@ -524,9 +524,9 @@ void CFluidJarBlurMaterial::drawTrackingResample(CRenderContext& ctx, SP<CGLFram
     shader->setUniformInt(SHADER_FLUIDJAR_HISTORY_TEX, 0);
     shader->setUniformFloat2(SHADER_FLUIDJAR_OLD_RESOLUTION, oldSize.x, oldSize.y);
     shader->setUniformFloat4(SHADER_FLUIDJAR_HISTORY_TRANSFORM, inverseScale.x, inverseScale.y, inverseOffset.x, inverseOffset.y);
-    glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
+    g_pHyprOpenGL->m_proc.glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    glBindVertexArray(0);
+    g_pHyprOpenGL->m_proc.glBindVertexArray(0);
 }
 
 void CFluidJarBlurMaterial::drawVisualStep(CRenderContext& ctx, SState& state, int steps) const {
@@ -547,9 +547,9 @@ void CFluidJarBlurMaterial::drawVisualStep(CRenderContext& ctx, SState& state, i
     shader->setUniformFloat2(SHADER_FLUIDJAR_GRID_SIZE, state.gridSize.x, state.gridSize.y);
     shader->setUniformInt(SHADER_FLUIDJAR_PARTICLE_COUNT, state.particleCount);
     shader->setUniformFloat(SHADER_FLUIDJAR_VISUAL_RESPONSE, sc<float>(std::max(steps, 1)));
-    glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
+    g_pHyprOpenGL->m_proc.glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    glBindVertexArray(0);
+    g_pHyprOpenGL->m_proc.glBindVertexArray(0);
     state.currentVisual = 1 - state.currentVisual;
     glActiveTexture(GL_TEXTURE0);
 }

@@ -307,8 +307,8 @@ void CShader::getUniformLocations() {
 void CShader::createVao() {
     GLuint shaderVao = 0, shaderVbo = 0, shaderUvVao = 0, shaderUvVbo = 0;
 
-    glGenVertexArrays(1, &shaderVao);
-    glBindVertexArray(shaderVao);
+    g_pHyprOpenGL->m_proc.glGenVertexArrays(1, &shaderVao);
+    g_pHyprOpenGL->m_proc.glBindVertexArray(shaderVao);
 
     if (m_uniformLocations[SHADER_POS_ATTRIB] != -1) {
         glGenBuffers(1, &shaderVbo);
@@ -327,8 +327,8 @@ void CShader::createVao() {
 
     // second, streamed pair, only bound by draws that override the UVs
     if (m_uniformLocations[SHADER_TEX_ATTRIB] != -1 && shaderVbo != 0) {
-        glGenVertexArrays(1, &shaderUvVao);
-        glBindVertexArray(shaderUvVao);
+        g_pHyprOpenGL->m_proc.glGenVertexArrays(1, &shaderUvVao);
+        g_pHyprOpenGL->m_proc.glBindVertexArray(shaderUvVao);
 
         glGenBuffers(1, &shaderUvVbo);
         g_pHyprOpenGL->bindArrayBuffer(shaderUvVbo);
@@ -339,7 +339,7 @@ void CShader::createVao() {
         glVertexAttribPointer(m_uniformLocations[SHADER_TEX_ATTRIB], 2, GL_FLOAT, GL_FALSE, sizeof(SVertex), (void*)offsetof(SVertex, u));
     }
 
-    glBindVertexArray(0);
+    g_pHyprOpenGL->m_proc.glBindVertexArray(0);
     g_pHyprOpenGL->bindArrayBuffer(0);
 
     m_uniformLocations[SHADER_SHADER_VAO]    = shaderVao;
@@ -444,10 +444,21 @@ void CShader::setUniformMatrix3fv(eShaderUniform location, GLsizei count, GLbool
     }
 
     cached = SUniformMatrix3Data{.count = count, .transpose = transpose, .value = value};
+    if (g_pHyprOpenGL->isLegacy() && transpose) {
+        for (size_t row = 0; row < 3; ++row) {
+            for (size_t col = row + 1; col < 3; ++col)
+                std::swap(value[row * 3 + col], value[col * 3 + row]);
+        }
+        transpose = GL_FALSE;
+    }
     GLCALL(glUniformMatrix3fv(m_uniformLocations[location], count, transpose, value.data()));
 }
 
 void CShader::setUniformMatrix4x2fv(eShaderUniform location, GLsizei count, GLboolean transpose, std::array<GLfloat, 8> value) {
+    // Non-square matrices have no GLES2 uniform type.
+    if (g_pHyprOpenGL->isLegacy())
+        return;
+
     if (m_uniformLocations.at(location) == -1)
         return;
 
@@ -512,13 +523,13 @@ void CShader::destroy() {
     g_pHyprOpenGL->bindArrayBuffer(0);
 
     if (shaderVao)
-        glDeleteVertexArrays(1, &shaderVao);
+        g_pHyprOpenGL->m_proc.glDeleteVertexArrays(1, &shaderVao);
 
     if (shaderVbo)
         glDeleteBuffers(1, &shaderVbo);
 
     if (shaderUvVao)
-        glDeleteVertexArrays(1, &shaderUvVao);
+        g_pHyprOpenGL->m_proc.glDeleteVertexArrays(1, &shaderUvVao);
 
     if (shaderUvVbo)
         glDeleteBuffers(1, &shaderUvVbo);

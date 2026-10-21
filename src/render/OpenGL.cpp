@@ -7,8 +7,10 @@
 #include <hyprutils/path/Path.hpp>
 #include <numbers>
 #include <random>
+#include <regex>
 #include <pango/pangocairo.h>
 #include "OpenGL.hpp"
+#include <hyprgraphics/egl/Egl.hpp>
 #include "../desktop/view/window/WindowPresentation.hpp"
 #include "Renderer.hpp"
 #include "../Compositor.hpp"
@@ -222,9 +224,23 @@ void CHyprOpenGLImpl::initEGL(bool gbm) {
 
         m_eglContext        = eglCreateContext(m_eglDisplay, EGL_NO_CONFIG_KHR, EGL_NO_CONTEXT, attrs.data());
         m_eglContextVersion = EGL_CONTEXT_GLES_3_0;
+    }
+
+    if (m_eglContext == EGL_NO_CONTEXT) {
+        LOG(Log::WARN, "EGL: Failed to create a context with GLES3.0, retrying 2.0 (legacy renderer)");
+
+        attrs = attrsNoVer;
+        attrs.push_back(EGL_CONTEXT_MAJOR_VERSION);
+        attrs.push_back(2);
+        attrs.push_back(EGL_CONTEXT_MINOR_VERSION);
+        attrs.push_back(0);
+        attrs.push_back(EGL_NONE);
+
+        m_eglContext        = eglCreateContext(m_eglDisplay, EGL_NO_CONFIG_KHR, EGL_NO_CONTEXT, attrs.data());
+        m_eglContextVersion = EGL_CONTEXT_GLES_2_0;
 
         if (m_eglContext == EGL_NO_CONTEXT)
-            RASSERT(false, "EGL: failed to create a context with either GLES3.2 or 3.0");
+            RASSERT(false, "EGL: failed to create a context with GLES3.2, 3.0 or 2.0");
     }
 
     if (m_exts.IMG_context_priority) {
@@ -375,6 +391,27 @@ CHyprOpenGLImpl::CHyprOpenGLImpl() : m_drmFD(g_pCompositor->m_drmRenderNode.fd >
     m_exts.EXT_color_buffer_half_float = m_extensions.contains("GL_EXT_color_buffer_half_float") || m_extensions.contains("GL_EXT_color_buffer_float");
 
     RASSERT(m_extensions.contains("GL_EXT_texture_format_BGRA8888"), "GL_EXT_texture_format_BGRA8888 support by the GPU driver is required");
+
+    // a GLES2 request can still get a newer, compatible context, so go by what the driver created
+    GLint glMajor = 0;
+    if (const auto VERSION = rc<const char*>(glGetString(GL_VERSION)); VERSION && std::sscanf(VERSION, "OpenGL ES %d", &glMajor) == 1 && glMajor < 3)
+        m_eglContextVersion = EGL_CONTEXT_GLES_2_0;
+
+    if (isLegacy()) {
+        LOG(Log::WARN, "Running the legacy GLES2 renderer: color management, HDR, FP16, ICC profiles and the unmodified copy are unavailable");
+
+        RASSERT(m_extensions.contains("GL_OES_vertex_array_object"), "The legacy renderer requires GL_OES_vertex_array_object");
+        RASSERT(m_extensions.contains("GL_EXT_unpack_subimage"), "The legacy renderer requires GL_EXT_unpack_subimage");
+        loadGLProc(&m_proc.glGenVertexArrays, "glGenVertexArraysOES");
+        loadGLProc(&m_proc.glBindVertexArray, "glBindVertexArrayOES");
+        loadGLProc(&m_proc.glDeleteVertexArrays, "glDeleteVertexArraysOES");
+
+        m_exts.EXT_discard_framebuffer = m_extensions.contains("GL_EXT_discard_framebuffer");
+    } else {
+        m_proc.glGenVertexArrays    = ::glGenVertexArrays;
+        m_proc.glBindVertexArray    = ::glBindVertexArray;
+        m_proc.glDeleteVertexArrays = ::glDeleteVertexArrays;
+    }
 
     if (!m_exts.EXT_read_format_bgra)
         LOG(Log::WARN, "Your GPU does not support GL_EXT_read_format_bgra, this may cause issues with texture importing");
@@ -620,7 +657,8 @@ void CHyprOpenGLImpl::initDRMFormats() {
     m_drmFormats = dmaFormats;
 
     // FP16 needs both a half float renderable color buffer and the drm format
-    m_fp16Supported = m_exts.EXT_color_buffer_half_float && std::ranges::any_of(m_drmFormats, [](const auto& fmt) { return fmt.drmFormat == DRM_FORMAT_ABGR16161616F; });
+    m_fp16Supported =
+        !isLegacy() && m_exts.EXT_color_buffer_half_float && std::ranges::any_of(m_drmFormats, [](const auto& fmt) { return fmt.drmFormat == DRM_FORMAT_ABGR16161616F; });
 
     if (!m_fp16Supported)
         LOG(Log::WARN, "Your GPU does not support rendering to FP16 buffers, some effects and CM settings might be unavailable.");
@@ -683,7 +721,7 @@ EGLImageKHR CHyprOpenGLImpl::createEGLImage(const Aquamarine::SDMABUFAttrs& attr
 void CHyprOpenGLImpl::beginSimple(CRenderContext& ctx, PHLMONITOR pMonitor, const CRegion& damage, SP<IRenderbuffer> rb, SP<IFramebuffer> fb) {
     ctx.m_data.pMonitor = pMonitor;
 
-    const GLenum RESETSTATUS = glGetGraphicsResetStatus();
+    const GLenum RESETSTATUS = isLegacy() ? GL_NO_ERROR : glGetGraphicsResetStatus();
     if (RESETSTATUS != GL_NO_ERROR) {
         std::string errStr = "";
         switch (RESETSTATUS) {
@@ -729,7 +767,7 @@ void CHyprOpenGLImpl::makeEGLCurrent() {
 bool CHyprOpenGLImpl::begin(CRenderContext& ctx, PHLMONITOR pMonitor, const CRegion& damage_, SP<IFramebuffer> fb, std::optional<CRegion> finalDamage) {
     ctx.m_data.pMonitor = pMonitor;
 
-    const GLenum RESETSTATUS = glGetGraphicsResetStatus();
+    const GLenum RESETSTATUS = isLegacy() ? GL_NO_ERROR : glGetGraphicsResetStatus();
     if (RESETSTATUS != GL_NO_ERROR) {
         std::string errStr = "";
         switch (RESETSTATUS) {
@@ -940,58 +978,17 @@ void CHyprOpenGLImpl::end(CRenderContext& ctx) {
     }
 }
 
-static const std::vector<std::string> SHADER_INCLUDES = {
-    "defines.h",       "constants.h",      "cm_helpers.glsl", "rounding.glsl", "CM.glsl",         "tonemap.glsl",     "gain.glsl",     "border.glsl",      "shadow.glsl",
-    "inner_glow.glsl", "blurprepare.glsl", "blur1.glsl",      "blur2.glsl",    "blurFinish.glsl", "motion_blur.glsl", "gradient.glsl", "glassFinish.glsl", "fluidJar.glsl",
-};
-
-// order matters, see ePreparedFragmentShader
-const std::array<std::string, SH_FRAG_LAST> FRAG_SHADERS = {
-    "quad.frag",
-    "passthru.frag",
-    "rgbamatte.frag",
-    "ext.frag",
-    "blur1.frag",
-    "blur2.frag",
-    "blurprepare.frag",
-    "blurfinish.frag",
-    "shadow.frag",
-    "inner_glow.frag",
-    "surface.frag",
-    "border.frag",
-    "glitch.frag",
-    "frostfinish.frag",
-    "ripplefinish.frag",
-    "dropsfinish.frag",
-    "waterstep.frag",
-    "waterfinish.frag",
-    "fluidjarinit.frag",
-    "fluidjarstep.frag",
-    "fluidjargraph.frag",
-    "fluidjartrack.frag",
-    "fluidjarvisual.frag",
-    "fluidjarresample.frag",
-    "fluidjarhistoryresample.frag",
-    "fluidjartrackingresample.frag",
-    "fluidjarfinish.frag",
-    "prismfinish.frag",
-    "heatshimmerfinish.frag",
-    "acrylicfinish.frag",
-    "aurorafinish.frag",
-    "hazefinish.frag",
-};
-
 bool CHyprOpenGLImpl::initShaders(const std::string& path) {
     auto              shaders = makeShared<SPreparedShaders>();
     static const auto PCM     = CConfigValue<Config::INTEGER>("render:cm_enabled");
 
     try {
-        auto shaderLoader = makeUnique<CShaderLoader>(SHADER_INCLUDES, FRAG_SHADERS, path);
+        auto shaderLoader = makeUnique<CShaderLoader>(SHADER_INCLUDES, FRAG_SHADERS, path, isLegacy());
 
         shaders->TEXVERTSRC    = shaderLoader->process("tex300.vert");
         shaders->TEXVERTSRC320 = shaderLoader->process("tex320.vert");
 
-        m_cmSupported = *PCM;
+        m_cmSupported = *PCM && !isLegacy();
 
         g_pShaderLoader = std::move(shaderLoader);
 
@@ -1038,6 +1035,16 @@ void CHyprOpenGLImpl::applyScreenShader(const std::string& path) {
     }
 
     std::string fragmentShader((std::istreambuf_iterator<char>(infile)), (std::istreambuf_iterator<char>()));
+
+    if (isLegacy()) {
+        // Strip comments before checking the version directive.
+        const auto  source = std::regex_replace(fragmentShader, std::regex(R"(/\*[\s\S]*?\*/|//[^\n]*)"), "");
+        std::smatch version;
+        if (std::regex_search(source, version, std::regex(R"(#\s*version\s+([^\r\n]+))")) && Hyprutils::String::trim(version[1].str()) != "100") {
+            ErrorOverlay::overlay()->queueError("Screen shader: the legacy GLES2 renderer requires GLSL ES 1.00 (#version 100 or no #version)");
+            return;
+        }
+    }
 
     if (!m_finalScreenShader->createProgram(              //
             fragmentShader.starts_with("#version 320 es") // do not break existing custom shaders
@@ -1089,6 +1096,16 @@ void CHyprOpenGLImpl::blend(bool enabled) {
         setCapStatus(GL_BLEND, false);
 
     m_blend = enabled;
+}
+
+bool CHyprOpenGLImpl::isLegacy() const {
+    return m_eglContextVersion == EGL_CONTEXT_GLES_2_0;
+}
+
+GLint CHyprOpenGLImpl::textureInternalFormat(const Hyprgraphics::Egl::SPixelFormat* format) const {
+    if (isLegacy() || !format->glInternalFormat)
+        return format->glFormat;
+    return format->glInternalFormat;
 }
 
 bool CHyprOpenGLImpl::blendEnabled() const {
@@ -1239,7 +1256,7 @@ void CHyprOpenGLImpl::renderRectWithDamageInternal(CRenderContext& ctx, const CB
     shader->setUniformFloat(SHADER_RADIUS, data.round);
     shader->setUniformFloat(SHADER_ROUNDING_POWER, data.roundingPower);
 
-    glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
+    g_pHyprOpenGL->m_proc.glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
 
     if (ctx.m_data.clipBox.width != 0 && ctx.m_data.clipBox.height != 0) {
         CRegion damageClip{ctx.m_data.clipBox.x, ctx.m_data.clipBox.y, ctx.m_data.clipBox.width, ctx.m_data.clipBox.height};
@@ -1258,7 +1275,7 @@ void CHyprOpenGLImpl::renderRectWithDamageInternal(CRenderContext& ctx, const CB
         });
     }
 
-    glBindVertexArray(0);
+    g_pHyprOpenGL->m_proc.glBindVertexArray(0);
     disableScissor();
 }
 
@@ -1450,11 +1467,16 @@ WP<CShader> CHyprOpenGLImpl::renderToFBInternal(CRenderContext& ctx, SP<ITexture
         case TEXTURE_RGBX: shaderFeatures &= ~SH_FEAT_RGBA; break;
 
         // TODO set correct features
-        case TEXTURE_EXTERNAL: shader = getShaderVariant(SH_FRAG_EXT, SH_FEAT_ROUNDING | SH_FEAT_DISCARD | SH_FEAT_TINT | globalFeatures(ctx)); break; // might be unused
+        case TEXTURE_EXTERNAL:
+            if (isLegacy())
+                shaderFeatures |= SH_FEAT_RGBA;
+            else
+                shader = getShaderVariant(SH_FRAG_EXT, SH_FEAT_ROUNDING | SH_FEAT_DISCARD | SH_FEAT_TINT | globalFeatures(ctx));
+            break;
         default: RASSERT(false, "tex->m_iTarget unsupported!");
     }
 
-    if (texType == TEXTURE_EXTERNAL && !shader)
+    if (texType == TEXTURE_EXTERNAL && !isLegacy() && !shader)
         return nullptr;
 
     if (data.finalMonitorCM || (ctx.m_data.currentWindow && ctx.m_data.currentWindow->m_ruleApplicator->RGBX().valueOrDefault()))
@@ -1501,10 +1523,10 @@ WP<CShader> CHyprOpenGLImpl::renderToFBInternal(CRenderContext& ctx, SP<ITexture
         return WORK_BUFFER_IMAGE_DESCRIPTION;
     }();
 
-    if (data.blur && data.blurredBG && (*PBLEND || data.forceBlurBlend))
+    if (data.blur && data.blurredBG && (isLegacy() || *PBLEND || data.forceBlurBlend))
         shaderFeatures |= SH_FEAT_BLUR;
 
-    if (data.blur && data.blurredBG && data.blurAlphaMatte && (*PBLEND || data.forceBlurBlend))
+    if (data.blur && data.blurredBG && data.blurAlphaMatte && (isLegacy() || *PBLEND || data.forceBlurBlend))
         shaderFeatures |= SH_FEAT_BLUR_MATTE;
 
     if (data.forceBlurBlend)
@@ -1561,7 +1583,7 @@ WP<CShader> CHyprOpenGLImpl::renderToFBInternal(CRenderContext& ctx, SP<ITexture
         passCMUniforms(shader, SOURCE_IMAGE_DESCRIPTION, TARGET_IMAGE_DESCRIPTION, true, ctx.m_data.pMonitor->m_sdrMinLuminance, settings);
     } else {
         if (!shader)
-            shader = getShaderVariant(SH_FRAG_SURFACE, shaderFeatures | globalFeatures(ctx));
+            shader = getShaderVariant(isLegacy() && texType == TEXTURE_EXTERNAL ? SH_FRAG_EXT : SH_FRAG_SURFACE, shaderFeatures | globalFeatures(ctx));
         shader = useShader(shader);
         if (!shader)
             return nullptr;
@@ -1695,7 +1717,7 @@ void CHyprOpenGLImpl::renderTextureInternal(CRenderContext& ctx, SP<ITexture> te
     const GLint CUSTOM_VAO = shader->getUniformLocation(SHADER_SHADER_UV_VAO);
 
     if (CUSTOMUV && CUSTOM_VAO) {
-        GLCALL(glBindVertexArray(CUSTOM_VAO));
+        GLCALL(g_pHyprOpenGL->m_proc.glBindVertexArray(CUSTOM_VAO));
         bindArrayBuffer(shader->getUniformLocation(SHADER_SHADER_UV_VBO));
 
         // Keep the old block available to previous draws while custom UVs update.
@@ -1719,7 +1741,7 @@ void CHyprOpenGLImpl::renderTextureInternal(CRenderContext& ctx, SP<ITexture> te
 
         glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(verts), verts.data());
     } else
-        GLCALL(glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO)));
+        GLCALL(g_pHyprOpenGL->m_proc.glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO)));
 
     if (!ctx.m_data.clipBox.empty() || !data.clipRegion.empty()) {
         CRegion damageClip = ctx.m_data.clipBox;
@@ -1746,7 +1768,7 @@ void CHyprOpenGLImpl::renderTextureInternal(CRenderContext& ctx, SP<ITexture> te
         });
     }
 
-    GLCALL(glBindVertexArray(0));
+    GLCALL(g_pHyprOpenGL->m_proc.glBindVertexArray(0));
     bindArrayBuffer(0);
     tex->unbind();
 }
@@ -1788,7 +1810,7 @@ void CHyprOpenGLImpl::renderTextureMesh(CRenderContext& ctx, SP<ITexture> tex, c
 
     shader->setUniformMatrix3fv(SHADER_PROJ, 1, GL_TRUE, glMatrix.getMatrix());
     shader->setUniformInt(SHADER_TEX, 0);
-    GLCALL(glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_UV_VAO)));
+    GLCALL(g_pHyprOpenGL->m_proc.glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_UV_VAO)));
     bindArrayBuffer(shader->getUniformLocation(SHADER_SHADER_UV_VBO));
 
     glBufferData(GL_ARRAY_BUFFER, sizeof(SMeshRenderVertex) * vertices.size(), nullptr, GL_DYNAMIC_DRAW);
@@ -1817,7 +1839,7 @@ void CHyprOpenGLImpl::renderTextureMesh(CRenderContext& ctx, SP<ITexture> tex, c
         });
     }
 
-    GLCALL(glBindVertexArray(0));
+    GLCALL(g_pHyprOpenGL->m_proc.glBindVertexArray(0));
     bindArrayBuffer(0);
     tex->unbind();
 }
@@ -1857,7 +1879,7 @@ void CHyprOpenGLImpl::renderTexturePrimitive(CRenderContext& ctx, SP<ITexture> t
     }
     shader->setUniformMatrix3fv(SHADER_PROJ, 1, GL_TRUE, glMatrix.getMatrix());
     shader->setUniformInt(SHADER_TEX, 0);
-    glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
+    g_pHyprOpenGL->m_proc.glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
 
     ctx.m_data.damage.forEachRect([this, &ctx](const auto& RECT) {
         scissor(ctx, &RECT, ctx.m_data.transformDamage);
@@ -1865,7 +1887,7 @@ void CHyprOpenGLImpl::renderTexturePrimitive(CRenderContext& ctx, SP<ITexture> t
     });
 
     disableScissor();
-    glBindVertexArray(0);
+    g_pHyprOpenGL->m_proc.glBindVertexArray(0);
     tex->unbind();
 }
 
@@ -1895,7 +1917,7 @@ void CHyprOpenGLImpl::renderTextureMatte(CRenderContext& ctx, SP<ITexture> tex, 
     auto matteTex = matte->getTexture();
     matteTex->bind();
 
-    glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
+    g_pHyprOpenGL->m_proc.glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
 
     ctx.m_data.damage.forEachRect([this, &ctx](const auto& RECT) {
         scissor(ctx, &RECT, ctx.m_data.transformDamage);
@@ -1903,7 +1925,7 @@ void CHyprOpenGLImpl::renderTextureMatte(CRenderContext& ctx, SP<ITexture> tex, 
     });
 
     disableScissor();
-    glBindVertexArray(0);
+    g_pHyprOpenGL->m_proc.glBindVertexArray(0);
     tex->unbind();
 }
 
@@ -1915,7 +1937,7 @@ void CHyprOpenGLImpl::renderTextureWithBlurInternal(CRenderContext& ctx, SP<ITex
 
     static auto PBLEND        = CConfigValue<Config::INTEGER>("render:use_shader_blur_blend");
     const auto  NEEDS_STENCIL = data.discardMode != 0 && (!data.blockBlurOptimization || (data.discardMode & DISCARD_ALPHA));
-    const bool  SHADERBLEND   = *PBLEND || data.forceBlurBlend;
+    const bool  SHADERBLEND   = isLegacy() || *PBLEND || data.forceBlurBlend;
     if (!SHADERBLEND && data.blurredBG) {
 
         if (NEEDS_STENCIL) {
@@ -2006,17 +2028,55 @@ void CHyprOpenGLImpl::renderTextureWithBlurInternal(CRenderContext& ctx, SP<ITex
             setCapStatus(GL_STENCIL_TEST, false);
     }
 
+    CRegion blurClipRegion = data.clipRegion;
+    if (isLegacy()) {
+        const auto surface = Desktop::View::CWLSurface::fromResource(data.surface);
+        if (surface && surface->m_hasBackgroundEffect && !surface->m_blurRegion.empty()) {
+            CRegion protocolBlur = surface->m_blurRegion.copy();
+            protocolBlur.intersect(CBox{0, 0, box.width, box.height});
+            protocolBlur.scale(m_renderData.pMonitor->m_scale);
+            protocolBlur.translate(box.pos());
+            m_renderData.renderModif.applyToRegion(protocolBlur);
+
+            // Draw the rest of the surface without blur, preserving protocol clipping.
+            CRegion surfaceClip = data.damage->copy();
+            if (!data.clipRegion.empty())
+                surfaceClip.intersect(data.clipRegion);
+            CRegion unblurred = surfaceClip.copy().subtract(protocolBlur);
+            if (!unblurred.empty()) {
+                auto plain          = data;
+                plain.blur          = false;
+                plain.discardActive = false;
+                plain.allowDim      = true;
+                plain.allowCustomUV = true;
+                plain.noAA          = false;
+                plain.a             = data.a * data.overallA;
+                plain.clipRegion    = unblurred;
+                renderTextureInternal(ctx, tex, box, plain);
+            }
+            blurClipRegion = surfaceClip.intersect(protocolBlur);
+            if (blurClipRegion.empty()) {
+                disableScissor();
+                return;
+            }
+        }
+    }
+
+    static auto PBLURIGNOREOPACITY = CConfigValue<Config::INTEGER>("decoration:blur:ignore_opacity");
+    const float blurAlpha          = isLegacy() ? (*PBLURIGNOREOPACITY ? data.blurA : data.a * data.blurA) * data.overallA : 1.F;
+
     // draw window
     renderTextureInternal(ctx, tex, box,
                           STextureRenderData{
                               .blur           = SHADERBLEND,
+                              .blurA          = blurAlpha,
                               .blurredBG      = data.blurredBG,
                               .blurAlphaMatte = data.blurAlphaMatte,
                               .damage         = data.damage,
                               .a              = data.a * data.overallA,
                               .round          = data.round,
                               .roundingPower  = data.roundingPower,
-                              .discardActive  = SHADERBLEND && NEEDS_STENCIL,
+                              .discardActive  = SHADERBLEND && NEEDS_STENCIL && (!isLegacy() || data.blurredBG),
                               .allowCustomUV  = true,
                               .allowDim       = true,
                               .noAA           = false,
@@ -2024,7 +2084,7 @@ void CHyprOpenGLImpl::renderTextureWithBlurInternal(CRenderContext& ctx, SP<ITex
                               .wrapY          = data.wrapY,
                               .discardMode    = data.discardMode,
                               .discardOpacity = data.discardOpacity,
-                              .clipRegion     = data.clipRegion,
+                              .clipRegion     = blurClipRegion,
                               .currentLS      = data.currentLS,
 
                               .primarySurfaceUVTopLeft     = ctx.m_data.primarySurfaceUVTopLeft,
@@ -2123,7 +2183,7 @@ void CHyprOpenGLImpl::renderBorder(CRenderContext& ctx, const CBox& box, const C
     shader->setUniformFloat(SHADER_ROUNDING_POWER, data.roundingPower);
     shader->setUniformFloat(SHADER_THICK, scaledBorderSize);
 
-    glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
+    g_pHyprOpenGL->m_proc.glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
 
     // calculate the border's region, which we need to render over. No need to run the shader on
     // things outside there
@@ -2140,7 +2200,7 @@ void CHyprOpenGLImpl::renderBorder(CRenderContext& ctx, const CBox& box, const C
         });
     }
 
-    glBindVertexArray(0);
+    g_pHyprOpenGL->m_proc.glBindVertexArray(0);
 
     blend(BLEND);
 }
@@ -2215,7 +2275,7 @@ void CHyprOpenGLImpl::renderBorder(CRenderContext& ctx, const CBox& box, const C
     shader->setUniformFloat(SHADER_ROUNDING_POWER, data.roundingPower);
     shader->setUniformFloat(SHADER_THICK, scaledBorderSize);
 
-    glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
+    g_pHyprOpenGL->m_proc.glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
 
     // calculate the border's region, which we need to render over. No need to run the shader on
     // things outside there
@@ -2232,7 +2292,7 @@ void CHyprOpenGLImpl::renderBorder(CRenderContext& ctx, const CBox& box, const C
         });
     }
 
-    glBindVertexArray(0);
+    g_pHyprOpenGL->m_proc.glBindVertexArray(0);
     blend(BLEND);
 }
 
@@ -2305,7 +2365,7 @@ void CHyprOpenGLImpl::renderRoundedShadow(CRenderContext& ctx, const CBox& box, 
     shader->setUniformFloat2(SHADER_WINDOW_BOTTOM_RIGHT, -1.F, -1.F);
     shader->setUniformFloat(SHADER_THICK, 0.F);
 
-    glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
+    g_pHyprOpenGL->m_proc.glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
 
     CRegion drawRegion;
 
@@ -2347,7 +2407,7 @@ void CHyprOpenGLImpl::renderRoundedShadow(CRenderContext& ctx, const CBox& box, 
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         });
 
-    glBindVertexArray(0);
+    g_pHyprOpenGL->m_proc.glBindVertexArray(0);
 }
 
 void CHyprOpenGLImpl::renderInnerGlow(CRenderContext& ctx, const CBox& box, int round, float roundingPower, int range, const Config::CGradientValueData& grad, int glowPower,
@@ -2412,7 +2472,7 @@ void CHyprOpenGLImpl::renderInnerGlow(CRenderContext& ctx, const CBox& box, int 
     shader->setUniformFloat(SHADER_RANGE, range);
     shader->setUniformFloat(SHADER_SHADOW_POWER, GLOWPOWER);
 
-    glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
+    g_pHyprOpenGL->m_proc.glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
 
     if (ctx.m_data.clipBox.width != 0 && ctx.m_data.clipBox.height != 0) {
         CRegion damageClip{ctx.m_data.clipBox.x, ctx.m_data.clipBox.y, ctx.m_data.clipBox.width, ctx.m_data.clipBox.height};
@@ -2431,7 +2491,7 @@ void CHyprOpenGLImpl::renderInnerGlow(CRenderContext& ctx, const CBox& box, int 
         });
     }
 
-    glBindVertexArray(0);
+    g_pHyprOpenGL->m_proc.glBindVertexArray(0);
 }
 
 bool CHyprOpenGLImpl::saveBufferForMirror(CRenderContext& ctx, const CBox& box) {
@@ -2529,6 +2589,10 @@ void CHyprOpenGLImpl::bindArrayBuffer(GLuint buffer) {
 }
 
 void CHyprOpenGLImpl::bindFramebuffer(GLenum target, GLuint fb) {
+    // GLES2 has a single framebuffer binding point for drawing and reading
+    if (isLegacy())
+        target = GL_FRAMEBUFFER;
+
     const bool DRAW = target == GL_FRAMEBUFFER || target == GL_DRAW_FRAMEBUFFER;
     const bool READ = target == GL_FRAMEBUFFER || target == GL_READ_FRAMEBUFFER;
 
@@ -2576,8 +2640,12 @@ CFramebufferBindingGuard::~CFramebufferBindingGuard() {
 
     RASSERT(m_backend->m_bindingGuard == this, "Framebuffer binding guards must unwind in order");
     m_backend->m_bindingGuard = m_previous;
-    m_backend->bindFramebuffer(GL_DRAW_FRAMEBUFFER, m_drawFB);
-    m_backend->bindFramebuffer(GL_READ_FRAMEBUFFER, m_readFB);
+    if (m_backend->isLegacy())
+        m_backend->bindFramebuffer(GL_FRAMEBUFFER, m_drawFB);
+    else {
+        m_backend->bindFramebuffer(GL_DRAW_FRAMEBUFFER, m_drawFB);
+        m_backend->bindFramebuffer(GL_READ_FRAMEBUFFER, m_readFB);
+    }
     m_backend->setViewport(m_viewport[0], m_viewport[1], m_viewport[2], m_viewport[3]);
 }
 

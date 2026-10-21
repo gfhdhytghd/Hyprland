@@ -31,6 +31,13 @@ void CGLElementRenderer::draw(CRenderContext& ctx, WP<CClearPassElement> element
     const bool                   hasMirror = ctx.m_data.currentFB && ctx.m_data.currentFB->getMirrorTexture();
 
     const auto                   clear = [&] {
+        // GLES2 has no glClearBuffer, and no mirror attachment either
+        if (g_pHyprOpenGL->isLegacy()) {
+            glClearColor(c[0], c[1], c[2], c[3]);
+            glClear(GL_COLOR_BUFFER_BIT);
+            return;
+        }
+
         glClearBufferfv(GL_COLOR, 0, c.data());
         if (hasMirror)
             glClearBufferfv(GL_COLOR, 1, mirror.data());

@@ -19,6 +19,14 @@ bool CGLFramebuffer::internalAlloc(int w, int h, uint32_t drmFormat) {
     CFramebufferBindingGuard bindings{g_pHyprOpenGL};
     m_tempBuf = false;
 
+    const auto format = getPixelFormatFromDRM(drmFormat);
+    if (g_pHyprOpenGL->isLegacy() &&
+        (!format || (format->glFormat != GL_RGBA && format->glFormat != GL_RGB && format->glFormat != GL_BGRA_EXT) ||
+         (format->glType != GL_UNSIGNED_BYTE && format->glType != GL_UNSIGNED_SHORT_5_6_5))) {
+        LOG(Log::ERR, "Framebuffer format {} is unavailable on GLES2", drmFormat);
+        return false;
+    }
+
     if (!m_tex) {
         m_tex = g_pHyprRenderer->createTexture();
         m_tex->allocate({w, h}, drmFormat);
@@ -34,34 +42,33 @@ bool CGLFramebuffer::internalAlloc(int w, int h, uint32_t drmFormat) {
         m_fbAllocated = true;
     }
 
-    const auto format = getPixelFormatFromDRM(drmFormat);
     m_tex->bind();
-    glTexImage2D(GL_TEXTURE_2D, 0, format->glInternalFormat ? format->glInternalFormat : format->glFormat, w, h, 0, format->glFormat, format->glType, nullptr);
+    glTexImage2D(GL_TEXTURE_2D, 0, g_pHyprOpenGL->textureInternalFormat(format), w, h, 0, format->glFormat, format->glType, nullptr);
     g_pHyprOpenGL->bindFramebuffer(GL_FRAMEBUFFER, m_fb);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_tex->m_texID, 0);
 
-    if (m_mirrorTex) {
+    if (m_mirrorTex && !g_pHyprOpenGL->isLegacy()) {
         const auto format = getPixelFormatFromDRM(m_mirrorTex->m_drmFormat);
         m_mirrorTex->bind();
-        glTexImage2D(GL_TEXTURE_2D, 0, format->glInternalFormat ? format->glInternalFormat : format->glFormat, w, h, 0, format->glFormat, format->glType, nullptr);
+        glTexImage2D(GL_TEXTURE_2D, 0, g_pHyprOpenGL->textureInternalFormat(format), w, h, 0, format->glFormat, format->glType, nullptr);
         g_pHyprOpenGL->bindFramebuffer(GL_FRAMEBUFFER, m_fb);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, m_mirrorTex->m_texID, 0);
         GLenum drawBuffers[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
         glDrawBuffers(2, drawBuffers);
-    } else {
+    } else if (!g_pHyprOpenGL->isLegacy()) { // GLES2 has a single color attachment and no glDrawBuffers
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, 0, 0);
         GLenum drawBuffers[] = {GL_COLOR_ATTACHMENT0};
         glDrawBuffers(1, drawBuffers);
     }
 
-    if (m_stencilTex && m_stencilTex->ok()) {
+    if (!g_pHyprOpenGL->isLegacy() && m_stencilTex && m_stencilTex->ok()) {
         m_stencilTex->bind();
         glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, w, h, 0, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, nullptr);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, m_stencilTex->m_texID, 0);
 
         glDisable(GL_DEPTH_TEST);
         glDepthMask(GL_FALSE);
-    } else
+    } else if (!g_pHyprOpenGL->isLegacy())
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, GL_NONE, 0);
 
     auto status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
@@ -227,6 +234,37 @@ bool CGLFramebuffer::readPixels(CHLBufferReference buffer, uint32_t offsetX, uin
     } else if (glFormat == GL_RGBA)
         glFormat = GL_BGRA_EXT;
 
+    if (g_pHyprOpenGL->isLegacy()) {
+        // Only RGBA/UNSIGNED_BYTE readback is guaranteed on GLES2.
+        if (PFORMAT->glType != GL_UNSIGNED_BYTE || PFORMAT->bytesPerBlock != 4 || (glFormat != GL_RGBA && glFormat != GL_BGRA_EXT)) {
+            glPixelStorei(GL_PACK_ALIGNMENT, 4);
+            return false;
+        }
+
+        const auto swizzle = [glFormat](std::span<uint8_t> pixels) {
+            if (glFormat != GL_BGRA_EXT)
+                return;
+            for (size_t x = 0; x < pixels.size(); x += 4)
+                std::swap(pixels[x], pixels[x + 2]);
+        };
+
+        if (rowOffset == 0 && rowBytes == strideBytes) {
+            auto pixels = std::span<uint8_t>(pixelData + sc<size_t>(offsetY) * strideBytes, rowBytes * readHeight);
+            glReadPixels(offsetX, offsetY, readWidth, readHeight, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+            swizzle(pixels);
+        } else {
+            std::vector<uint8_t> row(sc<size_t>(readWidth) * 4);
+            for (uint32_t i = 0; i < readHeight; ++i) {
+                const auto y = offsetY + i;
+                glReadPixels(offsetX, y, readWidth, 1, GL_RGBA, GL_UNSIGNED_BYTE, row.data());
+                swizzle(row);
+                std::copy(row.begin(), row.end(), pixelData + sc<size_t>(y) * strideBytes + rowOffset);
+            }
+        }
+        glPixelStorei(GL_PACK_ALIGNMENT, 4);
+        return glGetError() == GL_NO_ERROR;
+    }
+
     // This could be optimized by using a pixel buffer object to make this async,
     // but really clients should just use a dma buffer anyways.
     if (rowOffset == 0 && rowBytes == strideBytes) {
@@ -250,6 +288,15 @@ bool CGLFramebuffer::readPixelsRGBA8(std::span<uint8_t> destination) {
     g_pHyprOpenGL->makeEGLCurrent();
     const CFramebufferBindingGuard bindings{g_pHyprOpenGL};
     g_pHyprOpenGL->bindFramebuffer(GL_READ_FRAMEBUFFER, getFBID());
+    if (g_pHyprOpenGL->isLegacy()) { // GLES2 only has the pack alignment
+        GLint packAlignment = 0;
+        glGetIntegerv(GL_PACK_ALIGNMENT, &packAlignment);
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glReadPixels(0, 0, m_size.x, m_size.y, GL_RGBA, GL_UNSIGNED_BYTE, destination.data());
+        glPixelStorei(GL_PACK_ALIGNMENT, packAlignment);
+        return glGetError() == GL_NO_ERROR;
+    }
+
     GLint packAlignment = 0, packRowLength = 0, packSkipRows = 0, packSkipPixels = 0, packBuffer = 0;
     glGetIntegerv(GL_PACK_ALIGNMENT, &packAlignment);
     glGetIntegerv(GL_PACK_ROW_LENGTH, &packRowLength);
@@ -286,7 +333,7 @@ void CGLFramebuffer::invalidate(const std::vector<GLenum>& attachments) {
         return;
 
     static const auto PFBINVALIDATE = CConfigValue<Config::INTEGER>("debug:invalidate_buffers");
-    if (*PFBINVALIDATE)
+    if (*PFBINVALIDATE && !g_pHyprOpenGL->isLegacy())
         glInvalidateFramebuffer(GL_FRAMEBUFFER, attachments.size(), attachments.data());
 
     // m_cleared tracks the color attachment only, see clearAfterInvalidation()

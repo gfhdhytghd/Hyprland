@@ -11,10 +11,107 @@
 #include <glslang/Public/resource_limits_c.h>
 #include <string>
 #include <filesystem>
+#include <regex>
+#include <sstream>
 
 using namespace Render;
 
-CShaderLoader::CShaderLoader(const std::vector<std::string> includes, const std::array<std::string, SH_FRAG_LAST>& frags, const std::string shaderPath) : m_shaderPath(shaderPath) {
+const std::vector<std::string> Render::SHADER_INCLUDES = {
+    "defines.h",       "constants.h",      "cm_helpers.glsl", "rounding.glsl", "CM.glsl",         "tonemap.glsl",     "gain.glsl",     "border.glsl",      "shadow.glsl",
+    "inner_glow.glsl", "blurprepare.glsl", "blur1.glsl",      "blur2.glsl",    "blurFinish.glsl", "motion_blur.glsl", "gradient.glsl", "glassFinish.glsl", "fluidJar.glsl",
+};
+
+// order matters, see ePreparedFragmentShader
+const std::array<std::string, SH_FRAG_LAST> Render::FRAG_SHADERS = {
+    "quad.frag",
+    "passthru.frag",
+    "rgbamatte.frag",
+    "ext.frag",
+    "blur1.frag",
+    "blur2.frag",
+    "blurprepare.frag",
+    "blurfinish.frag",
+    "shadow.frag",
+    "inner_glow.frag",
+    "surface.frag",
+    "border.frag",
+    "glitch.frag",
+    "frostfinish.frag",
+    "ripplefinish.frag",
+    "dropsfinish.frag",
+    "waterstep.frag",
+    "waterfinish.frag",
+    "fluidjarinit.frag",
+    "fluidjarstep.frag",
+    "fluidjargraph.frag",
+    "fluidjartrack.frag",
+    "fluidjarvisual.frag",
+    "fluidjarresample.frag",
+    "fluidjarhistoryresample.frag",
+    "fluidjartrackingresample.frag",
+    "fluidjarfinish.frag",
+    "prismfinish.frag",
+    "heatshimmerfinish.frag",
+    "acrylicfinish.frag",
+    "aurorafinish.frag",
+    "hazefinish.frag",
+};
+
+std::expected<std::string, std::string> Render::toGLES2(const std::string& source, bool fragment) {
+    static const std::regex OUTPUT_RE(R"(^\s*(?:layout\s*\(\s*location\s*=\s*(\d+)\s*\)\s*)?out\s+(\w+)\s+(\w+)\s*;\s*$)");
+    static const std::regex IN_RE(R"(^(\s*)in(\s))");
+    static const std::regex OUT_RE(R"(^(\s*)out(\s))");
+    static const std::regex TEXTURE_RE(R"(\btexture\s*\()");
+
+    std::stringstream       stream(source);
+    std::string             line;
+    std::string             result;
+
+    while (std::getline(stream, line)) {
+        const auto TRIMMED = Hyprutils::String::trim(line);
+
+        if (TRIMMED.starts_with("#version")) {
+            result += "#version 100\n";
+            continue;
+        }
+
+        if (TRIMMED.starts_with("#extension GL_ARB_shading_language_include"))
+            continue;
+
+        if (TRIMMED.starts_with("#extension GL_OES_EGL_image_external_essl3")) {
+            result += "#extension GL_OES_EGL_image_external : require\n";
+            continue;
+        }
+
+        if (std::smatch match; fragment && std::regex_match(line, match, OUTPUT_RE)) {
+            if (match[1].matched && match[1].str() != "0")
+                return std::unexpected(std::format("fragment output {} at location {} has no GLES2 equivalent", match[3].str(), match[1].str()));
+            if (match[2].str() != "vec4")
+                return std::unexpected(std::format("fragment output {} of type {} has no GLES2 equivalent", match[3].str(), match[2].str()));
+
+            result += std::format("#define {} gl_FragColor\n", match[3].str());
+            continue;
+        }
+
+        // GLES2 hardware may lack highp in fragment shaders
+        if (fragment && TRIMMED == "precision highp float;") {
+            result += "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n";
+            continue;
+        }
+
+        line = std::regex_replace(line, IN_RE, fragment ? "$1varying$2" : "$1attribute$2");
+        if (!fragment)
+            line = std::regex_replace(line, OUT_RE, "$1varying$2");
+        line = std::regex_replace(line, TEXTURE_RE, "texture2D(");
+
+        result += line + "\n";
+    }
+
+    return result;
+}
+
+CShaderLoader::CShaderLoader(const std::vector<std::string> includes, const std::array<std::string, SH_FRAG_LAST>& frags, const std::string shaderPath, bool gles2) :
+    m_shaderPath(shaderPath), m_gles2(gles2) {
     m_callbacks = glsl_include_callbacks_t{
         .include_local =
             [](void* ctx, const char* header_name, const char* includer_name, size_t include_depth) {
@@ -136,8 +233,15 @@ std::string CShaderLoader::processSource(const std::string& source, glslang_stag
 }
 
 std::string CShaderLoader::process(const std::string& filename) {
-    auto source = loadShader(filename);
-    return processSource(source, filename.ends_with(".vert") ? GLSLANG_STAGE_VERTEX : GLSLANG_STAGE_FRAGMENT);
+    const bool VERTEX = filename.ends_with(".vert");
+    auto       source = processSource(loadShader(filename), VERTEX ? GLSLANG_STAGE_VERTEX : GLSLANG_STAGE_FRAGMENT);
+    if (!m_gles2)
+        return source;
+
+    auto converted = toGLES2(source, !VERTEX);
+    if (!converted)
+        throw std::runtime_error(std::format("{}: {}", filename, converted.error()));
+    return *converted;
 }
 
 std::string CShaderLoader::process(const std::string& filename, const std::map<std::string, std::string>& defines) {
@@ -152,8 +256,12 @@ std::string CShaderLoader::process(const std::string& filename, const std::map<s
 
 std::string CShaderLoader::getVariantSource(ePreparedFragmentShader frag, SShaderVariant variant) {
     static const auto PCM = CConfigValue<Config::INTEGER>("render:cm_enabled");
-    if (!*PCM)
+    if (!*PCM || m_gles2)
         variant.features &= ~(SH_FEAT_CM | SH_FEAT_TONEMAP | SH_FEAT_ALT_TONEMAP | SH_FEAT_SDR_MOD);
+
+    // features the legacy renderer never enables, see CHyprOpenGLImpl::isLegacy()
+    if (m_gles2)
+        variant.features &= ~(SH_FEAT_ICC | SH_FEAT_MIRROR | SH_FEAT_MOTION_BLUR);
 
     // without CM the transfer functions are unused, keep them at the default so we don't cache
     // several variants of identical source
@@ -164,9 +272,26 @@ std::string CShaderLoader::getVariantSource(ePreparedFragmentShader frag, SShade
 
     if (!m_fragVariants[frag].contains(variant)) {
         ASSERT(m_fragFiles[frag].length());
-        m_overrideDefines             = getDefines(variant);
-        m_fragVariants[frag][variant] = processSource(m_fragFiles[frag]);
-        m_overrideDefines             = "";
+        m_overrideDefines = getDefines(variant);
+        if (m_gles2)
+            m_overrideDefines += "#define LEGACY_GLES2 1\n";
+        // External textures use the same blur blend on GLES2.
+        const bool legacyExternal = m_gles2 && frag == SH_FRAG_EXT;
+        if (legacyExternal)
+            m_overrideDefines += "#define LEGACY_EXTERNAL 1\n";
+        auto source       = processSource(m_fragFiles[legacyExternal ? SH_FRAG_SURFACE : frag]);
+        m_overrideDefines = "";
+
+        if (m_gles2) {
+            auto converted = toGLES2(source, true);
+            if (!converted) {
+                LOG(Log::ERR, "Shader {} can't run on GLES2: {}", sc<int>(frag), converted.error());
+                return "";
+            }
+            source = std::move(*converted);
+        }
+
+        m_fragVariants[frag][variant] = std::move(source);
     }
 
     return m_fragVariants[frag][variant];

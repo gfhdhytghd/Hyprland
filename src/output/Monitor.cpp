@@ -981,7 +981,8 @@ bool CMonitor::applyMonitorRule(Config::CMonitorRule&& pMonitorRule) {
     static constexpr auto formats10bit = std::to_array<uint32_t>({DRM_FORMAT_XRGB2101010, DRM_FORMAT_XBGR2101010});
     static constexpr auto formats8bit  = std::to_array<uint32_t>({DRM_FORMAT_XRGB8888, DRM_FORMAT_XBGR8888});
 
-    const bool            set10bit = RULE->m_enable10bit && trySetFormat(formats10bit);
+    const bool            legacy   = g_pHyprRenderer->glBackend() && g_pHyprRenderer->glBackend()->isLegacy();
+    const bool            set10bit = !legacy && RULE->m_enable10bit && trySetFormat(formats10bit);
     if (!set10bit)
         trySetFormat(formats8bit);
 
@@ -2544,6 +2545,9 @@ NColorManagement::SImageDescription::SPCMasteringLuminances CMonitor::getMasteri
 }
 
 uint32_t CMonitor::getPreferredReadFormat() {
+    if (g_pHyprRenderer->glBackend() && g_pHyprRenderer->glBackend()->isLegacy())
+        return DRM_FORMAT_XRGB8888;
+
     static const auto PFORCE8BIT = CConfigValue<Config::INTEGER>("misc:screencopy_force_8b");
 
     auto              monFmt = m_output->state->state().drmFormat;
@@ -2897,6 +2901,10 @@ bool CMonitor::needsACopyFB() {
 
 bool CMonitor::needsUnmodifiedCopy() {
     static const auto PKEEP = CConfigValue<Hyprlang::INT>("render:keep_unmodified_copy");
+
+    // the copy is a second color attachment, GLES2 has only one
+    if (g_pHyprRenderer->glBackend() && g_pHyprRenderer->glBackend()->isLegacy())
+        return false;
     if (*PKEEP == 1)
         return true;
 

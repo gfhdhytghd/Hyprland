@@ -41,6 +41,10 @@
 #include "pass/TexPassElement.hpp"
 #include "WindowRenderPresentation.hpp"
 
+namespace Hyprgraphics::Egl {
+    struct SPixelFormat;
+}
+
 #define GLFB(ifb) dc<CGLFramebuffer*>(ifb.get())
 
 struct gbm_device;
@@ -273,6 +277,11 @@ namespace Render::GL {
             PFNEGLDESTROYSYNCKHRPROC                      eglDestroySyncKHR                      = nullptr;
             PFNEGLDUPNATIVEFENCEFDANDROIDPROC             eglDupNativeFenceFDANDROID             = nullptr;
             PFNEGLWAITSYNCKHRPROC                         eglWaitSyncKHR                         = nullptr;
+
+            // core GLES3 entry points, or their OES_vertex_array_object equivalents on GLES2
+            PFNGLGENVERTEXARRAYSOESPROC                   glGenVertexArrays                      = nullptr;
+            PFNGLBINDVERTEXARRAYOESPROC                   glBindVertexArray                      = nullptr;
+            PFNGLDELETEVERTEXARRAYSOESPROC                glDeleteVertexArrays                   = nullptr;
         } m_proc;
 
         struct {
@@ -285,6 +294,7 @@ namespace Render::GL {
             bool IMG_context_priority               = false;
             bool EXT_create_context_robustness      = false;
             bool EGL_ANDROID_native_fence_sync_ext  = false;
+            bool EXT_discard_framebuffer            = false;
         } m_exts;
 
         enum eEGLContextVersion : uint8_t {
@@ -294,6 +304,11 @@ namespace Render::GL {
         };
 
         eEGLContextVersion m_eglContextVersion = EGL_CONTEXT_GLES_3_2;
+
+        // GLES2-only hardware: no blur, CM, FP16, ICC, MRT mirror copy or texture swizzles
+        bool isLegacy() const;
+        // the sized internal format, or the unsized one GLES2 requires
+        GLint textureInternalFormat(const Hyprgraphics::Egl::SPixelFormat* format) const;
 
         enum eCachedCapStatus : uint8_t {
             CAP_STATUS_BLEND = 0,

@@ -229,7 +229,8 @@ CProtocolManager::CProtocolManager() {
     PROTO::imageCaptureSource = makeUnique<CImageCaptureSourceProtocol>(); // ctor inits actual protos, output and toplevel
     PROTO::imageCopyCapture   = makeUnique<CImageCopyCaptureProtocol>(&ext_image_copy_capture_manager_v1_interface, 1, "ImageCopyCapture");
 
-    if (*PENABLECM)
+    // the legacy GLES2 renderer has no color management, clients would get their descriptions ignored
+    if (*PENABLECM && !(g_pHyprRenderer->glBackend() && g_pHyprRenderer->glBackend()->isLegacy()))
         PROTO::colorManagement = makeUnique<CColorManagementProtocol>(&wp_color_manager_v1_interface, *PCMV1_2 ? 3 : 1, "ColorManagement", *PDEBUGCM);
 
     // ! please read the top of this file before adding another protocol

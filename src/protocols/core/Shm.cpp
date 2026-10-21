@@ -227,6 +227,9 @@ void CWLSHMProtocol::bindManager(wl_client* client, void* data, uint32_t ver, ui
         };
 
         for (auto const& fmt : supportedShmFourccFormats) {
+            // GLES2 has no 10-bit texture types
+            if (g_pHyprRenderer->glBackend() && g_pHyprRenderer->glBackend()->isLegacy() && getPixelFormatFromDRM(fmt)->glType != GL_UNSIGNED_BYTE)
+                continue;
             m_shmFormats.push_back(fmt);
         }
     }

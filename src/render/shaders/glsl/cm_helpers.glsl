@@ -45,6 +45,11 @@ vec4 saturate(vec4 color, mat3 primaries, float saturation) {
 }
 #endif
 
+// Per-component select, mix() with a bvec is GLSL ES 3.00 only and a 0/1 weight would turn an infinite unselected value into NaN.
+vec3 cmSelect(vec3 falseValue, vec3 trueValue, bvec3 condition) {
+    return vec3(condition.x ? trueValue.x : falseValue.x, condition.y ? trueValue.y : falseValue.y, condition.z ? trueValue.z : falseValue.z);
+}
+
 vec3 xy2xyz(vec2 xy) {
     if (xy.y == 0.0)
         return vec3(0.0, 0.0, 0.0);
@@ -78,7 +83,7 @@ vec3 tfInvHLG(vec3 color, vec2 range, float nominalPeak) {
     bvec3 isLow   = lessThanEqual(signal, vec3(HLG_E_CUT));
     vec3  lo      = signal * signal / 3.0;
     vec3  hi      = (exp((signal - HLG_C) / HLG_A) + HLG_B) / 12.0;
-    vec3  scene   = mix(hi, lo, isLow);
+    vec3  scene   = cmSelect(hi, lo, isLow);
     float Ys      = max(dot(scene, sourceLuminanceCoefficients), 0.0);
     // Scene black stays display black for any system gamma, including gamma < 1 where pow(0, gamma - 1) is undefined.
     vec3  display = Ys > 0.0 ? range.y * pow(Ys, hlgGamma(nominalPeak) - 1.0) * scene : vec3(0.0);
@@ -93,7 +98,7 @@ vec3 tfInvLinPow(vec3 color, float gamma, float thres, float scale, float alpha)
     bvec3 isLow = lessThanEqual(color.rgb, vec3(thres * scale));
     vec3  lo    = color.rgb / scale;
     vec3  hi    = pow((color.rgb + alpha - 1.0) / alpha, vec3(gamma));
-    return mix(hi, lo, isLow);
+    return cmSelect(hi, lo, isLow);
 }
 
 vec3 tfInvSRGB(vec3 color) {
@@ -137,14 +142,14 @@ vec3 tfHLG(vec3 color, vec2 range) {
     bvec3 isLow   = lessThanEqual(scene, vec3(HLG_D_CUT));
     vec3  lo      = sqrt(scene * 3.0);
     vec3  hi      = HLG_A * log(max(12.0 * scene - HLG_B, vec3(0.0001))) + HLG_C;
-    return (mix(hi, lo, isLow) - beta) / (1.0 - beta);
+    return (cmSelect(hi, lo, isLow) - beta) / (1.0 - beta);
 }
 
 vec3 tfLinPow(vec3 color, float gamma, float thres, float scale, float alpha) {
     bvec3 isLow = lessThanEqual(color.rgb, vec3(thres));
     vec3  lo    = color.rgb * scale;
     vec3  hi    = pow(color.rgb, vec3(1.0 / gamma)) * alpha - (alpha - 1.0);
-    return mix(hi, lo, isLow);
+    return cmSelect(hi, lo, isLow);
 }
 
 vec3 tfSRGB(vec3 color) {
@@ -156,6 +161,7 @@ vec3 tfExtSRGB(vec3 color) {
     return sign(color) * tfSRGB(abs(color));
 }
 
+#if USE_ICC
 vec3 applyIcc3DLut(vec3 linearRgb01, highp sampler3D iccLut3D, float iccLutSize) {
     // the LUT is indexed by sRGB-encoded values, see buildIcc3DLut
     vec3 x = tfSRGB(clamp(linearRgb01, 0.0, 1.0));
@@ -166,6 +172,7 @@ vec3 applyIcc3DLut(vec3 linearRgb01, highp sampler3D iccLut3D, float iccLutSize)
 
     return texture(iccLut3D, coord).rgb;
 }
+#endif
 
 vec3 tfBT1886(vec3 color, vec2 range) {
     float black = pow(max(range.x, 0.0), 1.0 / 2.4);
@@ -184,23 +191,34 @@ vec3 tfST240(vec3 color) {
 }
 
 vec3 toLinearRGB(vec3 color, int tf) {
-    switch (tf) {
-        case CM_TRANSFER_FUNCTION_LINEAR: return color;
-        case CM_TRANSFER_FUNCTION_EXT_LINEAR: return color;
-        case CM_TRANSFER_FUNCTION_ST2084_PQ: return tfInvPQ(color);
-        case CM_TRANSFER_FUNCTION_GAMMA22: return pow(max(color, vec3(0.0)), vec3(2.2));
-        case CM_TRANSFER_FUNCTION_GAMMA28: return pow(max(color, vec3(0.0)), vec3(2.8));
-        case CM_TRANSFER_FUNCTION_HLG: return tfInvHLG(color, vec2(HDR_MIN_LUMINANCE, HLG_MAX_LUMINANCE), HLG_MAX_LUMINANCE);
-        case CM_TRANSFER_FUNCTION_EXT_SRGB: return tfInvExtSRGB(color);
-        case CM_TRANSFER_FUNCTION_BT1886: return tfInvBT1886(color, vec2(0.01, 100.0));
-        case CM_TRANSFER_FUNCTION_ST240: return tfInvST240(color);
-        case CM_TRANSFER_FUNCTION_LOG_100: return mix(exp((color - 1.0) * 2.0 * log(10.0)), vec3(0.0), lessThanEqual(color, vec3(0.0)));
-        case CM_TRANSFER_FUNCTION_LOG_316: return mix(exp((color - 1.0) * 2.5 * log(10.0)), vec3(0.0), lessThanEqual(color, vec3(0.0)));
-        case CM_TRANSFER_FUNCTION_XVYCC: return tfInvXVYCC(color);
-        case CM_TRANSFER_FUNCTION_ST428: return pow(max(color, vec3(0.0)), vec3(ST428_POW)) * ST428_SCALE;
-        case CM_TRANSFER_FUNCTION_SRGB:
-        default: return tfInvSRGB(color);
-    }
+    // no switch in GLSL ES 1.00
+    if (tf == CM_TRANSFER_FUNCTION_LINEAR)
+        return color;
+    if (tf == CM_TRANSFER_FUNCTION_EXT_LINEAR)
+        return color;
+    if (tf == CM_TRANSFER_FUNCTION_ST2084_PQ)
+        return tfInvPQ(color);
+    if (tf == CM_TRANSFER_FUNCTION_GAMMA22)
+        return pow(max(color, vec3(0.0)), vec3(2.2));
+    if (tf == CM_TRANSFER_FUNCTION_GAMMA28)
+        return pow(max(color, vec3(0.0)), vec3(2.8));
+    if (tf == CM_TRANSFER_FUNCTION_HLG)
+        return tfInvHLG(color, vec2(HDR_MIN_LUMINANCE, HLG_MAX_LUMINANCE), HLG_MAX_LUMINANCE);
+    if (tf == CM_TRANSFER_FUNCTION_EXT_SRGB)
+        return tfInvExtSRGB(color);
+    if (tf == CM_TRANSFER_FUNCTION_BT1886)
+        return tfInvBT1886(color, vec2(0.01, 100.0));
+    if (tf == CM_TRANSFER_FUNCTION_ST240)
+        return tfInvST240(color);
+    if (tf == CM_TRANSFER_FUNCTION_LOG_100)
+        return cmSelect(exp((color - 1.0) * 2.0 * log(10.0)), vec3(0.0), lessThanEqual(color, vec3(0.0)));
+    if (tf == CM_TRANSFER_FUNCTION_LOG_316)
+        return cmSelect(exp((color - 1.0) * 2.5 * log(10.0)), vec3(0.0), lessThanEqual(color, vec3(0.0)));
+    if (tf == CM_TRANSFER_FUNCTION_XVYCC)
+        return tfInvXVYCC(color);
+    if (tf == CM_TRANSFER_FUNCTION_ST428)
+        return pow(max(color, vec3(0.0)), vec3(ST428_POW)) * ST428_SCALE;
+    return tfInvSRGB(color);
 }
 
 // Display-referred transfer functions depend on the source luminance range, which carries the reference white scale.
@@ -228,22 +246,32 @@ vec4 toNit(vec4 color, vec2 range) {
 }
 
 vec3 fromLinearRGB(vec3 color, int tf) {
-    switch (tf) {
-        case CM_TRANSFER_FUNCTION_EXT_LINEAR: return color;
-        case CM_TRANSFER_FUNCTION_ST2084_PQ: return tfPQ(color);
-        case CM_TRANSFER_FUNCTION_GAMMA22: return pow(max(color, vec3(0.0)), vec3(1.0 / 2.2));
-        case CM_TRANSFER_FUNCTION_GAMMA28: return pow(max(color, vec3(0.0)), vec3(1.0 / 2.8));
-        case CM_TRANSFER_FUNCTION_HLG: return tfHLG(color, vec2(HDR_MIN_LUMINANCE, HLG_MAX_LUMINANCE));
-        case CM_TRANSFER_FUNCTION_EXT_SRGB: return tfExtSRGB(color);
-        case CM_TRANSFER_FUNCTION_BT1886: return tfBT1886(color, vec2(0.01, 100.0));
-        case CM_TRANSFER_FUNCTION_ST240: return tfST240(color);
-        case CM_TRANSFER_FUNCTION_LOG_100: return mix(1.0 + log(color) / log(10.0) / 2.0, vec3(0.0), lessThanEqual(color, vec3(0.01)));
-        case CM_TRANSFER_FUNCTION_LOG_316: return mix(1.0 + log(color) / log(10.0) / 2.5, vec3(0.0), lessThanEqual(color, vec3(sqrt(10.0) / 1000.0)));
-        case CM_TRANSFER_FUNCTION_XVYCC: return tfXVYCC(color);
-        case CM_TRANSFER_FUNCTION_ST428: return pow(max(color, vec3(0.0)) / ST428_SCALE, vec3(1.0 / ST428_POW));
-        case CM_TRANSFER_FUNCTION_SRGB:
-        default: return tfSRGB(color);
-    }
+    // no switch in GLSL ES 1.00
+    if (tf == CM_TRANSFER_FUNCTION_EXT_LINEAR)
+        return color;
+    if (tf == CM_TRANSFER_FUNCTION_ST2084_PQ)
+        return tfPQ(color);
+    if (tf == CM_TRANSFER_FUNCTION_GAMMA22)
+        return pow(max(color, vec3(0.0)), vec3(1.0 / 2.2));
+    if (tf == CM_TRANSFER_FUNCTION_GAMMA28)
+        return pow(max(color, vec3(0.0)), vec3(1.0 / 2.8));
+    if (tf == CM_TRANSFER_FUNCTION_HLG)
+        return tfHLG(color, vec2(HDR_MIN_LUMINANCE, HLG_MAX_LUMINANCE));
+    if (tf == CM_TRANSFER_FUNCTION_EXT_SRGB)
+        return tfExtSRGB(color);
+    if (tf == CM_TRANSFER_FUNCTION_BT1886)
+        return tfBT1886(color, vec2(0.01, 100.0));
+    if (tf == CM_TRANSFER_FUNCTION_ST240)
+        return tfST240(color);
+    if (tf == CM_TRANSFER_FUNCTION_LOG_100)
+        return cmSelect(1.0 + log(color) / log(10.0) / 2.0, vec3(0.0), lessThanEqual(color, vec3(0.01)));
+    if (tf == CM_TRANSFER_FUNCTION_LOG_316)
+        return cmSelect(1.0 + log(color) / log(10.0) / 2.5, vec3(0.0), lessThanEqual(color, vec3(sqrt(10.0) / 1000.0)));
+    if (tf == CM_TRANSFER_FUNCTION_XVYCC)
+        return tfXVYCC(color);
+    if (tf == CM_TRANSFER_FUNCTION_ST428)
+        return pow(max(color, vec3(0.0)) / ST428_SCALE, vec3(1.0 / ST428_POW));
+    return tfSRGB(color);
 }
 
 vec4 fromLinear(vec4 color, int tf) {

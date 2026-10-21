@@ -10,6 +10,7 @@
 #include "../protocols/core/DataDevice.hpp"
 #include "../protocols/core/Compositor.hpp"
 #include "../debug/Overlay.hpp"
+#include "errorOverlay/Overlay.hpp"
 #include "../desktop/state/WindowState.hpp"
 #include "../desktop/view/window/Window.hpp"
 #include "../desktop/view/window/WindowPresentation.hpp"
@@ -229,6 +230,10 @@ UP<ISyncFDManager> CHyprGLRenderer::createSyncFDManager() {
 }
 
 SP<ITexture> CHyprGLRenderer::createStencilTexture(const int width, const int height) {
+    // only blur uses the stencil, and GLES2 has no DEPTH24_STENCIL8 textures
+    if (g_pHyprOpenGL->isLegacy())
+        return nullptr;
+
     g_pHyprOpenGL->makeEGLCurrent();
     auto tex = makeShared<CGLTexture>();
     tex->allocate({width, height});
@@ -261,15 +266,18 @@ SP<ITexture> CHyprGLRenderer::createTexture(const int width, const int height, u
     tex->allocate({width, height}, DRM_FORMAT_ARGB8888); // FIXME assume DRM_FORMAT_ARGB8888
 
     tex->m_size = {width, height};
-    // copy the data to an OpenGL texture we have
-    const GLint glFormat = GL_RGBA;
+    // copy the data to an OpenGL texture we have, GLES2 has no swizzles but takes BGRA directly
+    const bool  LEGACY   = g_pHyprOpenGL->isLegacy();
+    const GLint glFormat = LEGACY ? GL_BGRA_EXT : GL_RGBA;
     const GLint glType   = GL_UNSIGNED_BYTE;
 
     tex->bind();
     tex->setTexParameter(GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     tex->setTexParameter(GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    tex->setTexParameter(GL_TEXTURE_SWIZZLE_R, GL_BLUE);
-    tex->setTexParameter(GL_TEXTURE_SWIZZLE_B, GL_RED);
+    if (!LEGACY) {
+        tex->setTexParameter(GL_TEXTURE_SWIZZLE_R, GL_BLUE);
+        tex->setTexParameter(GL_TEXTURE_SWIZZLE_B, GL_RED);
+    }
 
     glTexImage2D(GL_TEXTURE_2D, 0, glFormat, tex->m_size.x, tex->m_size.y, 0, glFormat, glType, data);
     tex->unbind();
@@ -278,14 +286,26 @@ SP<ITexture> CHyprGLRenderer::createTexture(const int width, const int height, u
 }
 
 SP<ITexture> CHyprGLRenderer::createTexture(cairo_surface_t* cairo) {
+    if (g_pHyprOpenGL->isLegacy() && cairo_image_surface_get_format(cairo) == CAIRO_FORMAT_RGB96F) {
+        const auto SURFACE = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, cairo_image_surface_get_width(cairo), cairo_image_surface_get_height(cairo));
+        const auto CONTEXT = cairo_create(SURFACE);
+        cairo_set_source_surface(CONTEXT, cairo, 0, 0);
+        cairo_paint(CONTEXT);
+        cairo_destroy(CONTEXT);
+        auto texture = createTexture(SURFACE);
+        cairo_surface_destroy(SURFACE);
+        return texture;
+    }
+
     g_pHyprOpenGL->makeEGLCurrent();
     const auto CAIROFORMAT = cairo_image_surface_get_format(cairo);
     auto       tex         = makeShared<CGLTexture>();
 
     tex->allocate({cairo_image_surface_get_width(cairo), cairo_image_surface_get_height(cairo)});
 
-    const GLint glIFormat = CAIROFORMAT == CAIRO_FORMAT_RGB96F ? GL_RGB32F : GL_RGBA;
-    const GLint glFormat  = CAIROFORMAT == CAIRO_FORMAT_RGB96F ? GL_RGB : GL_RGBA;
+    const bool  BGRA      = g_pHyprOpenGL->isLegacy() && CAIROFORMAT != CAIRO_FORMAT_RGB96F; // GLES2 has no swizzles
+    const GLint glIFormat = CAIROFORMAT == CAIRO_FORMAT_RGB96F ? GL_RGB32F : (BGRA ? GL_BGRA_EXT : GL_RGBA);
+    const GLint glFormat  = CAIROFORMAT == CAIRO_FORMAT_RGB96F ? GL_RGB : (BGRA ? GL_BGRA_EXT : GL_RGBA);
     const GLint glType    = CAIROFORMAT == CAIRO_FORMAT_RGB96F ? GL_FLOAT : GL_UNSIGNED_BYTE;
 
     const auto  DATA = cairo_image_surface_get_data(cairo);
@@ -294,8 +314,10 @@ SP<ITexture> CHyprGLRenderer::createTexture(cairo_surface_t* cairo) {
     tex->setTexParameter(GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 
     if (CAIROFORMAT != CAIRO_FORMAT_RGB96F) {
-        tex->setTexParameter(GL_TEXTURE_SWIZZLE_R, GL_BLUE);
-        tex->setTexParameter(GL_TEXTURE_SWIZZLE_B, GL_RED);
+        if (!BGRA) {
+            tex->setTexParameter(GL_TEXTURE_SWIZZLE_R, GL_BLUE);
+            tex->setTexParameter(GL_TEXTURE_SWIZZLE_B, GL_RED);
+        }
         tex->m_drmFormat = DRM_FORMAT_ARGB8888;
     }
 
@@ -305,6 +327,10 @@ SP<ITexture> CHyprGLRenderer::createTexture(cairo_surface_t* cairo) {
 }
 
 SP<ITexture> CHyprGLRenderer::createTexture(std::span<const float> lut3D, size_t N) {
+    // no 3D textures on GLES2, ICC profiles are unsupported there
+    if (g_pHyprOpenGL->isLegacy())
+        return nullptr;
+
     g_pHyprOpenGL->makeEGLCurrent();
     return makeShared<CGLTexture>(lut3D, N);
 }
@@ -365,7 +391,16 @@ SP<IFramebuffer> CHyprGLRenderer::blurFramebuffer(CRenderContext& ctx, SP<IFrame
 void CHyprGLRenderer::refreshBlurProvider() {
     static auto PBLURTYPE = CConfigValue<Config::INTEGER>("decoration:blur:variant");
 
-    const auto  type = sc<eBlurType>(*PBLURTYPE);
+    auto        type = sc<eBlurType>(*PBLURTYPE);
+    if (g_pHyprOpenGL->isLegacy() && type != eBlurType::BLUR_DUAL_KAWASE) {
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            LOG(Log::WARN, "Legacy GLES2 supports only dual Kawase blur; falling back to dual Kawase");
+            ErrorOverlay::overlay()->queueError("Legacy GLES2 supports only dual Kawase blur; using dual Kawase for decoration:blur:variant");
+        }
+        type = eBlurType::BLUR_DUAL_KAWASE;
+    }
     if (m_blur && m_blur->type() == type)
         return;
 

@@ -4,9 +4,24 @@
 
 #include "defines.h"
 
-precision         highp float;
-in vec2           v_texcoord;
+#ifndef LEGACY_GLES2
+#define LEGACY_GLES2 0
+#endif
+#ifndef LEGACY_EXTERNAL
+#define LEGACY_EXTERNAL 0
+#endif
+
+#if LEGACY_EXTERNAL
+#extension GL_OES_EGL_image_external_essl3 : require
+#endif
+
+precision highp float;
+in vec2   v_texcoord;
+#if LEGACY_EXTERNAL
+uniform samplerExternalOES tex;
+#else
 uniform sampler2D tex;
+#endif
 #if USE_BLUR
 uniform vec2      uvSize;
 uniform vec2      uvOffset;
@@ -85,6 +100,10 @@ void main() {
 #endif
 #endif
 
+#if LEGACY_GLES2 && USE_BLUR && USE_DISCARD
+    float legacyBlurMask = discardAlpha && pixColor.a <= discardAlphaValue ? 0.0 : 1.0;
+#endif
+
 #if USE_DISCARD && !USE_BLUR
     if (discardOpaque && pixColor.a * alpha == 1.0)
         discard;
@@ -132,7 +151,7 @@ void main() {
     pixColor.rgb = pixColor.rgb * tint;
 #endif
 
-#if USE_ROUNDING && !USE_MOTION_BLUR
+#if USE_ROUNDING && !USE_MOTION_BLUR && !(LEGACY_GLES2 && USE_BLUR)
     pixColor = rounding(pixColor, radius, roundingPower, topLeft, fullSize);
 #endif
 #if !USE_CM
@@ -147,8 +166,12 @@ void main() {
 #if USE_BLUR_MATTE
     float pixBlurAlphaMask = blurAlphaMask * blurAlpha;
 #if USE_DISCARD
+#if LEGACY_GLES2
+    pixBlurAlphaMask *= legacyBlurMask;
+#else
     if (discardAlpha && pixColor.a <= discardAlphaValue)
         pixBlurAlphaMask = 0.0;
+#endif
 #endif
     vec3 blurredPixColor = texture(blurredBG, blurUV).rgb;
     float pixBlurBgAlpha = (1.0 - pixColor.a) * pixBlurAlphaMask;
@@ -158,10 +181,18 @@ void main() {
     if (pixColor.a <= 0.0)
         discard;
 #endif
+#if LEGACY_GLES2
+#if USE_DISCARD
+    float pixBlurAlphaMask = legacyBlurMask * blurAlpha;
+#else
+    float pixBlurAlphaMask = blurAlpha;
+#endif
+#else
 #if USE_DISCARD
     float pixBlurAlphaMask = discardAlpha && (pixColor.a <= discardAlphaValue) ? 0.0 : 1.0;
 #else
     float pixBlurAlphaMask = 1.0;
+#endif
 #endif
     vec3 blurredPixColor = texture(blurredBG, blurUV).rgb;
     float pixBlurBgAlpha = (1.0 - pixColor.a) * pixBlurAlphaMask;
@@ -169,6 +200,9 @@ void main() {
 #endif
 #endif
 
+#if LEGACY_GLES2 && USE_BLUR && USE_ROUNDING
+    pixColor = rounding(pixColor, radius, roundingPower, topLeft, fullSize);
+#endif
     fragColor = pixColor;
 #if USE_MIRROR
 #if USE_TINT
