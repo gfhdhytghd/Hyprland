@@ -2897,6 +2897,10 @@ bool CMonitor::needsACopyFB() {
 
 bool CMonitor::needsUnmodifiedCopy() {
     static const auto PKEEP = CConfigValue<Hyprlang::INT>("render:keep_unmodified_copy");
+
+    // the copy is a second color attachment, GLES2 has only one
+    if (g_pHyprRenderer->glBackend() && g_pHyprRenderer->glBackend()->isLegacy())
+        return false;
     if (*PKEEP == 1)
         return true;
 

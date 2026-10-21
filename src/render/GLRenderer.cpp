@@ -229,6 +229,10 @@ UP<ISyncFDManager> CHyprGLRenderer::createSyncFDManager() {
 }
 
 SP<ITexture> CHyprGLRenderer::createStencilTexture(const int width, const int height) {
+    // only blur uses the stencil, and GLES2 has no DEPTH24_STENCIL8 textures
+    if (g_pHyprOpenGL->isLegacy())
+        return nullptr;
+
     g_pHyprOpenGL->makeEGLCurrent();
     auto tex = makeShared<CGLTexture>();
     tex->allocate({width, height});
@@ -261,15 +265,18 @@ SP<ITexture> CHyprGLRenderer::createTexture(const int width, const int height, u
     tex->allocate({width, height}, DRM_FORMAT_ARGB8888); // FIXME assume DRM_FORMAT_ARGB8888
 
     tex->m_size = {width, height};
-    // copy the data to an OpenGL texture we have
-    const GLint glFormat = GL_RGBA;
+    // copy the data to an OpenGL texture we have, GLES2 has no swizzles but takes BGRA directly
+    const bool  LEGACY   = g_pHyprOpenGL->isLegacy();
+    const GLint glFormat = LEGACY ? GL_BGRA_EXT : GL_RGBA;
     const GLint glType   = GL_UNSIGNED_BYTE;
 
     tex->bind();
     tex->setTexParameter(GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     tex->setTexParameter(GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    tex->setTexParameter(GL_TEXTURE_SWIZZLE_R, GL_BLUE);
-    tex->setTexParameter(GL_TEXTURE_SWIZZLE_B, GL_RED);
+    if (!LEGACY) {
+        tex->setTexParameter(GL_TEXTURE_SWIZZLE_R, GL_BLUE);
+        tex->setTexParameter(GL_TEXTURE_SWIZZLE_B, GL_RED);
+    }
 
     glTexImage2D(GL_TEXTURE_2D, 0, glFormat, tex->m_size.x, tex->m_size.y, 0, glFormat, glType, data);
     tex->unbind();
@@ -284,8 +291,9 @@ SP<ITexture> CHyprGLRenderer::createTexture(cairo_surface_t* cairo) {
 
     tex->allocate({cairo_image_surface_get_width(cairo), cairo_image_surface_get_height(cairo)});
 
-    const GLint glIFormat = CAIROFORMAT == CAIRO_FORMAT_RGB96F ? GL_RGB32F : GL_RGBA;
-    const GLint glFormat  = CAIROFORMAT == CAIRO_FORMAT_RGB96F ? GL_RGB : GL_RGBA;
+    const bool  BGRA      = g_pHyprOpenGL->isLegacy() && CAIROFORMAT != CAIRO_FORMAT_RGB96F; // GLES2 has no swizzles
+    const GLint glIFormat = CAIROFORMAT == CAIRO_FORMAT_RGB96F ? GL_RGB32F : (BGRA ? GL_BGRA_EXT : GL_RGBA);
+    const GLint glFormat  = CAIROFORMAT == CAIRO_FORMAT_RGB96F ? GL_RGB : (BGRA ? GL_BGRA_EXT : GL_RGBA);
     const GLint glType    = CAIROFORMAT == CAIRO_FORMAT_RGB96F ? GL_FLOAT : GL_UNSIGNED_BYTE;
 
     const auto  DATA = cairo_image_surface_get_data(cairo);
@@ -294,8 +302,10 @@ SP<ITexture> CHyprGLRenderer::createTexture(cairo_surface_t* cairo) {
     tex->setTexParameter(GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 
     if (CAIROFORMAT != CAIRO_FORMAT_RGB96F) {
-        tex->setTexParameter(GL_TEXTURE_SWIZZLE_R, GL_BLUE);
-        tex->setTexParameter(GL_TEXTURE_SWIZZLE_B, GL_RED);
+        if (!BGRA) {
+            tex->setTexParameter(GL_TEXTURE_SWIZZLE_R, GL_BLUE);
+            tex->setTexParameter(GL_TEXTURE_SWIZZLE_B, GL_RED);
+        }
         tex->m_drmFormat = DRM_FORMAT_ARGB8888;
     }
 
@@ -305,6 +315,10 @@ SP<ITexture> CHyprGLRenderer::createTexture(cairo_surface_t* cairo) {
 }
 
 SP<ITexture> CHyprGLRenderer::createTexture(std::span<const float> lut3D, size_t N) {
+    // no 3D textures on GLES2, ICC profiles are unsupported there
+    if (g_pHyprOpenGL->isLegacy())
+        return nullptr;
+
     g_pHyprOpenGL->makeEGLCurrent();
     return makeShared<CGLTexture>(lut3D, N);
 }
@@ -465,6 +479,8 @@ bool CHyprGLRenderer::reloadShaders(const std::string& path) {
 }
 
 SP<ITexture> CHyprGLRenderer::getBlurTexture(PHLMONITORREF pMonitor) {
+    if (g_pHyprOpenGL->isLegacy())
+        return nullptr;
     return pMonitor->resources()->m_blurFB->getTexture();
 }
 

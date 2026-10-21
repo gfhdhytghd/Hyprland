@@ -9,6 +9,7 @@
 #include <random>
 #include <pango/pangocairo.h>
 #include "OpenGL.hpp"
+#include <hyprgraphics/egl/Egl.hpp>
 #include "../desktop/view/window/WindowPresentation.hpp"
 #include "Renderer.hpp"
 #include "../Compositor.hpp"
@@ -222,9 +223,23 @@ void CHyprOpenGLImpl::initEGL(bool gbm) {
 
         m_eglContext        = eglCreateContext(m_eglDisplay, EGL_NO_CONFIG_KHR, EGL_NO_CONTEXT, attrs.data());
         m_eglContextVersion = EGL_CONTEXT_GLES_3_0;
+    }
+
+    if (m_eglContext == EGL_NO_CONTEXT) {
+        LOG(Log::WARN, "EGL: Failed to create a context with GLES3.0, retrying 2.0 (legacy renderer)");
+
+        attrs = attrsNoVer;
+        attrs.push_back(EGL_CONTEXT_MAJOR_VERSION);
+        attrs.push_back(2);
+        attrs.push_back(EGL_CONTEXT_MINOR_VERSION);
+        attrs.push_back(0);
+        attrs.push_back(EGL_NONE);
+
+        m_eglContext        = eglCreateContext(m_eglDisplay, EGL_NO_CONFIG_KHR, EGL_NO_CONTEXT, attrs.data());
+        m_eglContextVersion = EGL_CONTEXT_GLES_2_0;
 
         if (m_eglContext == EGL_NO_CONTEXT)
-            RASSERT(false, "EGL: failed to create a context with either GLES3.2 or 3.0");
+            RASSERT(false, "EGL: failed to create a context with GLES3.2, 3.0 or 2.0");
     }
 
     if (m_exts.IMG_context_priority) {
@@ -375,6 +390,27 @@ CHyprOpenGLImpl::CHyprOpenGLImpl() : m_drmFD(g_pCompositor->m_drmRenderNode.fd >
     m_exts.EXT_color_buffer_half_float = m_extensions.contains("GL_EXT_color_buffer_half_float") || m_extensions.contains("GL_EXT_color_buffer_float");
 
     RASSERT(m_extensions.contains("GL_EXT_texture_format_BGRA8888"), "GL_EXT_texture_format_BGRA8888 support by the GPU driver is required");
+
+    // a GLES2 request can still get a newer, compatible context, so go by what the driver created
+    GLint glMajor = 0;
+    if (const auto VERSION = rc<const char*>(glGetString(GL_VERSION)); VERSION && std::sscanf(VERSION, "OpenGL ES %d", &glMajor) == 1 && glMajor < 3)
+        m_eglContextVersion = EGL_CONTEXT_GLES_2_0;
+
+    if (isLegacy()) {
+        LOG(Log::WARN, "Running the legacy GLES2 renderer: blur, color management, HDR, FP16, ICC profiles and the unmodified copy are unavailable");
+
+        RASSERT(m_extensions.contains("GL_OES_vertex_array_object"), "The legacy renderer requires GL_OES_vertex_array_object");
+        RASSERT(m_extensions.contains("GL_EXT_unpack_subimage"), "The legacy renderer requires GL_EXT_unpack_subimage");
+        loadGLProc(&m_proc.glGenVertexArrays, "glGenVertexArraysOES");
+        loadGLProc(&m_proc.glBindVertexArray, "glBindVertexArrayOES");
+        loadGLProc(&m_proc.glDeleteVertexArrays, "glDeleteVertexArraysOES");
+
+        m_exts.EXT_discard_framebuffer = m_extensions.contains("GL_EXT_discard_framebuffer");
+    } else {
+        m_proc.glGenVertexArrays    = ::glGenVertexArrays;
+        m_proc.glBindVertexArray    = ::glBindVertexArray;
+        m_proc.glDeleteVertexArrays = ::glDeleteVertexArrays;
+    }
 
     if (!m_exts.EXT_read_format_bgra)
         LOG(Log::WARN, "Your GPU does not support GL_EXT_read_format_bgra, this may cause issues with texture importing");
@@ -620,7 +656,7 @@ void CHyprOpenGLImpl::initDRMFormats() {
     m_drmFormats = dmaFormats;
 
     // FP16 needs both a half float renderable color buffer and the drm format
-    m_fp16Supported = m_exts.EXT_color_buffer_half_float && std::ranges::any_of(m_drmFormats, [](const auto& fmt) { return fmt.drmFormat == DRM_FORMAT_ABGR16161616F; });
+    m_fp16Supported = !isLegacy() && m_exts.EXT_color_buffer_half_float && std::ranges::any_of(m_drmFormats, [](const auto& fmt) { return fmt.drmFormat == DRM_FORMAT_ABGR16161616F; });
 
     if (!m_fp16Supported)
         LOG(Log::WARN, "Your GPU does not support rendering to FP16 buffers, some effects and CM settings might be unavailable.");
@@ -986,12 +1022,12 @@ bool CHyprOpenGLImpl::initShaders(const std::string& path) {
     static const auto PCM     = CConfigValue<Config::INTEGER>("render:cm_enabled");
 
     try {
-        auto shaderLoader = makeUnique<CShaderLoader>(SHADER_INCLUDES, FRAG_SHADERS, path);
+        auto shaderLoader = makeUnique<CShaderLoader>(SHADER_INCLUDES, FRAG_SHADERS, path, isLegacy());
 
         shaders->TEXVERTSRC    = shaderLoader->process("tex300.vert");
         shaders->TEXVERTSRC320 = shaderLoader->process("tex320.vert");
 
-        m_cmSupported = *PCM;
+        m_cmSupported = *PCM && !isLegacy();
 
         g_pShaderLoader = std::move(shaderLoader);
 
@@ -1089,6 +1125,16 @@ void CHyprOpenGLImpl::blend(bool enabled) {
         setCapStatus(GL_BLEND, false);
 
     m_blend = enabled;
+}
+
+bool CHyprOpenGLImpl::isLegacy() const {
+    return m_eglContextVersion == EGL_CONTEXT_GLES_2_0;
+}
+
+GLint CHyprOpenGLImpl::textureInternalFormat(const Hyprgraphics::Egl::SPixelFormat* format) const {
+    if (isLegacy() || !format->glInternalFormat)
+        return format->glFormat;
+    return format->glInternalFormat;
 }
 
 bool CHyprOpenGLImpl::blendEnabled() const {
@@ -1239,7 +1285,7 @@ void CHyprOpenGLImpl::renderRectWithDamageInternal(CRenderContext& ctx, const CB
     shader->setUniformFloat(SHADER_RADIUS, data.round);
     shader->setUniformFloat(SHADER_ROUNDING_POWER, data.roundingPower);
 
-    glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
+    g_pHyprOpenGL->m_proc.glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
 
     if (ctx.m_data.clipBox.width != 0 && ctx.m_data.clipBox.height != 0) {
         CRegion damageClip{ctx.m_data.clipBox.x, ctx.m_data.clipBox.y, ctx.m_data.clipBox.width, ctx.m_data.clipBox.height};
@@ -1258,7 +1304,7 @@ void CHyprOpenGLImpl::renderRectWithDamageInternal(CRenderContext& ctx, const CB
         });
     }
 
-    glBindVertexArray(0);
+    g_pHyprOpenGL->m_proc.glBindVertexArray(0);
     disableScissor();
 }
 
@@ -1695,7 +1741,7 @@ void CHyprOpenGLImpl::renderTextureInternal(CRenderContext& ctx, SP<ITexture> te
     const GLint CUSTOM_VAO = shader->getUniformLocation(SHADER_SHADER_UV_VAO);
 
     if (CUSTOMUV && CUSTOM_VAO) {
-        GLCALL(glBindVertexArray(CUSTOM_VAO));
+        GLCALL(g_pHyprOpenGL->m_proc.glBindVertexArray(CUSTOM_VAO));
         bindArrayBuffer(shader->getUniformLocation(SHADER_SHADER_UV_VBO));
 
         // Keep the old block available to previous draws while custom UVs update.
@@ -1719,7 +1765,7 @@ void CHyprOpenGLImpl::renderTextureInternal(CRenderContext& ctx, SP<ITexture> te
 
         glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(verts), verts.data());
     } else
-        GLCALL(glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO)));
+        GLCALL(g_pHyprOpenGL->m_proc.glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO)));
 
     if (!ctx.m_data.clipBox.empty() || !data.clipRegion.empty()) {
         CRegion damageClip = ctx.m_data.clipBox;
@@ -1746,7 +1792,7 @@ void CHyprOpenGLImpl::renderTextureInternal(CRenderContext& ctx, SP<ITexture> te
         });
     }
 
-    GLCALL(glBindVertexArray(0));
+    GLCALL(g_pHyprOpenGL->m_proc.glBindVertexArray(0));
     bindArrayBuffer(0);
     tex->unbind();
 }
@@ -1788,7 +1834,7 @@ void CHyprOpenGLImpl::renderTextureMesh(CRenderContext& ctx, SP<ITexture> tex, c
 
     shader->setUniformMatrix3fv(SHADER_PROJ, 1, GL_TRUE, glMatrix.getMatrix());
     shader->setUniformInt(SHADER_TEX, 0);
-    GLCALL(glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_UV_VAO)));
+    GLCALL(g_pHyprOpenGL->m_proc.glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_UV_VAO)));
     bindArrayBuffer(shader->getUniformLocation(SHADER_SHADER_UV_VBO));
 
     glBufferData(GL_ARRAY_BUFFER, sizeof(SMeshRenderVertex) * vertices.size(), nullptr, GL_DYNAMIC_DRAW);
@@ -1817,7 +1863,7 @@ void CHyprOpenGLImpl::renderTextureMesh(CRenderContext& ctx, SP<ITexture> tex, c
         });
     }
 
-    GLCALL(glBindVertexArray(0));
+    GLCALL(g_pHyprOpenGL->m_proc.glBindVertexArray(0));
     bindArrayBuffer(0);
     tex->unbind();
 }
@@ -1857,7 +1903,7 @@ void CHyprOpenGLImpl::renderTexturePrimitive(CRenderContext& ctx, SP<ITexture> t
     }
     shader->setUniformMatrix3fv(SHADER_PROJ, 1, GL_TRUE, glMatrix.getMatrix());
     shader->setUniformInt(SHADER_TEX, 0);
-    glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
+    g_pHyprOpenGL->m_proc.glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
 
     ctx.m_data.damage.forEachRect([this, &ctx](const auto& RECT) {
         scissor(ctx, &RECT, ctx.m_data.transformDamage);
@@ -1865,7 +1911,7 @@ void CHyprOpenGLImpl::renderTexturePrimitive(CRenderContext& ctx, SP<ITexture> t
     });
 
     disableScissor();
-    glBindVertexArray(0);
+    g_pHyprOpenGL->m_proc.glBindVertexArray(0);
     tex->unbind();
 }
 
@@ -1895,7 +1941,7 @@ void CHyprOpenGLImpl::renderTextureMatte(CRenderContext& ctx, SP<ITexture> tex, 
     auto matteTex = matte->getTexture();
     matteTex->bind();
 
-    glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
+    g_pHyprOpenGL->m_proc.glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
 
     ctx.m_data.damage.forEachRect([this, &ctx](const auto& RECT) {
         scissor(ctx, &RECT, ctx.m_data.transformDamage);
@@ -1903,7 +1949,7 @@ void CHyprOpenGLImpl::renderTextureMatte(CRenderContext& ctx, SP<ITexture> tex, 
     });
 
     disableScissor();
-    glBindVertexArray(0);
+    g_pHyprOpenGL->m_proc.glBindVertexArray(0);
     tex->unbind();
 }
 
@@ -2123,7 +2169,7 @@ void CHyprOpenGLImpl::renderBorder(CRenderContext& ctx, const CBox& box, const C
     shader->setUniformFloat(SHADER_ROUNDING_POWER, data.roundingPower);
     shader->setUniformFloat(SHADER_THICK, scaledBorderSize);
 
-    glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
+    g_pHyprOpenGL->m_proc.glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
 
     // calculate the border's region, which we need to render over. No need to run the shader on
     // things outside there
@@ -2140,7 +2186,7 @@ void CHyprOpenGLImpl::renderBorder(CRenderContext& ctx, const CBox& box, const C
         });
     }
 
-    glBindVertexArray(0);
+    g_pHyprOpenGL->m_proc.glBindVertexArray(0);
 
     blend(BLEND);
 }
@@ -2215,7 +2261,7 @@ void CHyprOpenGLImpl::renderBorder(CRenderContext& ctx, const CBox& box, const C
     shader->setUniformFloat(SHADER_ROUNDING_POWER, data.roundingPower);
     shader->setUniformFloat(SHADER_THICK, scaledBorderSize);
 
-    glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
+    g_pHyprOpenGL->m_proc.glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
 
     // calculate the border's region, which we need to render over. No need to run the shader on
     // things outside there
@@ -2232,7 +2278,7 @@ void CHyprOpenGLImpl::renderBorder(CRenderContext& ctx, const CBox& box, const C
         });
     }
 
-    glBindVertexArray(0);
+    g_pHyprOpenGL->m_proc.glBindVertexArray(0);
     blend(BLEND);
 }
 
@@ -2305,7 +2351,7 @@ void CHyprOpenGLImpl::renderRoundedShadow(CRenderContext& ctx, const CBox& box, 
     shader->setUniformFloat2(SHADER_WINDOW_BOTTOM_RIGHT, -1.F, -1.F);
     shader->setUniformFloat(SHADER_THICK, 0.F);
 
-    glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
+    g_pHyprOpenGL->m_proc.glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
 
     CRegion drawRegion;
 
@@ -2347,7 +2393,7 @@ void CHyprOpenGLImpl::renderRoundedShadow(CRenderContext& ctx, const CBox& box, 
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         });
 
-    glBindVertexArray(0);
+    g_pHyprOpenGL->m_proc.glBindVertexArray(0);
 }
 
 void CHyprOpenGLImpl::renderInnerGlow(CRenderContext& ctx, const CBox& box, int round, float roundingPower, int range, const Config::CGradientValueData& grad, int glowPower,
@@ -2412,7 +2458,7 @@ void CHyprOpenGLImpl::renderInnerGlow(CRenderContext& ctx, const CBox& box, int 
     shader->setUniformFloat(SHADER_RANGE, range);
     shader->setUniformFloat(SHADER_SHADOW_POWER, GLOWPOWER);
 
-    glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
+    g_pHyprOpenGL->m_proc.glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
 
     if (ctx.m_data.clipBox.width != 0 && ctx.m_data.clipBox.height != 0) {
         CRegion damageClip{ctx.m_data.clipBox.x, ctx.m_data.clipBox.y, ctx.m_data.clipBox.width, ctx.m_data.clipBox.height};
@@ -2431,7 +2477,7 @@ void CHyprOpenGLImpl::renderInnerGlow(CRenderContext& ctx, const CBox& box, int 
         });
     }
 
-    glBindVertexArray(0);
+    g_pHyprOpenGL->m_proc.glBindVertexArray(0);
 }
 
 bool CHyprOpenGLImpl::saveBufferForMirror(CRenderContext& ctx, const CBox& box) {
@@ -2529,6 +2575,10 @@ void CHyprOpenGLImpl::bindArrayBuffer(GLuint buffer) {
 }
 
 void CHyprOpenGLImpl::bindFramebuffer(GLenum target, GLuint fb) {
+    // GLES2 has a single framebuffer binding point for drawing and reading
+    if (isLegacy())
+        target = GL_FRAMEBUFFER;
+
     const bool DRAW = target == GL_FRAMEBUFFER || target == GL_DRAW_FRAMEBUFFER;
     const bool READ = target == GL_FRAMEBUFFER || target == GL_READ_FRAMEBUFFER;
 
@@ -2576,8 +2626,12 @@ CFramebufferBindingGuard::~CFramebufferBindingGuard() {
 
     RASSERT(m_backend->m_bindingGuard == this, "Framebuffer binding guards must unwind in order");
     m_backend->m_bindingGuard = m_previous;
-    m_backend->bindFramebuffer(GL_DRAW_FRAMEBUFFER, m_drawFB);
-    m_backend->bindFramebuffer(GL_READ_FRAMEBUFFER, m_readFB);
+    if (m_backend->isLegacy())
+        m_backend->bindFramebuffer(GL_FRAMEBUFFER, m_drawFB);
+    else {
+        m_backend->bindFramebuffer(GL_DRAW_FRAMEBUFFER, m_drawFB);
+        m_backend->bindFramebuffer(GL_READ_FRAMEBUFFER, m_readFB);
+    }
     m_backend->setViewport(m_viewport[0], m_viewport[1], m_viewport[2], m_viewport[3]);
 }
 

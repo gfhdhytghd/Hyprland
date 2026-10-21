@@ -2,6 +2,7 @@
 
 #include <array>
 #include <compare>
+#include <expected>
 #include <glslang/Include/glslang_c_interface.h>
 #include <string>
 #include <vector>
@@ -79,9 +80,13 @@ namespace Render {
         SH_FRAG_LAST,
     };
 
+    // Turn preprocessed GLSL ES 3.00 into GLSL ES 1.00 for the legacy renderer. Fails on constructs without a GLES2
+    // equivalent, e.g. several fragment outputs.
+    std::expected<std::string, std::string> toGLES2(const std::string& source, bool fragment);
+
     class CShaderLoader {
       public:
-        CShaderLoader(const std::vector<std::string> includes, const std::array<std::string, SH_FRAG_LAST>& frags, const std::string shaderPath = "");
+        CShaderLoader(const std::vector<std::string> includes, const std::array<std::string, SH_FRAG_LAST>& frags, const std::string shaderPath = "", bool gles2 = false);
         ~CShaderLoader();
 
         void                                      include(const std::string& filename);
@@ -107,6 +112,7 @@ namespace Render {
 
         std::string                                                     m_overrideDefines;
         glsl_include_callbacks_t                                        m_callbacks;
+        bool                                                            m_gles2 = false;
     };
 
     inline UP<CShaderLoader> g_pShaderLoader;

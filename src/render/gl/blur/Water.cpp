@@ -326,9 +326,9 @@ void CWaterBlurMaterial::drawStateStep(CRenderContext& ctx, SState& state, float
     if (!impulses.empty())
         shader->setUniform4fv(SHADER_WATER_IMPULSES, sc<GLsizei>(impulses.size() / 4), impulses);
 
-    glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
+    g_pHyprOpenGL->m_proc.glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    glBindVertexArray(0);
+    g_pHyprOpenGL->m_proc.glBindVertexArray(0);
 
     state.impulses.clear();
     state.currentBuffer = 1 - state.currentBuffer;

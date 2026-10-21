@@ -36,19 +36,19 @@ bool CGLFramebuffer::internalAlloc(int w, int h, uint32_t drmFormat) {
 
     const auto format = getPixelFormatFromDRM(drmFormat);
     m_tex->bind();
-    glTexImage2D(GL_TEXTURE_2D, 0, format->glInternalFormat ? format->glInternalFormat : format->glFormat, w, h, 0, format->glFormat, format->glType, nullptr);
+    glTexImage2D(GL_TEXTURE_2D, 0, g_pHyprOpenGL->textureInternalFormat(format), w, h, 0, format->glFormat, format->glType, nullptr);
     g_pHyprOpenGL->bindFramebuffer(GL_FRAMEBUFFER, m_fb);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_tex->m_texID, 0);
 
     if (m_mirrorTex) {
         const auto format = getPixelFormatFromDRM(m_mirrorTex->m_drmFormat);
         m_mirrorTex->bind();
-        glTexImage2D(GL_TEXTURE_2D, 0, format->glInternalFormat ? format->glInternalFormat : format->glFormat, w, h, 0, format->glFormat, format->glType, nullptr);
+        glTexImage2D(GL_TEXTURE_2D, 0, g_pHyprOpenGL->textureInternalFormat(format), w, h, 0, format->glFormat, format->glType, nullptr);
         g_pHyprOpenGL->bindFramebuffer(GL_FRAMEBUFFER, m_fb);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, m_mirrorTex->m_texID, 0);
         GLenum drawBuffers[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
         glDrawBuffers(2, drawBuffers);
-    } else {
+    } else if (!g_pHyprOpenGL->isLegacy()) { // GLES2 has a single color attachment and no glDrawBuffers
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, 0, 0);
         GLenum drawBuffers[] = {GL_COLOR_ATTACHMENT0};
         glDrawBuffers(1, drawBuffers);
@@ -250,6 +250,15 @@ bool CGLFramebuffer::readPixelsRGBA8(std::span<uint8_t> destination) {
     g_pHyprOpenGL->makeEGLCurrent();
     const CFramebufferBindingGuard bindings{g_pHyprOpenGL};
     g_pHyprOpenGL->bindFramebuffer(GL_READ_FRAMEBUFFER, getFBID());
+    if (g_pHyprOpenGL->isLegacy()) { // GLES2 only has the pack alignment
+        GLint packAlignment = 0;
+        glGetIntegerv(GL_PACK_ALIGNMENT, &packAlignment);
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glReadPixels(0, 0, m_size.x, m_size.y, GL_RGBA, GL_UNSIGNED_BYTE, destination.data());
+        glPixelStorei(GL_PACK_ALIGNMENT, packAlignment);
+        return glGetError() == GL_NO_ERROR;
+    }
+
     GLint packAlignment = 0, packRowLength = 0, packSkipRows = 0, packSkipPixels = 0, packBuffer = 0;
     glGetIntegerv(GL_PACK_ALIGNMENT, &packAlignment);
     glGetIntegerv(GL_PACK_ROW_LENGTH, &packRowLength);
@@ -286,7 +295,7 @@ void CGLFramebuffer::invalidate(const std::vector<GLenum>& attachments) {
         return;
 
     static const auto PFBINVALIDATE = CConfigValue<Config::INTEGER>("debug:invalidate_buffers");
-    if (*PFBINVALIDATE)
+    if (*PFBINVALIDATE && !g_pHyprOpenGL->isLegacy())
         glInvalidateFramebuffer(GL_FRAMEBUFFER, attachments.size(), attachments.data());
 
     // m_cleared tracks the color attachment only, see clearAfterInvalidation()

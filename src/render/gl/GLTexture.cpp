@@ -9,6 +9,35 @@
 using namespace Hyprgraphics::Egl;
 using namespace Render::GL;
 
+struct SUploadFormat {
+    GLint  internalFormat = 0;
+    GLenum format         = 0;
+    GLenum type           = 0;
+    bool   swizzle        = false;
+};
+
+static bool isSwizzle(const SPixelFormat* format, const std::array<GLint, 4>& rgba, const std::array<GLint, 4>& rgb1) {
+    return format->swizzle == rgba || format->swizzle == rgb1;
+}
+
+// GLES2 has neither sized internal formats nor texture swizzles: upload R/B swapped 8-bit data as BGRA, and only
+// the 8-bit and 565 types exist.
+static std::optional<SUploadFormat> uploadFormat(const SPixelFormat* format) {
+    if (!g_pHyprOpenGL->isLegacy())
+        return SUploadFormat{.internalFormat = g_pHyprOpenGL->textureInternalFormat(format), .format = sc<GLenum>(format->glFormat), .type = sc<GLenum>(format->glType), .swizzle = true};
+
+    if (format->glType != GL_UNSIGNED_BYTE && format->glType != GL_UNSIGNED_SHORT_5_6_5)
+        return std::nullopt;
+
+    if (format->glFormat == GL_RGBA && format->glType == GL_UNSIGNED_BYTE && isSwizzle(format, SWIZZLE_BGRA, SWIZZLE_BGR1))
+        return SUploadFormat{.internalFormat = GL_BGRA_EXT, .format = GL_BGRA_EXT, .type = GL_UNSIGNED_BYTE};
+
+    if (format->swizzle.has_value() && !isSwizzle(format, SWIZZLE_RGBA, SWIZZLE_RGB1))
+        return std::nullopt;
+
+    return SUploadFormat{.internalFormat = format->glFormat, .format = sc<GLenum>(format->glFormat), .type = sc<GLenum>(format->glType)};
+}
+
 CGLTexture::CGLTexture(bool opaque) {
     m_opaque = opaque;
 }
@@ -46,7 +75,14 @@ CGLTexture::CGLTexture(uint32_t drmFormat, uint8_t* pixels, uint32_t stride, con
     setTexParameter(GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     setTexParameter(GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    if (format->swizzle.has_value())
+    const auto UPLOAD = uploadFormat(format);
+    if (!UPLOAD) {
+        LOG(Log::ERR, "Texture format {} can't be uploaded on GLES2", NFormatUtils::drmFormatName(drmFormat));
+        unbind();
+        return;
+    }
+
+    if (UPLOAD->swizzle && format->swizzle.has_value())
         swizzle(format->swizzle.value());
 
     bool alignmentChanged = false;
@@ -57,7 +93,7 @@ CGLTexture::CGLTexture(uint32_t drmFormat, uint8_t* pixels, uint32_t stride, con
     }
 
     GLCALL(glPixelStorei(GL_UNPACK_ROW_LENGTH_EXT, stride / format->bytesPerBlock));
-    GLCALL(glTexImage2D(GL_TEXTURE_2D, 0, format->glInternalFormat ? format->glInternalFormat : format->glFormat, size_.x, size_.y, 0, format->glFormat, format->glType, pixels));
+    GLCALL(glTexImage2D(GL_TEXTURE_2D, 0, UPLOAD->internalFormat, size_.x, size_.y, 0, UPLOAD->format, UPLOAD->type, pixels));
     GLCALL(glPixelStorei(GL_UNPACK_ROW_LENGTH_EXT, 0));
     if (alignmentChanged)
         GLCALL(glPixelStorei(GL_UNPACK_ALIGNMENT, 4));
@@ -129,9 +165,13 @@ void CGLTexture::update(uint32_t drmFormat, uint8_t* pixels, uint32_t stride, co
     const auto format = getPixelFormatFromDRM(drmFormat);
     ASSERT(format);
 
+    const auto UPLOAD = uploadFormat(format);
+    if (!UPLOAD)
+        return;
+
     bind();
 
-    if (format->swizzle.has_value())
+    if (UPLOAD->swizzle && format->swizzle.has_value())
         swizzle(format->swizzle.value());
 
     bool alignmentChanged = false;
@@ -143,13 +183,13 @@ void CGLTexture::update(uint32_t drmFormat, uint8_t* pixels, uint32_t stride, co
 
     GLCALL(glPixelStorei(GL_UNPACK_ROW_LENGTH_EXT, stride / format->bytesPerBlock));
 
-    damage.copy().intersect(CBox{{}, m_size}).forEachRect([&format, &pixels](const auto& rect) {
+    damage.copy().intersect(CBox{{}, m_size}).forEachRect([&UPLOAD, &pixels](const auto& rect) {
         GLCALL(glPixelStorei(GL_UNPACK_SKIP_PIXELS_EXT, rect.x1));
         GLCALL(glPixelStorei(GL_UNPACK_SKIP_ROWS_EXT, rect.y1));
 
         int width  = rect.x2 - rect.x1;
         int height = rect.y2 - rect.y1;
-        GLCALL(glTexSubImage2D(GL_TEXTURE_2D, 0, rect.x1, rect.y1, width, height, format->glFormat, format->glType, pixels));
+        GLCALL(glTexSubImage2D(GL_TEXTURE_2D, 0, rect.x1, rect.y1, width, height, UPLOAD->format, UPLOAD->type, pixels));
     });
 
     if (alignmentChanged)
