@@ -60,34 +60,8 @@ The binary in `build/` carries a RUNPATH to the fork. `cmake --install` strips i
 
 # Features
 
-- All of the eyecandy: gradient borders, many types of blur, animations, glow, shadows and much more
-- A lot of customization
-- 100% independent, no wlroots, no libweston, no kwin, no mutter.
-- Custom bezier and spring curves for the best animations
-- Powerful plugin support
-- Built-in plugin manager
-- Tearing support for better gaming performance
-- Easily expandable and readable codebase
-- Fast and active development
-- Not afraid to provide bleeding-edge features
-- Config reloaded instantly upon saving
-- Global keybinds passed to your apps of choice
-- Tiling/pseudotiling/floating/fullscreen windows
-- Special workspaces (scratchpads)
-- Window groups (tabbed mode)
-- Powerful window/monitor/layer rules
-- Socket-based IPC
-- Native IME and Input Panels Support
-- Fully dynamic workspaces
-- Extensive layout support
-    - Dwindle
-    - Scrolling
-    - Master
-    - Monocle
-    - Custom layout with Lua
-    - Custom layouts with plugins
-- Per Workspace Layouts
-- and much more...
+- All feature Hyprland have
+- Superfast issue&PR response
 
 <br>
 <br>
