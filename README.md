@@ -17,6 +17,12 @@ This is my own experimental branch for HDR issue fix.
 
 </div>
 
+# AI-powered maintenance
+
+This fork uses AI-powered automated maintenance, including upstream synchronization and issue/PR handling. Human maintainers periodically review the project and its changes to ensure code quality.
+
+Your [issues](https://github.com/gfhdhytghd/Hyprland/issues) and [pull requests](https://github.com/gfhdhytghd/Hyprland/pulls) will usually be handled or receive a response within three hours.
+
 # Building this fork
 
 This fork's HDR / color-management work needs DRM color pipeline support that upstream aquamarine doesn't have yet. Build it against the [aquamarine fork](https://github.com/gfhdhytghd/aquamarine), branch `drm-color-pipeline`:
