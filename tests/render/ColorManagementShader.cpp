@@ -65,3 +65,52 @@ TEST(ColorManagementShader, SurfaceAndBlurVariantsCompile) {
         }
     }
 }
+
+TEST(ColorManagementShader, SurfaceBlurCompositingVariantsCompile) {
+    ASSERT_TRUE(glslang_initialize_process());
+    const Hyprutils::Utils::CScopeGuard finalize([] { glslang_finalize_process(); });
+    std::vector<std::string>            includes;
+    for (const auto& [name, source] : SHADERS)
+        if (name.ends_with(".h") || name.ends_with(".glsl"))
+            includes.emplace_back(name);
+    std::array<std::string, SH_FRAG_LAST> fragments;
+    fragments.fill("surface.frag");
+    CShaderLoader loader(includes, fragments);
+    // Bits: CM, ICC, MIRROR, BLUR_MATTE, BLUR_ALPHA_MASK, DISCARD.
+    for (int variant = 0; variant < (1 << 6); ++variant) {
+        const bool cm = variant & 1;
+        if (!cm && (variant & 2))
+            continue;
+        std::map<std::string, std::string> defines;
+        for (const auto name :
+             {"RGBA", "DISCARD", "TINT", "ROUNDING", "CM", "TONEMAP", "SDR_MOD", "BLUR", "ICC", "MIRROR", "MOTION_BLUR", "BLUR_ALPHA_MASK", "BLUR_MATTE", "ALT_TONEMAP"})
+            defines[std::string("USE_") + name] = "0";
+        defines["USE_BLUR"]            = "1";
+        defines["USE_ROUNDING"]        = "1";
+        defines["USE_CM"]              = cm ? "1" : "0";
+        defines["USE_ICC"]             = variant & 2 ? "1" : "0";
+        defines["USE_MIRROR"]          = variant & 4 ? "1" : "0";
+        defines["USE_BLUR_MATTE"]      = variant & 8 ? "1" : "0";
+        defines["USE_BLUR_ALPHA_MASK"] = variant & 16 ? "1" : "0";
+        defines["USE_DISCARD"]         = variant & 32 ? "1" : "0";
+        defines["SOURCE_TF"]           = std::to_string(sc<int>(CM_TRANSFER_FUNCTION_ST2084_PQ));
+        defines["TARGET_TF"]           = std::to_string(sc<int>(CM_TRANSFER_FUNCTION_ST2084_PQ));
+        const auto source              = loader.process(fragments[SH_FRAG_SURFACE], defines);
+        ASSERT_FALSE(source.empty());
+        const glslang_input_t input{
+            .language        = GLSLANG_SOURCE_GLSL,
+            .stage           = GLSLANG_STAGE_FRAGMENT,
+            .client          = GLSLANG_CLIENT_NONE,
+            .target_language = GLSLANG_TARGET_NONE,
+            .code            = source.c_str(),
+            .default_version = 300,
+            .default_profile = GLSLANG_ES_PROFILE,
+            .messages        = GLSLANG_MSG_DEFAULT_BIT,
+            .resource        = glslang_default_resource(),
+        };
+        const std::unique_ptr<glslang_shader_t, decltype(&glslang_shader_delete)> shader(glslang_shader_create(&input), glslang_shader_delete);
+        ASSERT_TRUE(shader);
+        ASSERT_TRUE(glslang_shader_preprocess(shader.get(), &input)) << glslang_shader_get_info_log(shader.get());
+        EXPECT_TRUE(glslang_shader_parse(shader.get(), &input)) << "variant=" << variant << " " << glslang_shader_get_info_log(shader.get());
+    }
+}

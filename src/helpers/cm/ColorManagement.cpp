@@ -238,7 +238,9 @@ bool CImageDescription::needsCM(SP<const CImageDescription> target) const {
         //|| m_imageDescription.transferFunctionPower != target->m_imageDescription.transferFunctionPower // TODO unsupported
         || m_imageDescription.getPrimaries() != target->m_imageDescription.getPrimaries() //
         // || m_imageDescription.masteringPrimaries != target->m_imageDescription.masteringPrimaries // TODO unused
-        || m_imageDescription.luminances != target->m_imageDescription.luminances //
+        || m_imageDescription.luminances != target->m_imageDescription.luminances                         //
+        || m_imageDescription.encodingMinLuminance() != target->m_imageDescription.encodingMinLuminance() //
+        || m_imageDescription.encodingMaxLuminance() != target->m_imageDescription.encodingMaxLuminance() //
         // || m_imageDescription.masteringLuminances != target->m_imageDescription.masteringLuminances // TODO unused
         ;
 }

@@ -17,6 +17,9 @@ vec4 blurPrepare(vec4 pixColor, float contrast, float brightness
                  int sourceTF, int targetTF, mat3 convertMatrix, vec2 srcTFRange, vec2 dstTFRange, float sdrBrightnessMultiplier, float sdrSaturation
 #endif
 ) {
+    if (pixColor.a <= 0.0)
+        return vec4(0.0);
+
 #if USE_CM
     float alpha = pixColor.a;
     pixColor.rgb /= max(alpha, 0.001);
@@ -32,7 +35,7 @@ vec4 blurPrepare(vec4 pixColor, float contrast, float brightness
 
     // contrast
     if (contrast != 1.0)
-        pixColor.rgb = gain(pixColor.rgb, contrast);
+        pixColor.rgb = gain(pixColor.rgb / pixColor.a, contrast) * pixColor.a;
 
     // brightness
     pixColor.rgb *= max(1.0, brightness);

@@ -3,16 +3,13 @@
 #include "../../Compositor.hpp"
 #include "../../output/Monitor.hpp"
 
-CWLOutputResource::CWLOutputResource(SP<CWlOutput> resource_, PHLMONITOR pMonitor) : m_monitor(pMonitor), m_resource(resource_) {
+CWLOutputResource::CWLOutputResource(SP<CWlOutput> resource_, PHLMONITOR pMonitor, WP<CWLOutputProtocol> owner) : m_monitor(pMonitor), m_owner(owner), m_resource(resource_) {
     if UNLIKELY (!good())
         return;
 
     m_resource->setData(this);
 
     m_client = m_resource->client();
-
-    if (!m_monitor)
-        return;
 
     // route through the owning protocol object, not a name lookup: after a monitor
     // unplug/replug PROTO::outputs.at(name) is a *new* global, and releases meant for the
@@ -25,6 +22,9 @@ CWLOutputResource::CWLOutputResource(SP<CWlOutput> resource_, PHLMONITOR pMonito
         if (m_owner)
             m_owner->destroyResource(this);
     });
+
+    if (!m_monitor || !m_monitor->m_output || !m_owner || m_owner->m_defunct)
+        return;
 
     if (m_resource->version() >= 4) {
         m_resource->sendName(m_monitor->m_name.c_str());
@@ -73,7 +73,7 @@ SP<CWlOutput> CWLOutputResource::getResource() {
 }
 
 void CWLOutputResource::updateState() {
-    if (!m_monitor || (m_owner && m_owner->m_defunct))
+    if (!m_monitor || !m_monitor->m_output || !m_owner || m_owner->m_defunct)
         return;
 
     if (m_resource->version() >= 2)
@@ -99,10 +99,7 @@ CWLOutputProtocol::CWLOutputProtocol(const wl_interface* iface, const int& ver, 
 }
 
 void CWLOutputProtocol::bindManager(wl_client* client, void* data, uint32_t ver, uint32_t id) {
-    if UNLIKELY (m_defunct)
-        LOG(Log::WARN, "[wl_output] Binding a wl_output that's inert?? Possible client bug.");
-
-    const auto RESOURCE = m_outputs.emplace_back(makeShared<CWLOutputResource>(makeShared<CWlOutput>(client, ver, id), m_monitor.lock()));
+    const auto RESOURCE = m_outputs.emplace_back(makeShared<CWLOutputResource>(makeShared<CWlOutput>(client, ver, id), m_monitor.lock(), m_self));
 
     if UNLIKELY (!RESOURCE->good()) {
         wl_client_post_no_memory(client);
@@ -110,8 +107,11 @@ void CWLOutputProtocol::bindManager(wl_client* client, void* data, uint32_t ver,
         return;
     }
 
-    RESOURCE->m_self  = RESOURCE;
-    RESOURCE->m_owner = m_self;
+    RESOURCE->m_self = RESOURCE;
+
+    if (m_defunct || !m_monitor || !m_monitor->m_output)
+        return;
+
     m_events.outputBound.emit(RESOURCE);
 }
 

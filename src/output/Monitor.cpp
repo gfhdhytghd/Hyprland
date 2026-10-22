@@ -2592,6 +2592,8 @@ bool CMonitor::canNoShaderCM(bool forDSmode) {
     return isCompatibleTF(SRC_DESC_VALUE.transferFunction, DST_DESC_VALUE.transferFunction) //
         && SRC_DESC_VALUE.transferFunctionPower == DST_DESC_VALUE.transferFunctionPower     //
         && SRC_DESC_VALUE.luminances == DST_DESC_VALUE.luminances                           //
+        && SRC_DESC_VALUE.encodingMinLuminance() == DST_DESC_VALUE.encodingMinLuminance()   //
+        && SRC_DESC_VALUE.encodingMaxLuminance() == DST_DESC_VALUE.encodingMaxLuminance()   //
         && sourcePeak <= destinationPeak * 1.01f && primariesOk                             //
         && (SRC_DESC_VALUE.getPrimaries() == DST_DESC_VALUE.getPrimaries() || m_output->supportsCTM());
 }
