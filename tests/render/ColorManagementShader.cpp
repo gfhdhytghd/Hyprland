@@ -76,26 +76,27 @@ TEST(ColorManagementShader, SurfaceBlurCompositingVariantsCompile) {
     std::array<std::string, SH_FRAG_LAST> fragments;
     fragments.fill("surface.frag");
     CShaderLoader loader(includes, fragments);
-    // Bits: CM, ICC, MIRROR, BLUR_MATTE, BLUR_ALPHA_MASK, DISCARD.
-    for (int variant = 0; variant < (1 << 6); ++variant) {
+    // Bits: CM, ICC, MIRROR, BLUR_MATTE, BLUR_ALPHA_MASK, DISCARD, BLUR_PROPORTIONAL.
+    for (int variant = 0; variant < (1 << 7); ++variant) {
         const bool cm = variant & 1;
         if (!cm && (variant & 2))
             continue;
         std::map<std::string, std::string> defines;
-        for (const auto name :
-             {"RGBA", "DISCARD", "TINT", "ROUNDING", "CM", "TONEMAP", "SDR_MOD", "BLUR", "ICC", "MIRROR", "MOTION_BLUR", "BLUR_ALPHA_MASK", "BLUR_MATTE", "ALT_TONEMAP"})
+        for (const auto name : {"RGBA", "DISCARD", "TINT", "ROUNDING", "CM", "TONEMAP", "SDR_MOD", "BLUR", "ICC", "MIRROR", "MOTION_BLUR", "BLUR_ALPHA_MASK", "BLUR_MATTE",
+                                "ALT_TONEMAP", "BLUR_PROPORTIONAL"})
             defines[std::string("USE_") + name] = "0";
-        defines["USE_BLUR"]            = "1";
-        defines["USE_ROUNDING"]        = "1";
-        defines["USE_CM"]              = cm ? "1" : "0";
-        defines["USE_ICC"]             = variant & 2 ? "1" : "0";
-        defines["USE_MIRROR"]          = variant & 4 ? "1" : "0";
-        defines["USE_BLUR_MATTE"]      = variant & 8 ? "1" : "0";
-        defines["USE_BLUR_ALPHA_MASK"] = variant & 16 ? "1" : "0";
-        defines["USE_DISCARD"]         = variant & 32 ? "1" : "0";
-        defines["SOURCE_TF"]           = std::to_string(sc<int>(CM_TRANSFER_FUNCTION_ST2084_PQ));
-        defines["TARGET_TF"]           = std::to_string(sc<int>(CM_TRANSFER_FUNCTION_ST2084_PQ));
-        const auto source              = loader.process(fragments[SH_FRAG_SURFACE], defines);
+        defines["USE_BLUR"]              = "1";
+        defines["USE_ROUNDING"]          = "1";
+        defines["USE_CM"]                = cm ? "1" : "0";
+        defines["USE_ICC"]               = variant & 2 ? "1" : "0";
+        defines["USE_MIRROR"]            = variant & 4 ? "1" : "0";
+        defines["USE_BLUR_MATTE"]        = variant & 8 ? "1" : "0";
+        defines["USE_BLUR_ALPHA_MASK"]   = variant & 16 ? "1" : "0";
+        defines["USE_DISCARD"]           = variant & 32 ? "1" : "0";
+        defines["USE_BLUR_PROPORTIONAL"] = variant & 64 ? "1" : "0";
+        defines["SOURCE_TF"]             = std::to_string(sc<int>(CM_TRANSFER_FUNCTION_ST2084_PQ));
+        defines["TARGET_TF"]             = std::to_string(sc<int>(CM_TRANSFER_FUNCTION_ST2084_PQ));
+        const auto source                = loader.process(fragments[SH_FRAG_SURFACE], defines);
         ASSERT_FALSE(source.empty());
         const glslang_input_t input{
             .language        = GLSLANG_SOURCE_GLSL,

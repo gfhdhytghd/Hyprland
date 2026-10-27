@@ -174,7 +174,13 @@ void main() {
 #endif
 #endif
     vec4  blurredPixColor = texture(blurredBG, blurUV);
-    float pixBlurBgAlpha  = (1.0 - pixColor.a) * pixBlurAlphaMask;
+#if USE_BLUR_PROPORTIONAL
+    float t               = 1.0 - pixColor.a;
+    float blurredPixAlpha = 1.0 - t * t * t;
+#else
+    float blurredPixAlpha = 1.0;
+#endif
+    float pixBlurBgAlpha  = (1.0 - pixColor.a) * pixBlurAlphaMask * blurredPixAlpha;
     pixColor += blurredPixColor * pixBlurBgAlpha;
 #else
 #if USE_BLUR_ALPHA_MASK
@@ -195,7 +201,13 @@ void main() {
 #endif
 #endif
     vec4  blurredPixColor = texture(blurredBG, blurUV);
-    float pixBlurBgAlpha  = (1.0 - pixColor.a) * pixBlurAlphaMask;
+#if USE_BLUR_PROPORTIONAL
+    float t               = 1.0 - pixColor.a;
+    float blurredPixAlpha = 1.0 - t * t * t;
+#else
+    float blurredPixAlpha = 1.0;
+#endif
+    float pixBlurBgAlpha  = (1.0 - pixColor.a) * pixBlurAlphaMask * blurredPixAlpha;
     pixColor += blurredPixColor * pixBlurBgAlpha;
 #endif
 #endif
@@ -227,7 +239,13 @@ void main() {
     if (blurredMirrorColor.a > 0.0)
         blurredMirrorColor.rgb = targetToMirror(blurredMirrorColor.rgb / blurredMirrorColor.a, targetTF, dstTFRange) * blurredMirrorColor.a;
 #endif
-    float mirrorBlurBgAlpha  = (1.0 - mirrorColor.a) * mirrorBlurAlphaMask;
+#if USE_BLUR_PROPORTIONAL
+    float mirrorT            = 1.0 - mirrorColor.a;
+    float blurredMirrorAlpha = 1.0 - mirrorT * mirrorT * mirrorT;
+#else
+    float blurredMirrorAlpha = 1.0;
+#endif
+    float mirrorBlurBgAlpha  = (1.0 - mirrorColor.a) * mirrorBlurAlphaMask * blurredMirrorAlpha;
     mirrorColor += blurredMirrorColor * mirrorBlurBgAlpha;
 #else
 #if USE_BLUR_ALPHA_MASK
@@ -243,7 +261,13 @@ void main() {
         if (blurredMirrorColor.a > 0.0)
             blurredMirrorColor.rgb = targetToMirror(blurredMirrorColor.rgb / blurredMirrorColor.a, targetTF, dstTFRange) * blurredMirrorColor.a;
 #endif
-        float mirrorBlurBgAlpha  = (1.0 - mirrorColor.a) * mirrorBlurAlphaMask;
+#if USE_BLUR_PROPORTIONAL
+        float mirrorT            = 1.0 - mirrorColor.a;
+        float blurredMirrorAlpha = 1.0 - mirrorT * mirrorT * mirrorT;
+#else
+        float blurredMirrorAlpha = 1.0;
+#endif
+        float mirrorBlurBgAlpha  = (1.0 - mirrorColor.a) * mirrorBlurAlphaMask * blurredMirrorAlpha;
         mirrorColor += blurredMirrorColor * mirrorBlurBgAlpha;
 #if USE_BLUR_ALPHA_MASK
     } else

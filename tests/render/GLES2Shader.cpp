@@ -110,8 +110,9 @@ TEST_F(CGLES2ShaderTest, BlurBlendVariantsCompile) {
     for (const auto frag : {SH_FRAG_SURFACE, SH_FRAG_EXT}) {
         for (ShaderFeatureFlags base = 0; base < 16; ++base) {
             for (const ShaderFeatureFlags blur :
-                 std::array<ShaderFeatureFlags, 5>{SH_FEAT_BLUR_ALPHA_MASK, SH_FEAT_BLUR, SH_FEAT_BLUR | SH_FEAT_BLUR_ALPHA_MASK, SH_FEAT_BLUR | SH_FEAT_BLUR_MATTE,
-                                                   SH_FEAT_BLUR | SH_FEAT_BLUR_ALPHA_MASK | SH_FEAT_BLUR_MATTE}) {
+                 std::array<ShaderFeatureFlags, 7>{SH_FEAT_BLUR_ALPHA_MASK, SH_FEAT_BLUR, SH_FEAT_BLUR | SH_FEAT_BLUR_ALPHA_MASK, SH_FEAT_BLUR | SH_FEAT_BLUR_MATTE,
+                                                   SH_FEAT_BLUR | SH_FEAT_BLUR_ALPHA_MASK | SH_FEAT_BLUR_MATTE, SH_FEAT_BLUR | SH_FEAT_BLUR_PROPORTIONAL,
+                                                   SH_FEAT_BLUR | SH_FEAT_BLUR_MATTE | SH_FEAT_BLUR_PROPORTIONAL}) {
                 SCOPED_TRACE(FRAG_SHADERS[frag] + " features=" + std::to_string(base | blur));
                 const auto source = loader.getVariantSource(frag, {.features = sc<ShaderFeatureFlags>(base | blur)});
                 EXPECT_EQ(source.find("uniform sampler2D blurredBG") != std::string::npos, (blur & SH_FEAT_BLUR) != 0);

@@ -1530,6 +1530,9 @@ WP<CShader> CHyprOpenGLImpl::renderToFBInternal(CRenderContext& ctx, SP<ITexture
     if (data.blur && data.blurredBG && data.blurAlphaMatte && (isLegacy() || *PBLEND || data.forceBlurBlend))
         shaderFeatures |= SH_FEAT_BLUR_MATTE;
 
+    if (data.blurProportional)
+        shaderFeatures |= SH_FEAT_BLUR_PROPORTIONAL;
+
     if (data.forceBlurBlend)
         shaderFeatures |= SH_FEAT_BLUR_ALPHA_MASK;
 
@@ -1937,6 +1940,7 @@ void CHyprOpenGLImpl::renderTextureWithBlurInternal(CRenderContext& ctx, SP<ITex
 
     TRACY_GPU_ZONE("RenderTextureWithBlur");
 
+    static auto PPROPORTIONAL = CConfigValue<Config::INTEGER>("decoration:blur:proportional");
     static auto PBLEND        = CConfigValue<Config::INTEGER>("render:use_shader_blur_blend");
     const auto  NEEDS_STENCIL = data.discardMode != 0 && (!data.blockBlurOptimization || (data.discardMode & DISCARD_ALPHA));
     const bool  SHADERBLEND   = isLegacy() || *PBLEND || data.forceBlurBlend;
@@ -2070,24 +2074,25 @@ void CHyprOpenGLImpl::renderTextureWithBlurInternal(CRenderContext& ctx, SP<ITex
     // draw window
     renderTextureInternal(ctx, tex, box,
                           STextureRenderData{
-                              .blur           = SHADERBLEND,
-                              .blurA          = blurAlpha,
-                              .blurredBG      = data.blurredBG,
-                              .blurAlphaMatte = data.blurAlphaMatte,
-                              .damage         = data.damage,
-                              .a              = data.a * data.overallA,
-                              .round          = data.round,
-                              .roundingPower  = data.roundingPower,
-                              .discardActive  = SHADERBLEND && NEEDS_STENCIL && (!isLegacy() || data.blurredBG),
-                              .allowCustomUV  = true,
-                              .allowDim       = true,
-                              .noAA           = false,
-                              .wrapX          = data.wrapX,
-                              .wrapY          = data.wrapY,
-                              .discardMode    = data.discardMode,
-                              .discardOpacity = data.discardOpacity,
-                              .clipRegion     = blurClipRegion,
-                              .currentLS      = data.currentLS,
+                              .blur             = SHADERBLEND,
+                              .blurA            = blurAlpha,
+                              .blurredBG        = data.blurredBG,
+                              .blurAlphaMatte   = data.blurAlphaMatte,
+                              .damage           = data.damage,
+                              .a                = data.a * data.overallA,
+                              .round            = data.round,
+                              .roundingPower    = data.roundingPower,
+                              .blurProportional = *PPROPORTIONAL,
+                              .discardActive    = SHADERBLEND && NEEDS_STENCIL && (!isLegacy() || data.blurredBG),
+                              .allowCustomUV    = true,
+                              .allowDim         = true,
+                              .noAA             = false,
+                              .wrapX            = data.wrapX,
+                              .wrapY            = data.wrapY,
+                              .discardMode      = data.discardMode,
+                              .discardOpacity   = data.discardOpacity,
+                              .clipRegion       = blurClipRegion,
+                              .currentLS        = data.currentLS,
 
                               .primarySurfaceUVTopLeft     = ctx.m_data.primarySurfaceUVTopLeft,
                               .primarySurfaceUVBottomRight = ctx.m_data.primarySurfaceUVBottomRight,
