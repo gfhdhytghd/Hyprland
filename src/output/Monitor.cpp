@@ -586,28 +586,8 @@ void CMonitor::applyCMType(NCMType::eCMType cmType, NTransferFunction::eTF cmSdr
                  .maxFALL             = maxFALL});
             break;
         case NCMType::CM_HDR:
-        case NCMType::CM_HDR_EDID:
-            // HDR10 signals BT.2020 colorimetry, so pixels are always encoded in BT.2020. The panel's EDID gamut is only its mastering volume.
-            m_imageDescription = CImageDescription::from({.transferFunction    = NColorManagement::CM_TRANSFER_FUNCTION_ST2084_PQ,
-                                                          .primariesNameSet    = true,
-                                                          .primariesNamed      = NColorManagement::CM_PRIMARIES_BT2020,
-                                                          .primaries           = NColorManagement::getPrimaries(NColorManagement::CM_PRIMARIES_BT2020),
-                                                          .masteringPrimaries  = masteringPrimaries,
-                                                          .luminances          = {.min       = DEFAULT_HDR_IMAGE_DESCRIPTION->value().getTFMinLuminance(),
-                                                                                  .max       = DEFAULT_HDR_IMAGE_DESCRIPTION->value().getTFMaxLuminance(),
-                                                                                  .reference = DEFAULT_HDR_IMAGE_DESCRIPTION->value().getTFRefLuminance()},
-                                                          .masteringLuminances = masteringLuminances,
-                                                          .maxCLL              = maxCLL,
-                                                          .maxFALL             = maxFALL});
-            break;
+        case NCMType::CM_HDR_EDID: m_imageDescription = getHDRImageDescription(cmType); break;
         default: UNREACHABLE();
-    }
-    if (hdrPreset) {
-        auto description                 = m_imageDescription->value();
-        description.luminances.min       = minLuminance(HDR_MIN_LUMINANCE);
-        description.luminances.reference = referenceLuminance();
-        description.masteringLuminances  = {.min = minLuminance(HDR_MIN_LUMINANCE), .max = sc<uint32_t>(maxLuminance(HDR_MAX_LUMINANCE))};
-        m_imageDescription               = CImageDescription::from(description);
     }
 
     if (oldImageDescription != m_imageDescription) {
@@ -1440,10 +1420,7 @@ void CMonitor::changeWorkspace(const PHLWORKSPACE& pWorkspace, bool internal, bo
             !(Desktop::focusState()->window() && (Desktop::focusState()->window()->m_state & WINDOW_STATE_PINNED) && Desktop::focusState()->window()->m_monitor == m_self)) {
             static auto PFOLLOWMOUSE = CConfigValue<Config::INTEGER>("input:follow_mouse");
 
-            const auto  PLAST_FOCUSED_WINDOW = pWorkspace->getLastFocusedWindow();
-            const auto  PCOVERING_FS_WINDOW = Fullscreen::controller()->hasFullscreen(pWorkspace, true) ? Fullscreen::controller()->getFullscreenWindow(pWorkspace, true) : nullptr;
-
-            auto        pWindow = PLAST_FOCUSED_WINDOW ? (PLAST_FOCUSED_WINDOW->isFloating() ? PLAST_FOCUSED_WINDOW : PCOVERING_FS_WINDOW) : PCOVERING_FS_WINDOW;
+            auto        pWindow = pWorkspace->getLastFocusedWindow();
 
             if (!pWindow) {
                 if (*PFOLLOWMOUSE == 1)
@@ -2526,6 +2503,20 @@ std::optional<NColorManagement::PImageDescription> CMonitor::getFSImageDescripti
     return SURF ? SURF->m_current.imageDescription : getDefaultImageDescription();
 }
 
+// the HDR description auto HDR would switch to, offered to the fullscreen surface so it can trigger the switch
+std::optional<NColorManagement::PImageDescription> CMonitor::getAutoHDRImageDescription(const SP<CWLSurfaceResource>& surface) {
+    static const auto PAUTOHDR = CConfigValue<Config::INTEGER>("render:cm_auto_hdr");
+
+    if (!*PAUTOHDR || !supportsHDR() || !m_activeMonitorRule.m_iccFile.empty() || m_cmType == NCMType::CM_HDR || m_cmType == NCMType::CM_HDR_EDID)
+        return {};
+
+    const auto FS_WINDOW = Fullscreen::controller()->getFullscreenWindow(m_self.lock());
+    if (!FS_WINDOW || FS_WINDOW->wlSurface()->resource() != surface || FS_WINDOW->m_ruleApplicator->noAutoHDR().valueOrDefault())
+        return {};
+
+    return getHDRImageDescription(*PAUTOHDR == 2 ? NCMType::CM_HDR_EDID : NCMType::CM_HDR);
+}
+
 NColorManagement::SPCPRimaries CMonitor::getMasteringPrimaries() {
     return m_output->parsedEDID.chromaticityCoords.has_value() ?
         NColorManagement::SPCPRimaries{
@@ -2542,6 +2533,23 @@ NColorManagement::SImageDescription::SPCMasteringLuminances CMonitor::getMasteri
         .min = m_minLuminance >= 0 ? m_minLuminance : (m_output->parsedEDID.hdrMetadata.has_value() ? m_output->parsedEDID.hdrMetadata->desiredContentMinLuminance : 0),
         .max = sc<uint32_t>(maxLuminance(0)),
     };
+}
+
+// HDR10 signals BT.2020 colorimetry, so both HDR presets encode pixels in BT.2020. The panel's EDID gamut is only its mastering volume.
+NColorManagement::PImageDescription CMonitor::getHDRImageDescription(NCMType::eCMType /* both HDR presets share the encoding */) {
+    return CImageDescription::from({
+        .transferFunction    = NColorManagement::CM_TRANSFER_FUNCTION_ST2084_PQ,
+        .primariesNameSet    = true,
+        .primariesNamed      = NColorManagement::CM_PRIMARIES_BT2020,
+        .primaries           = NColorManagement::getPrimaries(NColorManagement::CM_PRIMARIES_BT2020),
+        .masteringPrimaries  = getMasteringPrimaries(),
+        .luminances          = {.min       = minLuminance(HDR_MIN_LUMINANCE),
+                                .max       = sc<uint32_t>(DEFAULT_HDR_IMAGE_DESCRIPTION->value().getTFMaxLuminance()),
+                                .reference = sc<uint32_t>(referenceLuminance())},
+        .masteringLuminances = {.min = minLuminance(HDR_MIN_LUMINANCE), .max = sc<uint32_t>(maxLuminance(HDR_MAX_LUMINANCE))},
+        .maxCLL              = maxCLL(),
+        .maxFALL             = maxFALL(),
+    });
 }
 
 uint32_t CMonitor::getPreferredReadFormat() {

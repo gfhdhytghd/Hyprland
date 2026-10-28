@@ -282,6 +282,8 @@ void CPointerManager::setCursorSurface(SP<Desktop::View::CWLSurface> surf, const
         m_currentCursorImage.surface = surf;
         m_currentCursorImage.scale   = surf->resource()->m_current.scale;
 
+        surf->resource()->m_pending.updated.bits.cursor = true;
+
         surf->resource()->map();
 
         m_currentCursorImage.destroySurface = surf->m_events.destroy.listen([this] { resetCursorImage(); });
@@ -396,7 +398,8 @@ void CPointerManager::resetCursorImage(bool apply) {
 }
 
 void CPointerManager::updateCursorBackend() {
-    if (g_pHyprRenderer->context().active()) {
+    // without a renderer (e.g. in unit tests) no render pass can be active
+    if (g_pHyprRenderer && g_pHyprRenderer->context().active()) {
         onMonitorImageDescriptionChanged();
         return;
     }

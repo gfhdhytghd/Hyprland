@@ -1324,12 +1324,14 @@ void CHyprOpenGLImpl::passCMUniforms(WP<CShader> shader, const NColorManagement:
         };
         shader->setUniformMatrix3fv(SHADER_CONVERT_MATRIX, 1, false, glConvertMatrix);
 
-        const auto                   mat                  = settings.dstPrimaries2XYZ;
+        const auto mat = settings.dstPrimaries2XYZ;
+        // clang-format off
         const std::array<GLfloat, 9> glTargetPrimariesXYZ = {
             mat[0][0], mat[1][0], mat[2][0], //
             mat[0][1], mat[1][1], mat[2][1], //
             mat[0][2], mat[1][2], mat[2][2], //
         };
+        // clang-format on
         shader->setUniformMatrix3fv(SHADER_TARGET_PRIMARIES_XYZ, 1, false, glTargetPrimariesXYZ);
         if (settings.needsTonemap) {
             const auto                   inverse              = Hyprgraphics::CMatrix3{mat}.invert().mat();
