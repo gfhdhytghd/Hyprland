@@ -2153,7 +2153,7 @@ SCMSettings IHyprRenderer::getCMSettings(CRenderContext& ctx, const NColorManage
     } else
         srcTF = imageDescription->value().transferFunction;
 
-    const bool  needsSDRmod = modifySDR && isSDR2HDR(ctx, imageDescription->value(), targetImageDescription->value());
+    const bool needsSDRmod = modifySDR && isSDR2HDR(ctx, imageDescription->value(), targetImageDescription->value());
     return ctx.m_cmSettingsCache.get(imageDescription, targetImageDescription,
                                      {
                                          .sourceTF        = srcTF,
@@ -2485,7 +2485,7 @@ void IHyprRenderer::handleFullscreenSettings(PHLMONITOR pMonitor) {
             if (SURF) {
                 const auto& surfaceDescription = SURF->m_current.imageDescription->value();
                 const bool  surfaceIsHDR       = isHDR(surfaceDescription);
-                wantHDR                 = *PAUTOHDR && surfaceIsHDR;
+                wantHDR                        = *PAUTOHDR && surfaceIsHDR;
                 if (FULLSCREEN_WINDOW && FULLSCREEN_WINDOW->m_ruleApplicator->noAutoHDR().valueOrDefault())
                     wantHDR = configuredHDR;
                 if (surfaceIsHDR && !isWindowsScRGB(surfaceDescription) && !pMonitor->m_lastScanout.expired()) {

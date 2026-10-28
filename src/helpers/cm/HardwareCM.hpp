@@ -16,8 +16,8 @@ namespace NColorManagement {
         bool                 supportsCTM   = false;
         float                sdrBrightness = 1.F; // only applied when the source is SDR and the target HDR, like the shader
         float                sdrSaturation = 1.F;
-        std::optional<float> sdrBlack;                     // sdr_min_luminance, absolute source black on HDR targets
-        std::array<float, 3> outputGain = {1.F, 1.F, 1.F}; // diagonal user CTM, which acts on the encoded output of composited frames
+        std::optional<float> sdrBlack;                                                     // sdr_min_luminance, absolute source black on HDR targets
+        std::array<float, 3> outputGain                                 = {1.F, 1.F, 1.F}; // diagonal user CTM, which acts on the encoded output of composited frames
         bool                 operator==(const SHardwareCMParams&) const = default;
     };
 

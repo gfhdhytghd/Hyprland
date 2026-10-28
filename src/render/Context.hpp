@@ -67,12 +67,12 @@ namespace Render {
         };
         std::vector<SBackdropCapture> m_backdropCaptures;
 
-        CCMSettingsCache                   m_cmSettingsCache;
+        CCMSettingsCache              m_cmSettingsCache;
 
-        bool                               m_blockSurfaceFeedback = false;
-        bool                               m_renderingSnapshot    = false;
-        bool                               m_renderingCapture     = false;
-        bool                               m_swapchainAcquired    = false;
+        bool                          m_blockSurfaceFeedback = false;
+        bool                          m_renderingSnapshot    = false;
+        bool                          m_renderingCapture     = false;
+        bool                          m_swapchainAcquired    = false;
 
         struct {
             bool fakeFrame            = false;

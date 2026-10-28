@@ -138,24 +138,24 @@ void CShader::getUniformLocations() {
     m_uniformLocations[SHADER_TARGET_LUMINANCE_COEFFICIENTS] = getUniform("targetLuminanceCoefficients");
 
     // shader has #include "CM.glsl"
-    m_uniformLocations[SHADER_SRC_TF_RANGE]         = getUniform("srcTFRange");
-    m_uniformLocations[SHADER_DST_TF_RANGE]         = getUniform("dstTFRange");
+    m_uniformLocations[SHADER_SRC_TF_RANGE]                = getUniform("srcTFRange");
+    m_uniformLocations[SHADER_DST_TF_RANGE]                = getUniform("dstTFRange");
     m_uniformLocations[SHADER_TARGET_XYZ_PRIMARIES]        = getUniform("targetXYZPrimaries");
-    m_uniformLocations[SHADER_TARGET_PRIMARIES_XYZ] = getUniform("targetPrimariesXYZ");
-    m_uniformLocations[SHADER_MAX_LUMINANCE]        = getUniform("maxLuminance");
-    m_uniformLocations[SHADER_DST_MAX_LUMINANCE]    = getUniform("dstMaxLuminance");
-    m_uniformLocations[SHADER_DST_REF_LUMINANCE]    = getUniform("dstRefLuminance");
-    m_uniformLocations[SHADER_SDR_SATURATION]       = getUniform("sdrSaturation");
-    m_uniformLocations[SHADER_SDR_BRIGHTNESS]       = getUniform("sdrBrightnessMultiplier");
-    m_uniformLocations[SHADER_CONVERT_MATRIX]       = getUniform("convertMatrix");
+    m_uniformLocations[SHADER_TARGET_PRIMARIES_XYZ]        = getUniform("targetPrimariesXYZ");
+    m_uniformLocations[SHADER_MAX_LUMINANCE]               = getUniform("maxLuminance");
+    m_uniformLocations[SHADER_DST_MAX_LUMINANCE]           = getUniform("dstMaxLuminance");
+    m_uniformLocations[SHADER_DST_REF_LUMINANCE]           = getUniform("dstRefLuminance");
+    m_uniformLocations[SHADER_SDR_SATURATION]              = getUniform("sdrSaturation");
+    m_uniformLocations[SHADER_SDR_BRIGHTNESS]              = getUniform("sdrBrightnessMultiplier");
+    m_uniformLocations[SHADER_CONVERT_MATRIX]              = getUniform("convertMatrix");
     m_uniformLocations[SHADER_MIRROR_CONVERT_MATRIX]       = getUniform("mirrorConvertMatrix");
     m_uniformLocations[SHADER_MIRROR_MAX_LUMINANCE]        = getUniform("mirrorMaxLuminance");
     m_uniformLocations[SHADER_MIRROR_TARGET_MAX_LUMINANCE] = getUniform("mirrorTargetMaxLuminance");
     m_uniformLocations[SHADER_SOURCE_REFERENCE_SCALE]      = getUniform("sourceReferenceScale");
     m_uniformLocations[SHADER_SRC_MIN_LUMINANCE]           = getUniform("srcMinLuminance");
-    m_uniformLocations[SHADER_LUT_3D]               = getUniform("iccLut3D");
-    m_uniformLocations[SHADER_LUT_SIZE]             = getUniform("iccLutSize");
-    m_uniformLocations[SHADER_TONEMAP_MODE]         = getUniform("tonemapMode");
+    m_uniformLocations[SHADER_LUT_3D]                      = getUniform("iccLut3D");
+    m_uniformLocations[SHADER_LUT_SIZE]                    = getUniform("iccLutSize");
+    m_uniformLocations[SHADER_TONEMAP_MODE]                = getUniform("tonemapMode");
     //
     m_uniformLocations[SHADER_TEX]                      = getUniform("tex");
     m_uniformLocations[SHADER_BLURRED_BG]               = getUniform("blurredBG");

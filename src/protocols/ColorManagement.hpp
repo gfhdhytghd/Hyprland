@@ -53,11 +53,11 @@ class CColorManagementSurface {
   public:
     CColorManagementSurface(SP<CWpColorManagementSurfaceV1> resource, SP<CWLSurfaceResource> surface_);
 
-    bool                                       good();
-    wl_client*                                 client();
+    bool                        good();
+    wl_client*                  client();
 
-    WP<CColorManagementSurface>                m_self;
-    WP<CWLSurfaceResource>                     m_surface;
+    WP<CColorManagementSurface> m_self;
+    WP<CWLSurfaceResource>      m_surface;
 
   private:
     SP<CWpColorManagementSurfaceV1> m_resource;

@@ -280,9 +280,9 @@ namespace Render::GL {
             PFNEGLWAITSYNCKHRPROC                         eglWaitSyncKHR                         = nullptr;
 
             // core GLES3 entry points, or their OES_vertex_array_object equivalents on GLES2
-            PFNGLGENVERTEXARRAYSOESPROC                   glGenVertexArrays                      = nullptr;
-            PFNGLBINDVERTEXARRAYOESPROC                   glBindVertexArray                      = nullptr;
-            PFNGLDELETEVERTEXARRAYSOESPROC                glDeleteVertexArrays                   = nullptr;
+            PFNGLGENVERTEXARRAYSOESPROC    glGenVertexArrays    = nullptr;
+            PFNGLBINDVERTEXARRAYOESPROC    glBindVertexArray    = nullptr;
+            PFNGLDELETEVERTEXARRAYSOESPROC glDeleteVertexArrays = nullptr;
         } m_proc;
 
         struct {
@@ -368,10 +368,10 @@ namespace Render::GL {
                                    bool modifySDR, float sdrMinLuminance, const SCMSettings& settings);
         void        passCMUniforms(CRenderContext& ctx, WP<CShader>, const NColorManagement::PImageDescription imageDescription,
                                    const NColorManagement::PImageDescription targetImageDescription, bool modifySDR = false, float sdrMinLuminance = -1.0f);
-        void passCMUniforms(CRenderContext& ctx, WP<CShader>, const NColorManagement::PImageDescription imageDescription);
-        void passCMUniforms(CRenderContext& ctx, WP<CShader>, const NColorManagement::PImageDescription imageDescription, const SCMSettings& settings);
-        void renderRectWithBlurInternal(CRenderContext& ctx, const CBox&, const CHyprColor&, const SRectRenderData& data);
-        void renderRectWithDamageInternal(CRenderContext& ctx, const CBox&, const CHyprColor&, const SRectRenderData& data);
+        void        passCMUniforms(CRenderContext& ctx, WP<CShader>, const NColorManagement::PImageDescription imageDescription);
+        void        passCMUniforms(CRenderContext& ctx, WP<CShader>, const NColorManagement::PImageDescription imageDescription, const SCMSettings& settings);
+        void        renderRectWithBlurInternal(CRenderContext& ctx, const CBox&, const CHyprColor&, const SRectRenderData& data);
+        void        renderRectWithDamageInternal(CRenderContext& ctx, const CBox&, const CHyprColor&, const SRectRenderData& data);
         WP<CShader> renderScreenShaderInternal(CRenderContext& ctx);
         WP<CShader> renderToFBInternal(CRenderContext& ctx, SP<ITexture> tex, const STextureRenderData& data, eTextureType texType, const CBox& newBox);
         void        renderTextureInternal(CRenderContext& ctx, SP<ITexture>, const CBox&, const STextureRenderData& data);

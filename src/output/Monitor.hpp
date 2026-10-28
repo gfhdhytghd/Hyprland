@@ -328,25 +328,25 @@ namespace Monitor {
         bool applyMonitorRuleSoft(Config::CMonitorRule&& pMonitorRule);
 
         //
-        const Mat3x3&                                               getTransformMatrix();
-        const Mat3x3&                                               getScaleMatrix();
+        const Mat3x3& getTransformMatrix();
+        const Mat3x3& getScaleMatrix();
 
-        void                                                        debugLastPresentation(const std::string& message);
+        void          debugLastPresentation(const std::string& message);
 
-        bool                                                        supportsWideColor();
-        bool                                                        supportsHDR();
-        float                                                       minLuminance(float defaultValue = 0);
-        int                                                         referenceLuminance() const;
-        int                                                         maxLuminance(int defaultValue = 80);
-        int                                                         maxAvgLuminance(int defaultValue = 80);
-        float                                                       maxFALL();
-        float                                                       maxCLL();
+        bool          supportsWideColor();
+        bool          supportsHDR();
+        float         minLuminance(float defaultValue = 0);
+        int           referenceLuminance() const;
+        int           maxLuminance(int defaultValue = 80);
+        int           maxAvgLuminance(int defaultValue = 80);
+        float         maxFALL();
+        float         maxCLL();
 
-        bool                                                        wantsWideColor();
-        bool                                                        wantsHDR();
+        bool          wantsWideColor();
+        bool          wantsHDR();
 
-        bool                                                        inHDR();
-        bool                                                        gammaRampsInUse();
+        bool          inHDR();
+        bool          gammaRampsInUse();
 
         // The KMS gamma LUT is shared by gamma-control ramps, ICC VCGT ramps and hardware CM of direct scanout buffers.
         void setClientGammaRamp(const std::vector<uint16_t>& ramp);
@@ -407,32 +407,32 @@ namespace Monitor {
         WP<Monitor::CMonitorResources>      resources();
 
       private:
-        void                updateMatrix();
-        Mat3x3              m_projMatrix;
-        Mat3x3              m_projOutputMatrix;
+        void                                       updateMatrix();
+        Mat3x3                                     m_projMatrix;
+        Mat3x3                                     m_projOutputMatrix;
 
-        void                setSpecialWorkspaceVisualState(bool active);
-        void                commitDPMSState(bool state);
-        void                scheduleModeRetry();
-        void                clearModeRetry();
-        void                updateVCGTRamps();
-        bool                trySetFormat(std::span<const uint32_t> formats);
+        void                                       setSpecialWorkspaceVisualState(bool active);
+        void                                       commitDPMSState(bool state);
+        void                                       scheduleModeRetry();
+        void                                       clearModeRetry();
+        void                                       updateVCGTRamps();
+        bool                                       trySetFormat(std::span<const uint32_t> formats);
 
-        bool                m_doneScheduled  = false;
-        bool                m_vcgtRampsSet   = false;
+        bool                                       m_doneScheduled = false;
+        bool                                       m_vcgtRampsSet  = false;
 
-        bool                                              stageScanoutCM(const NColorManagement::SImageDescription& source, bool& changed);
-        bool                                              scanoutCMNeedsUpdate(SP<CWLSurfaceResource> surface);
-        static NColorManagement::PImageDescription        scanoutDescription(SP<CWLSurfaceResource> surface);
-        void                                              clearScanoutCM();
+        bool                                       stageScanoutCM(const NColorManagement::SImageDescription& source, bool& changed);
+        bool                                       scanoutCMNeedsUpdate(SP<CWLSurfaceResource> surface);
+        static NColorManagement::PImageDescription scanoutDescription(SP<CWLSurfaceResource> surface);
+        void                                       clearScanoutCM();
 
-        std::vector<uint16_t>                             m_clientGammaRamp;
-        std::vector<uint16_t>                             m_vcgtRamp;
-        UP<NColorManagement::SHardwareCM>                 m_hardwareCM;               // active for the current direct scanout
-        bool                                              m_hardwareCMFailed = false; // the driver rejected it, stop trying until reconfigured
-        NColorManagement::CHardwareCMCache                m_hardwareCMCache;
-        int                 m_modeRetryCount = 0;
-        SP<CEventLoopTimer> m_modeRetryTimer;
+        std::vector<uint16_t>                      m_clientGammaRamp;
+        std::vector<uint16_t>                      m_vcgtRamp;
+        UP<NColorManagement::SHardwareCM>          m_hardwareCM;               // active for the current direct scanout
+        bool                                       m_hardwareCMFailed = false; // the driver rejected it, stop trying until reconfigured
+        NColorManagement::CHardwareCMCache         m_hardwareCMCache;
+        int                                        m_modeRetryCount = 0;
+        SP<CEventLoopTimer>                        m_modeRetryTimer;
 
         // Resources
         UP<Monitor::CMonitorResources> m_resources;
