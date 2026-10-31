@@ -27,6 +27,6 @@ std::string NJobControl::pluginBuildCommand(std::string_view directory, std::str
 }
 
 std::string NJobControl::headersInstallCommand(std::string_view workingDirectory, std::string_view headersPath, size_t jobs) {
-    return std::format("make{} -C '{}' installheaders && chmod -R 644 '{}' && find '{}' -type d -exec chmod a+x {{}} \\;", jobs > 0 ? std::format(" -j{}", jobs) : "",
-                       workingDirectory, headersPath, headersPath);
+    return std::format("make{} -C '{}' PREFIX='{}' installheaders && chmod -R 644 '{}' && find '{}' -type d -exec chmod a+x {{}} \\;",
+                       jobs > 0 ? std::format(" -j{}", jobs) : "", workingDirectory, headersPath, headersPath, headersPath);
 }
