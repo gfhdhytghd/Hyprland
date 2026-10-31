@@ -6,6 +6,7 @@
 
 #include <hyprutils/os/FileDescriptor.hpp>
 #include <hyprutils/os/Process.hpp>
+#include <hyprutils/utils/ScopeGuard.hpp>
 
 #include <array>
 #include <chrono>
@@ -37,6 +38,7 @@ namespace {
         uint32_t lastButton         = 0;
         int      buttonPresses      = 0;
         bool     resizing           = false;
+        bool     fullscreen         = false;
     };
 
     class CClient {
@@ -63,6 +65,8 @@ namespace {
         bool                       requestResize(const std::string& edge);
         bool                       requestResizeWithSerial(uint32_t serial, const std::string& edge);
         bool                       requestRawResize(uint32_t edge);
+        bool                       requestMaximize(bool maximized);
+        bool                       waitFullscreenMode(int mode);
         bool                       waitResizing(bool resizing);
         bool                       waitForDisconnect(int timeoutMs = 1500);
         pid_t                      pid() const;
@@ -316,13 +320,14 @@ std::optional<SStatus> CClient::status() {
     if (!LINE)
         return std::nullopt;
 
-    const auto LEAVE    = statusValue(*LINE, "leave");
-    const auto MOTION   = statusValue(*LINE, "motion_after_request");
-    const auto BUTTON   = statusValue(*LINE, "last_button");
-    const auto PRESSES  = statusValue(*LINE, "button_presses");
-    const auto RESIZING = statusValue(*LINE, "resizing");
+    const auto LEAVE      = statusValue(*LINE, "leave");
+    const auto MOTION     = statusValue(*LINE, "motion_after_request");
+    const auto BUTTON     = statusValue(*LINE, "last_button");
+    const auto PRESSES    = statusValue(*LINE, "button_presses");
+    const auto RESIZING   = statusValue(*LINE, "resizing");
+    const auto FULLSCREEN = statusValue(*LINE, "fullscreen");
 
-    if (!LEAVE || !MOTION || !BUTTON || !PRESSES || !RESIZING)
+    if (!LEAVE || !MOTION || !BUTTON || !PRESSES || !RESIZING || !FULLSCREEN)
         return std::nullopt;
 
     return SStatus{
@@ -331,6 +336,7 @@ std::optional<SStatus> CClient::status() {
         .lastButton         = static_cast<uint32_t>(*BUTTON),
         .buttonPresses      = *PRESSES,
         .resizing           = *RESIZING == 1,
+        .fullscreen         = *FULLSCREEN == 1,
     };
 }
 
@@ -348,6 +354,31 @@ bool CClient::requestResizeWithSerial(uint32_t serial, const std::string& edge) 
 
 bool CClient::requestRawResize(uint32_t edge) {
     return sendCommand(std::format("resize-raw {}\n", edge)) && !!waitLineContaining("requested resize", 500);
+}
+
+bool CClient::requestMaximize(bool maximized) {
+    const std::string COMMAND = maximized ? "set-maximized" : "unset-maximized";
+    return sendCommand(COMMAND + "\n") && waitLineContaining("completed " + COMMAND).has_value();
+}
+
+bool CClient::waitFullscreenMode(int mode) {
+    const auto  START = std::chrono::steady_clock::now();
+    std::string response;
+    while (std::chrono::steady_clock::now() - START < std::chrono::seconds(2)) {
+        const auto STATUS = status();
+        if (!STATUS)
+            return false;
+
+        response = getFromSocket("/activewindow");
+        if (Tests::getAttribute(response, "pid") == std::to_string(pid()) && Tests::getAttribute(response, "fullscreen") == std::to_string(mode) &&
+            Tests::getAttribute(response, "fullscreenClient") == std::to_string(mode) && STATUS->fullscreen == (mode == 2))
+            return true;
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+
+    NLog::red("Timed out waiting for xdg-interactive fullscreen mode {}: {}", mode, response);
+    return false;
 }
 
 bool CClient::waitResizing(bool resizing) {
@@ -470,4 +501,64 @@ TEST_CASE(xdgInteractive) {
 
     client.reset();
     Tests::killAllWindows();
+}
+
+TEST_CASE(xdgInteractiveMaximizeToggle) {
+    std::optional<CClient> client;
+    try {
+        client.emplace();
+    } catch (...) { FAIL_TEST("Couldn't start the xdg-interactive client"); }
+
+    ASSERT(setClientGeometry(client->pid(), SGeometry{.x = 300, .y = 300, .w = 500, .h = 400}), true);
+    ASSERT(client->waitFullscreenMode(0), true);
+
+    // Hyprland treats either XDG maximize request as a toggle after mapping.
+    for (const bool MAXIMIZED : {true, false}) {
+        ASSERT(client->requestMaximize(MAXIMIZED), true);
+        ASSERT(client->waitFullscreenMode(1), true);
+        ASSERT(client->requestMaximize(MAXIMIZED), true);
+        ASSERT(client->waitFullscreenMode(0), true);
+    }
+}
+
+SUBTEST(maximizePreservesFullscreen, bool floating, bool maximized) {
+    Hyprutils::Utils::CScopeGuard workspaceGuard = {[]() { getFromSocket("/dispatch hl.dsp.focus({ workspace = '1' })"); }};
+
+    std::optional<CClient>        client;
+    try {
+        client.emplace();
+    } catch (...) { FAIL_TEST("Couldn't start the xdg-interactive client"); }
+
+    OK(getFromSocket(std::format("/dispatch hl.dsp.window.float({{ action = '{}', window = 'pid:{}' }})", floating ? "enable" : "disable", client->pid())));
+    ASSERT(Tests::getAttribute(getFromSocket("/activewindow"), "floating"), floating ? "1" : "0");
+    ASSERT(client->waitFullscreenMode(0), true);
+    OK(getFromSocket(std::format("/dispatch hl.dsp.window.fullscreen({{ mode = 'fullscreen', action = 'set', window = 'pid:{}' }})", client->pid())));
+    ASSERT(client->waitFullscreenMode(2), true);
+
+    ASSERT(client->requestMaximize(maximized), true);
+    ASSERT(client->waitFullscreenMode(2), true);
+
+    // Focus changes cause new configures, which can prompt Wine to unset maximized again.
+    OK(getFromSocket("/dispatch hl.dsp.focus({ workspace = '101' })"));
+    OK(getFromSocket("/dispatch hl.dsp.focus({ workspace = '1' })"));
+    ASSERT(focusClient(client->pid()), true);
+    ASSERT(client->waitFullscreenMode(2), true);
+    ASSERT(client->requestMaximize(maximized), true);
+    ASSERT(client->waitFullscreenMode(2), true);
+}
+
+TEST_CASE(xdgFloatingSetMaximizedPreservesFullscreen) {
+    CALL_SUBTEST(maximizePreservesFullscreen, true, true);
+}
+
+TEST_CASE(xdgFloatingUnsetMaximizedPreservesFullscreen) {
+    CALL_SUBTEST(maximizePreservesFullscreen, true, false);
+}
+
+TEST_CASE(xdgTiledSetMaximizedPreservesFullscreen) {
+    CALL_SUBTEST(maximizePreservesFullscreen, false, true);
+}
+
+TEST_CASE(xdgTiledUnsetMaximizedPreservesFullscreen) {
+    CALL_SUBTEST(maximizePreservesFullscreen, false, false);
 }
