@@ -855,13 +855,7 @@ bool CPluginManager::updateHeaders(bool force) {
     progress.m_szCurrentMessage = "Installing sources";
     progress.print();
 
-    std::string cmd = std::format("sed -i -e \"s#PREFIX = /usr/local#PREFIX = {}#\" {}/Makefile", DataState::getHeadersPath(), WORKINGDIR);
-    if (m_bVerbose)
-        progress.printMessageAbove(verboseString("prepare install will run: {}", cmd));
-
-    ret = execAndGet(cmd);
-
-    cmd = NJobControl::headersInstallCommand(WORKINGDIR, DataState::getHeadersPath(), m_jobs);
+    std::string cmd = NJobControl::headersInstallCommand(WORKINGDIR, DataState::getHeadersPath(), m_jobs);
 
     if (m_bVerbose)
         progress.printMessageAbove(verboseString("install will run as sudo: {}", cmd));
