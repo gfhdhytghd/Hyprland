@@ -4,7 +4,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Issues are open to everyone. AI-assisted reports are welcome, see "AI usage in this fork" in AGENTS.md.
+        Issues are open to everyone.
         For bugs that also happen on upstream Hyprland, please say so and link any upstream report.
 
   - type: textarea
@@ -44,9 +44,3 @@ body:
     attributes:
       label: Logs, crash reports
       description: Relevant parts of the Hyprland log or a crash report. Attach large files instead of pasting them.
-
-  - type: textarea
-    id: ai
-    attributes:
-      label: AI use
-      description: Did you use AI to investigate or write this report? Which model(s)?

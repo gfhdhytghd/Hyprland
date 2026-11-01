@@ -49,15 +49,11 @@
  - manual C-style cleanup: `some_c_thing_new()` and `some_c_thing_free()` can be wrapped.
 - Make sure to write tests for code which our Unit (`tests/`) or Integration (`hyprtester/`) tests can test.
 
-## AI usage in this fork
+## Working in this fork
 
-This fork welcomes and recommends AI assistance: writing and reviewing code, tests, debugging, bisecting, documentation, issue triage and PR descriptions.
-
-- Agents may work with issues, discussions and PRs on this fork (`gfhdhytghd/Hyprland`) on behalf of their user: open them, write their text, reply to reviews and update their status.
-- Disclose AI use in every PR: what the AI did and which model(s) were used (name and version).
-- **Pure AI submissions** — code and text produced by an AI agent without substantive human authorship or review — must be made with a model at least as capable as **DeepSeek V4.1 Flash (1017)**. Pure AI submissions made with a weaker model will be closed. If in doubt, name the exact model and the maintainers decide.
-- AI-assisted submissions that a human has reviewed and stands behind have no model requirement.
-- Every submission meets the same bar regardless of how it was written: it builds, is clang-formatted, follows the guidelines above, and comes with tests where the test suites can cover it.
+- AI agents may work with issues, discussions and PRs on this fork (`gfhdhytghd/Hyprland`) on behalf of their user: open them, write their text, reply to reviews and update their status.
+- Delegate implementation, investigation and review work to Codex as much as possible. The lead agent plans, splits the work, reviews what Codex produces, verifies it and makes the final decision. Codex usually can't write to `.git` from its sandbox, so let it leave changes uncommitted and commit them yourself.
+- Every submission meets the same bar: it builds, is clang-formatted, follows the guidelines above, and comes with tests where the test suites can cover it.
 
 ## Contributing upstream
 
