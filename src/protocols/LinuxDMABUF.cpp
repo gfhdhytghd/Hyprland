@@ -29,7 +29,8 @@ static std::optional<dev_t> devIDFromFD(int fd) {
 CDMABUFFormatTable::CDMABUFFormatTable(SDMABUFTranche _rendererTranche, std::vector<std::pair<PHLMONITORREF, SDMABUFTranche>> tranches_) :
     m_rendererTranche(_rendererTranche), m_monitorTranches(tranches_) {
 
-    static const auto                       PSKIP_NON_KMS = CConfigValue<Config::INTEGER>("quirks:skip_non_kms_dmabuf_formats");
+    static const auto PSKIP_NON_KMS = CConfigValue<Config::BOOL>("quirks:skip_non_kms_dmabuf_formats");
+    m_skipNonKMSFormats             = *PSKIP_NON_KMS;
 
     std::vector<SDMABUFFormatTableEntry>    formatsVec;
     std::set<std::pair<uint32_t, uint64_t>> formats;
@@ -41,7 +42,7 @@ CDMABUFFormatTable::CDMABUFFormatTable(SDMABUFTranche _rendererTranche, std::vec
     for (auto const& fmt : m_rendererTranche.formats) {
         for (auto const& mod : fmt.modifiers) {
             LOG(Log::TRACE, "Render format 0x{:x} ({}) with mod 0x{:x} ({})", fmt.drmFormat, NFormatUtils::drmFormatName(fmt.drmFormat), mod, NFormatUtils::drmModifierName(mod));
-            if (*PSKIP_NON_KMS && !m_monitorTranches.empty()) {
+            if (m_skipNonKMSFormats && !m_monitorTranches.empty()) {
                 if (std::ranges::none_of(m_monitorTranches, [fmt, mod](const std::pair<PHLMONITORREF, SDMABUFTranche>& pair) {
                         return std::ranges::any_of(pair.second.formats, [fmt, mod](const SDRMFormat& format) {
                             return format.drmFormat == fmt.drmFormat && std::ranges::any_of(format.modifiers, [mod](uint64_t modifier) { return mod == modifier; });
@@ -451,6 +452,17 @@ void CLinuxDMABUFResource::sendMods() {
 }
 
 CLinuxDMABufV1Protocol::CLinuxDMABufV1Protocol(const wl_interface* iface, const int& ver, const std::string& name) : IWaylandProtocol(iface, ver, name) {
+    m_configRefreshed = Event::bus()->m_events.config.props_refreshed.listen([this](const bool) {
+        if (!m_formatTable)
+            return;
+
+        static const auto PSKIP_NON_KMS = CConfigValue<Config::BOOL>("quirks:skip_non_kms_dmabuf_formats");
+        if (m_formatTable->m_skipNonKMSFormats == *PSKIP_NON_KMS)
+            return;
+
+        resetFormatTable();
+    });
+
     static auto P = Event::bus()->m_events.ready.listen([this] {
         int  rendererFD = g_pCompositor->m_drmRenderNode.fd >= 0 ? g_pCompositor->m_drmRenderNode.fd : g_pCompositor->m_drm.fd;
         auto dev        = devIDFromFD(rendererFD);
@@ -497,15 +509,6 @@ CLinuxDMABufV1Protocol::CLinuxDMABufV1Protocol(const wl_interface* iface, const 
             static auto monitorRemoved = Event::bus()->m_events.monitor.removed.listen([this](PHLMONITOR mon) {
                 std::erase_if(m_formatTable->m_monitorTranches, [mon](std::pair<PHLMONITORREF, SDMABUFTranche> pair) { return pair.first == mon; });
                 resetFormatTable();
-            });
-
-            static auto configReloaded = Event::bus()->m_events.config.reloaded.listen([this] {
-                static const auto PSKIP_NON_KMS = CConfigValue<Config::INTEGER>("quirks:skip_non_kms_dmabuf_formats");
-                static auto       prev          = *PSKIP_NON_KMS;
-                if (prev != *PSKIP_NON_KMS) {
-                    prev = *PSKIP_NON_KMS;
-                    resetFormatTable();
-                }
             });
         }
 
@@ -556,8 +559,12 @@ void CLinuxDMABufV1Protocol::resetFormatTable() {
     // this might be a big copy
     auto newFormatTable = makeUnique<CDMABUFFormatTable>(m_formatTable->m_rendererTranche, m_formatTable->m_monitorTranches);
 
+    // Feedback helpers must use indices from the table being sent. Keep the old
+    // table alive until all replacement feedback has been queued.
+    std::swap(m_formatTable, newFormatTable);
+
     for (auto const& feedback : m_feedbacks) {
-        feedback->m_resource->sendFormatTable(newFormatTable->m_tableFD.get(), newFormatTable->m_tableSize);
+        feedback->m_resource->sendFormatTable(m_formatTable->m_tableFD.get(), m_formatTable->m_tableSize);
         if (feedback->m_lastFeedbackWasScanout) {
             PHLMONITOR mon;
             auto       HLSurface = Desktop::View::CWLSurface::fromResource(feedback->m_surface);
@@ -574,14 +581,11 @@ void CLinuxDMABufV1Protocol::resetFormatTable() {
                 continue;
             }
 
-            updateScanoutTranche(feedback->m_surface, mon);
+            feedback->sendScanoutFeedback(mon);
         } else {
             feedback->sendDefaultFeedback();
         }
     }
-
-    // delete old table after we sent new one
-    m_formatTable = std::move(newFormatTable);
 }
 
 void CLinuxDMABufV1Protocol::bindManager(wl_client* client, void* data, uint32_t ver, uint32_t id) {
@@ -611,31 +615,28 @@ void CLinuxDMABufV1Protocol::destroyResource(CLinuxDMABuffer* resource) {
 }
 
 void CLinuxDMABufV1Protocol::updateScanoutTranche(SP<CWLSurfaceResource> surface, PHLMONITOR pMonitor) {
-    WP<CLinuxDMABUFFeedbackResource> feedbackResource;
     for (auto const& f : m_feedbacks) {
         if (f->m_surface != surface)
             continue;
 
-        feedbackResource = f;
-        break;
+        f->sendScanoutFeedback(pMonitor);
     }
+}
 
-    if (!feedbackResource) {
-        LOG(Log::DEBUG, "updateScanoutTranche: surface has no dmabuf_feedback");
-        return;
-    }
-
+void CLinuxDMABUFFeedbackResource::sendScanoutFeedback(PHLMONITOR pMonitor) {
     if (!pMonitor) {
         LOG(Log::DEBUG, "updateScanoutTranche: resetting feedback");
-        feedbackResource->sendDefaultFeedback();
+        sendDefaultFeedback();
         return;
     }
 
+    auto&       formatTable = PROTO::linuxDma->m_formatTable;
     const auto& monitorTranchePair =
-        std::ranges::find_if(m_formatTable->m_monitorTranches, [pMonitor](std::pair<PHLMONITORREF, SDMABUFTranche> pair) { return pair.first == pMonitor; });
+        std::ranges::find_if(formatTable->m_monitorTranches, [pMonitor](std::pair<PHLMONITORREF, SDMABUFTranche> pair) { return pair.first == pMonitor; });
 
-    if (monitorTranchePair == m_formatTable->m_monitorTranches.end()) {
+    if (monitorTranchePair == formatTable->m_monitorTranches.end()) {
         LOG(Log::DEBUG, "updateScanoutTranche: monitor has no tranche");
+        sendDefaultFeedback();
         return;
     }
 
@@ -643,20 +644,21 @@ void CLinuxDMABufV1Protocol::updateScanoutTranche(SP<CWLSurfaceResource> surface
 
     LOG(Log::DEBUG, "updateScanoutTranche: sending a scanout tranche");
 
-    struct wl_array deviceArr = {
-        .size = sizeof(m_mainDevice),
-        .data = sc<void*>(&m_mainDevice),
+    auto            mainDevice = PROTO::linuxDma->m_mainDevice;
+    struct wl_array deviceArr  = {
+        .size = sizeof(mainDevice),
+        .data = sc<void*>(&mainDevice),
     };
-    feedbackResource->m_resource->sendMainDevice(&deviceArr);
+    m_resource->sendMainDevice(&deviceArr);
 
-    // prioritize scnaout tranche but have renderer fallback tranche
+    // prioritize scanout tranche but have renderer fallback tranche
     // also yes formats can be duped here because different tranche flags (ds and no ds)
-    feedbackResource->sendTranche(monitorTranche);
-    feedbackResource->sendTranche(m_formatTable->m_rendererTranche);
+    sendTranche(monitorTranche);
+    sendTranche(formatTable->m_rendererTranche);
 
-    feedbackResource->m_resource->sendDone();
+    m_resource->sendDone();
 
-    feedbackResource->m_lastFeedbackWasScanout = true;
+    m_lastFeedbackWasScanout = true;
 }
 
 dev_t CLinuxDMABufV1Protocol::getMainDevice() {
