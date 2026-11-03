@@ -78,6 +78,14 @@ using namespace Desktop::View;
 using namespace Render::GL;
 using namespace Monitor;
 
+// Older aquamarine builds (including the pinned fork revision) derive max_bpc from the
+// scanout format and have no explicit setter. Use the setter only where it exists.
+template <typename TState>
+static void setOutputMaxBpc(TState& state, uint8_t maxBpc) {
+    if constexpr (requires { state.setMaxBpc(maxBpc); })
+        state.setMaxBpc(maxBpc);
+}
+
 constexpr const char* drmFormatToString(uint32_t drmFormat) {
     switch (drmFormat) {
         case DRM_FORMAT_XRGB2101010: return "DRM_FORMAT_XRGB2101010";
@@ -963,6 +971,8 @@ bool CMonitor::applyMonitorRule(Config::CMonitorRule&& pMonitorRule) {
         || m_createdByUser;                             // wayland backend doesn't allow for disabling adaptive_sync
 
     m_pixelSize = m_size;
+
+    setOutputMaxBpc(*m_output->state, RULE->m_enable10bit ? 10 : 8);
 
     static constexpr auto formats10bit = std::to_array<uint32_t>({DRM_FORMAT_XRGB2101010, DRM_FORMAT_XBGR2101010});
     static constexpr auto formats8bit  = std::to_array<uint32_t>({DRM_FORMAT_XRGB8888, DRM_FORMAT_XBGR8888});
