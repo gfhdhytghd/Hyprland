@@ -27,6 +27,10 @@ std::string NJobControl::pluginBuildCommand(std::string_view directory, std::str
 }
 
 std::string NJobControl::headersInstallCommand(std::string_view workingDirectory, std::string_view headersPath, size_t jobs) {
-    return std::format("make{} -C '{}' PREFIX='{}' installheaders && chmod -R 644 '{}' && find '{}' -type d -exec chmod a+x {{}} \\;", jobs > 0 ? std::format(" -j{}", jobs) : "",
-                       workingDirectory, headersPath, headersPath, headersPath);
+    // The installer can create root-owned build files. Clean them with the same
+    // privileges, including when installation fails, and preserve its status.
+    return std::format("(make{} -C '{}' PREFIX='{}' installheaders && chmod -R 644 '{}' && find '{}' -type d -exec chmod a+x {{}} \\;); "
+                       "install_status=$?; rm -rf -- '{}'; cleanup_status=$?; "
+                       "if [ \"$install_status\" -ne 0 ]; then exit \"$install_status\"; fi; exit \"$cleanup_status\"",
+                       jobs > 0 ? std::format(" -j{}", jobs) : "", workingDirectory, headersPath, headersPath, headersPath, workingDirectory);
 }

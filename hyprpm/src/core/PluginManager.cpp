@@ -148,8 +148,12 @@ bool CPluginManager::createSafeDirectory(const std::string& path) {
     if (path.empty() || !path.starts_with(getTempRoot()))
         return false;
 
-    if (std::filesystem::exists(path))
-        std::filesystem::remove_all(path);
+    std::error_code ec;
+    std::filesystem::remove_all(path, ec);
+    if (ec) {
+        std::println(stderr, "{}", failureString("Could not clean working directory {}: {}. Check its ownership and permissions.", path, ec.message()));
+        return false;
+    }
 
     if (std::filesystem::exists(path))
         return false;
@@ -866,8 +870,14 @@ bool CPluginManager::updateHeaders(bool force) {
     if (m_bVerbose)
         std::println("{}", verboseString("installer returned: {}", ret));
 
-    // remove build files
-    std::filesystem::remove_all(WORKINGDIR);
+    // The elevated installer removes build files it may have created as root.
+    // Handle a failed or cancelled installer without throwing on its leftovers.
+    std::error_code cleanupError;
+    std::filesystem::remove_all(WORKINGDIR, cleanupError);
+    if (cleanupError) {
+        progress.printMessageAbove(failureString("Could not clean working directory {}: {}", WORKINGDIR, cleanupError.message()));
+        return false;
+    }
 
     auto HEADERSVALID = headersValid();
 
