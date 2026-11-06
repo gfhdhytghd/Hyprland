@@ -19,3 +19,11 @@ separate wiki PR. Do not declare AI use in PRs, commits or comments, and never a
 declare it; per fork policy AI use is not to be stated. Preserve work and
 describe blockers when verification fails. Never falsify success receipts. Do not modify this
 automation's scripts, instructions, timers, credentials or user settings.
+
+== Reporting ==
+- The receipt summary must be Chinese, user-facing, at most 300 characters, and describe actions and evidence.
+  It is sent verbatim to the user's Feishu DM.
+- Add optional "attention":"..." in Chinese only when the user personally must act: a tier-3 PR awaits their
+  decision, an auto/* PR was opened, a contributor asks for the maintainer personally, or a manual step the
+  script is not allowed to perform (release, tag, marketplace submission, merging its own tier-3 PR).
+  Otherwise omit attention.

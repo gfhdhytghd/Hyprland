@@ -21,6 +21,17 @@ AQ_UPSTREAM = 'https://github.com/hyprwm/aquamarine.git'
 AQ_LOCAL = Path('/home/wilf/data/aquamarine')
 LOGFILE = STATE / 'maintenance.log'
 MODE = '-'
+FEISHU_USER = 'ou_3db23cf05c03b4942c355797cc88e8f9'
+REPORT = {'done': [], 'attention': []}
+REPORT_NAME = 'Hyprland fork 运维'
+RUN_STAMP = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
+# Appended to every agent task: the receipt feeds the Feishu report, so it must be written for the user.
+RECEIPT_RULES = '''The receipt summary must be Chinese, user-facing, at most 300 characters, and describe actions and evidence.
+It is sent verbatim to the user's Feishu DM. Reasons must also be Chinese.
+Add optional "attention":"..." in Chinese only when the user personally must act: a tier-3 PR awaits their
+decision, an auto/* PR was opened, a contributor asks for the maintainer personally, or a manual step the
+script is not allowed to perform (release, tag, marketplace submission, merging its own tier-3 PR).
+Otherwise omit attention.'''
 
 
 def log(message):
@@ -36,6 +47,70 @@ def log(message):
                 output.write(f'{stamp} [{MODE}] {line}\n')
     except OSError:
         pass
+
+
+def feishu(text, urgent=False):
+    """Direct message to the user through lark-cli's bot identity. Best effort: never raises."""
+    try:
+        text = text[:2999] + '…' if len(text) > 3000 else text
+        if os.environ.get('HYPR_MAINT_FEISHU') == '0':
+            log(f'feishu: 仅记录（加急={urgent}）\n{text}')
+            return
+        key = f'{RUN_STAMP}-{MODE[:16]}-{"urgent" if urgent else "done"}'
+        result = subprocess.run(['lark-cli', 'im', '+messages-send', '--as', 'bot', '--user-id', FEISHU_USER,
+                                 '--text', text, '--idempotency-key', key],
+                                capture_output=True, text=True, timeout=60, cwd=STATE)
+        if result.returncode != 0:
+            raise RuntimeError(f'发送失败：{result.returncode} {result.stderr}')
+        payload = json.loads(result.stdout)
+        if payload.get('ok') is not True:
+            raise RuntimeError(f'发送失败：{result.stdout}')
+        message_id = payload['data']['message_id']
+        if not message_id:
+            raise RuntimeError('发送结果缺少 message_id')
+        if urgent:
+            result = subprocess.run(['lark-cli', 'im', 'messages', 'urgent_app', '--as', 'bot',
+                                     '--message-id', message_id, '--user-id-type', 'open_id',
+                                     '--data', json.dumps({'user_id_list': [FEISHU_USER]})],
+                                    capture_output=True, text=True, timeout=60, cwd=STATE)
+            if result.returncode != 0 or json.loads(result.stdout).get('ok') is not True:
+                raise RuntimeError(f'加急失败：{result.returncode} {result.stderr} {result.stdout}')
+    except Exception as error:
+        log(f'feishu: {type(error).__name__}: {error}')
+
+
+def report():
+    heading = f'[{REPORT_NAME} {MODE}]'
+    if REPORT['done']:
+        stamp = datetime.datetime.now().astimezone().strftime('%m-%d %H:%M %Z')
+        feishu(f'{heading} {stamp}\n已完成 {len(REPORT["done"])} 项：\n\n' + '\n\n'.join(REPORT['done']))
+    if REPORT['attention']:
+        feishu(f'{heading} 需要你处理 {len(REPORT["attention"])} 项：\n\n' + '\n\n'.join(REPORT['attention']), urgent=True)
+
+
+def report_attention(key, error, target=None):
+    text = f'{key}：{error}'
+    REPORT['attention'].append(text + (f'\n记录：{target}' if target else ''))
+
+
+def report_done(key, title, receipt, target):
+    text = f'{key} {title}\n{receipt.get("summary", "")}'
+    for push in receipt.get('pushed', []):
+        text += f'\n推送：{push["branch"]}@{push["sha"][:9]}'
+    REPORT['done'].append(text + f'\n记录：{target}')
+
+
+def agent(key, title, target, checkout, task):
+    try:
+        receipt = claude(target, checkout, task)
+        if receipt.get('attention'):
+            report_attention(f'{key} {title}', receipt['attention'], target)
+        if receipt.get('status') != 'completed':
+            raise RuntimeError(receipt.get('reason') or '任务未完成，保留记录以便重试')
+        return receipt
+    except Exception as error:
+        report_attention(key, f'代理运行失败（{type(error).__name__}）：{error}', target)
+        raise
 
 
 def run(*args, cwd=None):
@@ -92,12 +167,11 @@ def claude(target, repo, task):
     log(f"agent run {target.name}: cost=${result.get('total_cost_usd') or 0:.2f} turns={result.get('num_turns')} error={result.get('is_error')}")
     if result.get('is_error') or result.get('permission_denials'):
         log(result.get('result', ''))
-        raise RuntimeError(f'Claude failed or encountered denied tools; inspect {target}')
+        raise RuntimeError(f'Claude 运行失败或工具调用遭拒；记录：{target}')
     log(result.get('result', ''))
     receipt = json.loads((target / 'receipt.json').read_text())
     log(f'receipt {target.name}: {receipt}')
-    if receipt.get('status') != 'completed':
-        raise RuntimeError(f'Incomplete task; preserved for retry: {target}')
+    return receipt
 
 
 def update_local(remote_main, local_repo=LOCAL, slug=REPO, branch='main'):
@@ -163,7 +237,7 @@ def sync_aquamarine(check):
     if subprocess.run(['git', 'merge-base', '--is-ancestor', upstream, 'HEAD'], cwd=repo).returncode == 0:
         log('aquamarine: all upstream main commits are already integrated.')
         return fork
-    claude(target, repo, f'''Synchronize ALL commits from hyprwm/aquamarine upstream/main through {upstream} into
+    receipt = agent(AQ_REPO, '分支同步', target, repo, f'''Synchronize ALL commits from hyprwm/aquamarine upstream/main through {upstream} into
 origin/master of the fork {AQ_REPO} (this checkout). The fork's master carries DRM color pipeline / HDR
 metadata work that gfhdhytghd/Hyprland main depends on; its flake.nix pins {AQ_REPO}/master. Merge the
 upstream main history; do not cherry-pick. Resolve conflicts preserving the fork's API and fixes
@@ -175,7 +249,9 @@ it configures, builds and passes unit tests against that prefix (PKG_CONFIG_PATH
 no longer builds because of upstream aquamarine API changes, do not publish; preserve the merge on a named
 branch of {AQ_REPO} and report the blocker. Push master normally (no force). Do not push to {REPO};
 the Hyprland sync step updates its flake.lock afterwards.
-After successful push, write {target}/receipt.json with {{"status":"completed"}}.''')
+After successful push, write {target}/receipt.json with {{"status":"completed","summary":"..."}}.
+Otherwise write {{"status":"blocked","reason":"...","summary":"..."}} for retry.
+{RECEIPT_RULES}''')
     remote = run('git', 'ls-remote', 'origin', 'refs/heads/master', cwd=repo).split()[0]
     run('git', 'fetch', 'origin', 'master', cwd=repo)
     run('git', 'merge-base', '--is-ancestor', upstream, remote, cwd=repo)
@@ -183,6 +259,8 @@ After successful push, write {target}/receipt.json with {{"status":"completed"}}
         local = update_local(remote, AQ_LOCAL, AQ_REPO, 'master')
     except subprocess.CalledProcessError as error:
         local = f'local update failed: {error}'
+    report_done(AQ_REPO, f'master {remote[:9]} 发布完成',
+                dict(receipt, pushed=[{'branch': 'master', 'sha': remote}]), target)
     log(f'aquamarine fork master {remote[:9]} published; {local}.')
     notify('Upstream aquamarine synced into fork', f'master {remote[:9]}; {local}; reinstall .prefix if you build against it')
     return remote
@@ -225,7 +303,7 @@ consistently, getting narHash via `nix flake prefetch` or GitHub). Before publis
 this main against aquamarine {aq_master} installed into a prefix inside {target} (never a system path).
 If they are incompatible, keep the old pin, still publish the upstream merge if it is verified,
 and report the blocker.''' if stale_pin else '')
-    claude(target, repo, f'''Synchronize ALL commits from upstream/main through {upstream} into origin/main.{pin_task}
+    receipt = agent(REPO, '分支同步', target, repo, f'''Synchronize ALL commits from upstream/main through {upstream} into origin/main.{pin_task}
 This includes every PR merged upstream, plus direct main commits. Version numbers follow upstream:
 VERSION and dependency minimum versions (e.g. AQUAMARINE_MINIMUM_VERSION) take upstream's values, raised
 only where fork main truly needs newer. Merge the upstream main history;
@@ -234,7 +312,9 @@ fork-specific features, and fixes. Build and run applicable tests before publish
 (no force). If remote main moves, fetch and incorporate its changes, then revalidate. If correctness
 cannot be established, preserve work on a named branch and report the blocker; do not publish broken main.
 After the push, the automation itself fast-forwards the user's local checkout; do not touch it yourself.
-After successful push, write {target}/receipt.json with {{"status":"completed"}}.''')
+After successful push, write {target}/receipt.json with {{"status":"completed","summary":"..."}}.
+Otherwise write {{"status":"blocked","reason":"...","summary":"..."}} for retry.
+{RECEIPT_RULES}''')
     remote = run('git', 'ls-remote', 'origin', 'refs/heads/main', cwd=repo).split()[0]
     run('git', 'fetch', 'origin', 'main', cwd=repo)
     run('git', 'merge-base', '--is-ancestor', upstream, remote, cwd=repo)
@@ -242,6 +322,8 @@ After successful push, write {target}/receipt.json with {{"status":"completed"}}
         local = update_local(remote)
     except subprocess.CalledProcessError as error:
         local = f'local update failed: {error}'
+    report_done(REPO, f'main {remote[:9]} 发布完成',
+                dict(receipt, pushed=[{'branch': 'main', 'sha': remote}]), target)
     log(f'Fork main {remote[:9]} published; {local}.')
     notify('Upstream synced into fork', f'main {remote[:9]}; {local}')
     if aq_error:
@@ -266,7 +348,7 @@ def triage(check):
         try:
             target, repo = workspace('item-' + key)
             (target / 'github-context.json').write_text(json.dumps(data, indent=2))
-            claude(target, repo, f'''Handle fork item https://github.com/{REPO}/issues/{key}.
+            receipt = agent('#' + key, item['title'], target, repo, f'''Handle fork item https://github.com/{REPO}/issues/{key}.
 Read the full current issue/PR, comments, reviews and checks using gh; initial snapshot is in
 {target}/github-context.json. You lead the work and may call Codex for implementation and independent
 review. For an issue: investigate, fix reproducible bugs, add suitable tests and create a fork PR;
@@ -283,8 +365,10 @@ Avoid duplicate fixes/PRs; check existing work first. Never claim hardware or vi
 without evidence. A substantive response requesting required information counts as handled until
 new activity. A transient tool/build/auth failure does not: record blocked instead for retry.
 Before completing, re-read the item to catch changes that arrived during your work and address them.
-Write {target}/receipt.json with {{"status":"completed"}} only after handling is complete;
-otherwise use {{"status":"blocked","reason":"..."}}. Summarize actions and validation.''')
+Write {target}/receipt.json with {{"status":"completed","summary":"..."}} only after handling is complete;
+otherwise use {{"status":"blocked","reason":"..."}}. Summarize actions and validation.
+{RECEIPT_RULES}''')
+            report_done('#' + key, item['title'], receipt, target)
             handled[key] = digest(snapshot(item))
             notify(f'Fork #{key} handled', item['title'])
             temp = statefile.with_suffix('.tmp')
@@ -333,4 +417,8 @@ if __name__ == '__main__':
             {'sync': sync, 'triage': triage, 'notifications': notifications}[args.mode](args.check)
         except Exception as error:
             log(f'FAILED: {type(error).__name__}: {error}')
+            if not REPORT['attention']:  # item failures are already listed
+                report_attention(MODE + ' 运行失败', str(error))
             raise
+        finally:
+            report()
