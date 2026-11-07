@@ -755,7 +755,7 @@ void IHyprRenderer::renderWindow(CRenderContext& ctx, PHLWINDOW pWindow, PHLMONI
 
         renderdata.surfaceCounter = 0;
         pWindow->wlSurface()->resource()->breadthfirst(
-            [this, &ctx, &renderdata, &pWindow](SP<CWLSurfaceResource> s, const Vector2D& offset, void* data) {
+            [&ctx, &renderdata, &pWindow](SP<CWLSurfaceResource> s, const Vector2D& offset, void* data) {
                 if (!s->m_current.texture)
                     return;
 
@@ -859,7 +859,7 @@ void IHyprRenderer::renderWindow(CRenderContext& ctx, PHLWINDOW pWindow, PHLMONI
                     renderdata.fadeAlpha = PARENTFADEALPHA * popup->alpha()[POPUP_ALPHA_FADE]->value();
 
                     popup->wlSurface()->resource()->breadthfirst(
-                        [this, &ctx, &renderdata](SP<CWLSurfaceResource> s, const Vector2D& offset, void* data) {
+                        [&ctx, &renderdata](SP<CWLSurfaceResource> s, const Vector2D& offset, void* data) {
                             if (!s->m_current.texture)
                                 return;
 
@@ -1058,7 +1058,7 @@ void IHyprRenderer::renderLayer(CRenderContext& ctx, PHLLS pLayer, PHLMONITOR pM
 
     if (!popups)
         pLayer->wlSurface()->resource()->breadthfirst(
-            [this, &ctx, &renderdata, &pLayer](SP<CWLSurfaceResource> s, const Vector2D& offset, void* data) {
+            [&ctx, &renderdata, &pLayer](SP<CWLSurfaceResource> s, const Vector2D& offset, void* data) {
                 if (!s->m_current.texture)
                     return;
 
@@ -1087,7 +1087,7 @@ void IHyprRenderer::renderLayer(CRenderContext& ctx, PHLLS pLayer, PHLMONITOR pM
     renderdata.surfaceCounter = 0;
     if (popups) {
         pLayer->popupHead()->breadthfirst(
-            [this, &ctx, &renderdata, workspaceScene](WP<Desktop::View::CPopup> popup, void* data) {
+            [&ctx, &renderdata, workspaceScene](WP<Desktop::View::CPopup> popup, void* data) {
                 if (!shouldRenderPopup(popup, workspaceScene))
                     return;
 
@@ -1134,7 +1134,7 @@ void IHyprRenderer::renderIMEPopup(CRenderContext& ctx, CInputPopup* pPopup, PHL
     }
 
     SURF->breadthfirst(
-        [this, &ctx, &renderdata, &SURF](SP<CWLSurfaceResource> s, const Vector2D& offset, void* data) {
+        [&ctx, &renderdata, &SURF](SP<CWLSurfaceResource> s, const Vector2D& offset, void* data) {
             if (!s->m_current.texture)
                 return;
 
@@ -1164,7 +1164,7 @@ void IHyprRenderer::renderSessionLockSurface(CRenderContext& ctx, WP<SSessionLoc
     renderdata.h        = pMonitor->m_size.y;
 
     renderdata.surface->breadthfirst(
-        [this, &ctx, &renderdata, &pSurface](SP<CWLSurfaceResource> s, const Vector2D& offset, void* data) {
+        [&ctx, &renderdata, &pSurface](SP<CWLSurfaceResource> s, const Vector2D& offset, void* data) {
             if (!s->m_current.texture)
                 return;
 
@@ -2220,10 +2220,8 @@ void IHyprRenderer::renderMonitor(PHLMONITOR pMonitor, bool commit) {
     if (!*PDAMAGEBLINK)
         damageBlinkCleanup = 0;
 
-    if (*PDEBUGOVERLAY == 1) {
+    if (*PDEBUGOVERLAY == 1)
         renderStart = std::chrono::high_resolution_clock::now();
-        Debug::overlay()->frameData(pMonitor);
-    }
 
     if (!g_pCompositor->m_sessionActive)
         return;
@@ -2256,6 +2254,9 @@ void IHyprRenderer::renderMonitor(PHLMONITOR pMonitor, bool commit) {
     handleFullscreenSettings(pMonitor);
     if (!pMonitor->m_output->needsFrame && pMonitor->m_forceFullFrames == 0 && !pMonitor->m_damage.hasChanged())
         return;
+
+    if (*PDEBUGOVERLAY == 1)
+        Debug::overlay()->frameData(pMonitor);
 
     // tearing and DS first
     bool       shouldTear              = pMonitor->updateTearing();
@@ -3448,7 +3449,7 @@ SP<IFramebuffer> IHyprRenderer::makeSnapshotFB(WP<Desktop::View::CPopup> popup, 
     }
 
     popup->wlSurface()->resource()->breadthfirst(
-        [this, &ctx, &renderdata](SP<CWLSurfaceResource> s, const Vector2D& offset, void* data) {
+        [&ctx, &renderdata](SP<CWLSurfaceResource> s, const Vector2D& offset, void* data) {
             if (!s->m_current.texture)
                 return;
 
