@@ -166,3 +166,34 @@ TEST_F(CHDRImageDescriptionTest, HDRPresetFallsBackWithoutEDIDAndHonoursReferenc
     EXPECT_EQ(description.maxCLL, 0U);
     EXPECT_EQ(description.maxFALL, 0U);
 }
+
+TEST_F(CHDRImageDescriptionTest, DetachedMonitorHasNoColorCapabilities) {
+    const auto monitor = makeMonitor(true);
+    monitor->m_output.reset();
+
+    EXPECT_FALSE(monitor->canSignalBT2020());
+    EXPECT_FALSE(monitor->supportsWideColor());
+    EXPECT_FALSE(monitor->supportsHDR());
+    EXPECT_FALSE(monitor->inHDR());
+    EXPECT_FALSE(monitor->canNoShaderCM());
+}
+
+TEST_F(CHDRImageDescriptionTest, DetachedMonitorUsesLuminanceDefaults) {
+    const auto monitor = makeMonitor(true);
+    monitor->m_output.reset();
+
+    EXPECT_FLOAT_EQ(monitor->minLuminance(0.2F), 0.2F);
+    EXPECT_EQ(monitor->maxLuminance(500), 500);
+    EXPECT_EQ(monitor->maxAvgLuminance(200), 200);
+    EXPECT_FLOAT_EQ(monitor->maxCLL(), 0);
+    EXPECT_FLOAT_EQ(monitor->maxFALL(), 0);
+    EXPECT_EQ(monitor->getMasteringPrimaries(), SPCPRimaries{});
+    EXPECT_FLOAT_EQ(monitor->getMasteringLuminances().min, 0);
+    EXPECT_EQ(monitor->getMasteringLuminances().max, 0U);
+
+    const auto& description = monitor->getHDRImageDescription(NCMType::CM_HDR)->value();
+    EXPECT_FLOAT_EQ(description.luminances.min, HDR_MIN_LUMINANCE);
+    EXPECT_EQ(description.masteringLuminances.max, sc<uint32_t>(HDR_MAX_LUMINANCE));
+    EXPECT_EQ(description.maxCLL, 0U);
+    EXPECT_EQ(description.maxFALL, 0U);
+}

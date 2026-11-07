@@ -266,7 +266,7 @@ bool CColorManagementOutput::good() {
 }
 
 bool CColorManagementOutput::inert() {
-    return !m_monitor || !m_outputGlobal || m_outputGlobal->isDefunct();
+    return !m_monitor || !m_monitor->hasOutput() || !m_monitor->enabled() || !m_outputGlobal || m_outputGlobal->isDefunct();
 }
 
 wl_client* CColorManagementOutput::client() {

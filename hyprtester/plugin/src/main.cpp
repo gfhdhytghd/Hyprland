@@ -99,6 +99,29 @@ static PHLWINDOW windowByClass(const std::string& cls) {
     return nullptr;
 }
 
+static PHLMONITOR      g_retainedCMMonitor;
+
+static SDispatchResult detachedMonitorFeedback(const std::string& action) {
+    if (action == "clear") {
+        g_retainedCMMonitor.reset();
+        return {};
+    }
+
+    const auto WINDOW = windowByClass("cm-feedback-live");
+    if (!WINDOW || !WINDOW->wlSurface()->resource())
+        return {.success = false, .error = "CM feedback window is not mapped"};
+
+    if (action == "retain") {
+        g_retainedCMMonitor = WINDOW->m_monitor.lock();
+        return {.success = g_retainedCMMonitor && g_retainedCMMonitor->hasOutput(), .error = "CM monitor has no output"};
+    }
+
+    if (action != "check" || !g_retainedCMMonitor || g_retainedCMMonitor->hasOutput())
+        return {.success = false, .error = "Expected a retained monitor whose output was destroyed"};
+
+    return {};
+}
+
 static SDispatchResult expectWindowAtWorkspace(const std::string& workspaceSelector, const Vector2D& pos, const std::string& expectedClass, const std::string& ignoreClass) {
     const auto WORKSPACE = State::Workspace::state()->find(State::Workspace::resolver()->getWorkspaceTargetFromString(workspaceSelector));
     if (!WORKSPACE)
@@ -1898,6 +1921,10 @@ static int luaExpectWorkspaceLifecycleState(lua_State* L) {
     return luaResult(L, ::expectWorkspaceLifecycleState(luaL_checkstring(L, 1)));
 }
 
+static int luaDetachedMonitorFeedback(lua_State* L) {
+    return luaResult(L, detachedMonitorFeedback(luaL_checkstring(L, 1)));
+}
+
 static int luaExpectNoMaximizeEcho(lua_State* L) {
     return luaResult(L, ::expectNoMaximizeEcho(""));
 }
@@ -1962,6 +1989,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     addLuaFn("floating_focus_on_fullscreen", ::luaFloatingFocusOnFullscreen);
     addLuaFn("expect_workspace_lifecycle_state", ::luaExpectWorkspaceLifecycleState);
     addLuaFn("expect_no_maximize_echo", ::luaExpectNoMaximizeEcho);
+    addLuaFn("detached_monitor_feedback", ::luaDetachedMonitorFeedback);
     WorkspaceGestures::registerFunctions();
     SpecialWorkspaceGestures::registerFunctions();
     XWaylandSelection::registerFunctions();
@@ -1982,6 +2010,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {
+    g_retainedCMMonitor.reset();
     WorkspaceGestures::reset();
     SpecialWorkspaceGestures::reset();
     restoreCursorFixture();

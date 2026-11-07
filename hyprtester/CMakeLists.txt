@@ -126,4 +126,4 @@ clientNew("wlr-foreign-toplevel" PROTOS "wlr-foreign-toplevel-management-unstabl
 clientNew("toplevel-capture" PROTOS "wlr-foreign-toplevel-management-unstable-v1" "hyprland-toplevel-export-v1")
 
 protocolnew("staging/color-management" "color-management-v1" false)
-clientNew("color-management" PROTOS "color-management-v1")
+clientNew("color-management" PROTOS "color-management-v1" "xdg-shell")

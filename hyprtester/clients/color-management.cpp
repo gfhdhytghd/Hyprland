@@ -2,6 +2,11 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <xdg-shell.hpp>
+#include <hyprutils/utils/ScopeGuard.hpp>
 #include <print>
 #include <string>
 #include <thread>
@@ -30,6 +35,63 @@ class CDisplay {
     wl_display* m_display = nullptr;
 };
 
+// Keep a mapped surface and its feedback alive across removal of the final output.
+static int liveFeedback(wl_display* display, const CSharedPointer<CCWlSurface>& surface, const CSharedPointer<CCWpColorManagementSurfaceFeedbackV1>& feedback,
+                        const CSharedPointer<CCWlShm>& shm, const CSharedPointer<CCXdgWmBase>& shell) {
+    if (!shm || !shell)
+        return 12;
+
+    const int fd = memfd_create("cm-feedback", MFD_CLOEXEC);
+    if (fd < 0)
+        return 13;
+    const Hyprutils::Utils::CScopeGuard closeFD([fd] { close(fd); });
+    // The test uses 1920x1080 outputs; allow both that size and the fallback size.
+    constexpr int SIZE = 4096 * 4096 * 4;
+    if (ftruncate(fd, SIZE) < 0)
+        return 14;
+    auto                                   pool = makeShared<CCWlShmPool>(shm->sendCreatePool(fd, SIZE));
+    CSharedPointer<CCWlBuffer>             buffer;
+    auto                                   xdgSurface = makeShared<CCXdgSurface>(shell->sendGetXdgSurface(surface->resource()));
+    auto                                   toplevel   = makeShared<CCXdgToplevel>(xdgSurface->sendGetToplevel());
+    int                                    width = 100, height = 100;
+    bool                                   failed = false;
+    CSharedPointer<CCWpImageDescriptionV1> description;
+    const auto                             requestPreferred = [&] {
+        if (description)
+            description->sendDestroy();
+        description = makeShared<CCWpImageDescriptionV1>(feedback->sendGetPreferred());
+        description->setFailed([&](CCWpImageDescriptionV1*, wpImageDescriptionV1Cause, const char*) { failed = true; });
+    };
+    feedback->setPreferredChanged([&](CCWpColorManagementSurfaceFeedbackV1*, uint32_t) { requestPreferred(); });
+    shell->setPing([&](CCXdgWmBase*, uint32_t serial) { shell->sendPong(serial); });
+    toplevel->setConfigure([&](CCXdgToplevel*, int32_t w, int32_t h, wl_array*) {
+        width  = w > 0 ? w : 100;
+        height = h > 0 ? h : 100;
+    });
+    xdgSurface->setConfigure([&](CCXdgSurface*, uint32_t serial) {
+        if (width > 4096 || height > 4096) {
+            failed = true;
+            return;
+        }
+        if (buffer)
+            buffer->sendDestroy();
+        buffer = makeShared<CCWlBuffer>(pool->sendCreateBuffer(0, width, height, width * 4, WL_SHM_FORMAT_XRGB8888));
+        xdgSurface->sendAckConfigure(serial);
+        surface->sendAttach(buffer.get(), 0, 0);
+        surface->sendCommit();
+    });
+    toplevel->sendSetAppId("cm-feedback-live");
+    requestPreferred();
+    surface->sendCommit();
+    // Bounded even if the runner fails to terminate the client.
+    for (int i = 0; i < 1500; ++i) {
+        if (wl_display_roundtrip(display) < 0 || failed)
+            return 15;
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    return 0;
+}
+
 static int run(wl_display* display, const std::string& mode) {
     const auto                              separator       = mode.find('@');
     const auto                              requestedOutput = separator == std::string::npos ? std::string("HEADLESS-1") : mode.substr(separator + 1);
@@ -38,9 +100,15 @@ static int run(wl_display* display, const std::string& mode) {
     CSharedPointer<CCWlOutput>              output;
     std::vector<CSharedPointer<CCWlOutput>> outputs;
     CSharedPointer<CCWpColorManagerV1>      manager;
+    CSharedPointer<CCWlShm>                 shm;
+    CSharedPointer<CCXdgWmBase>             shell;
     registry->setGlobal([&](CCWlRegistry* r, uint32_t name, const char* interface, uint32_t version) {
         if (std::strcmp(interface, "wl_compositor") == 0)
             compositor = makeShared<CCWlCompositor>(sc<wl_proxy*>(wl_registry_bind(rc<wl_registry*>(r->resource()), name, &wl_compositor_interface, 4)));
+        else if (std::strcmp(interface, "wl_shm") == 0)
+            shm = makeShared<CCWlShm>(sc<wl_proxy*>(wl_registry_bind(rc<wl_registry*>(r->resource()), name, &wl_shm_interface, 1)));
+        else if (std::strcmp(interface, "xdg_wm_base") == 0)
+            shell = makeShared<CCXdgWmBase>(sc<wl_proxy*>(wl_registry_bind(rc<wl_registry*>(r->resource()), name, &xdg_wm_base_interface, 1)));
         else if (std::strcmp(interface, "wl_output") == 0 && (!output || mode.starts_with("output-reference="))) {
             auto resource = makeShared<CCWlOutput>(sc<wl_proxy*>(wl_registry_bind(rc<wl_registry*>(r->resource()), name, &wl_output_interface, std::min(version, 4U))));
             outputs.push_back(resource);
@@ -68,6 +136,9 @@ static int run(wl_display* display, const std::string& mode) {
     uint32_t                                            expectedError  = 0;
     uint32_t                                            expectedObject = 0;
     bool                                                ready = false, failed = false;
+
+    if (mode == "feedback-live")
+        return liveFeedback(display, surface, feedback, shm, shell);
 
     if (mode.starts_with("output-reference=")) {
         const auto expected = std::stoul(mode.substr(17));

@@ -5,6 +5,8 @@
 #include "tests.hpp"
 #include <hyprutils/os/Process.hpp>
 #include <hyprutils/utils/ScopeGuard.hpp>
+#include <algorithm>
+#include <csignal>
 #include <chrono>
 #include <thread>
 #include <future>
@@ -47,4 +49,70 @@ TEST_CASE(colorManagementReferenceLuminanceIsPerOutputAndOptIn) {
         ASSERT(process.runSync(), true);
         EXPECT(process.exitCode(), 0);
     }
+}
+
+TEST_CASE(colorManagementFeedbackSurvivesLastOutputRemoval) {
+    // Retain the old monitor across output destruction, as in physical unplugging.
+    // Its weak surface/window references must stay valid when FALLBACK is added.
+    std::vector<std::string> outputs;
+    const auto               monitors = getFromSocket("/monitors");
+    for (size_t pos = 0; (pos = monitors.find("Monitor ", pos)) != std::string::npos;) {
+        pos += 8;
+        const auto end = monitors.find(" (ID ", pos);
+        ASSERT(end != std::string::npos, true);
+        const auto name = monitors.substr(pos, end - pos);
+        if (name != "FALLBACK") {
+            ASSERT(name.starts_with("HEADLESS-"), true);
+            outputs.push_back(name);
+        }
+        pos = end;
+    }
+    ASSERT(std::ranges::find(outputs, std::string{"HEADLESS-1"}) != outputs.end(), true);
+    const CScopeGuard restore([&] {
+        getFromSocket("/eval hl.plugin.test.detached_monitor_feedback('clear')");
+        Tests::killAllWindows();
+        for (const auto& output : outputs)
+            getFromSocket(std::format("/output create headless {}", output));
+        getFromSocket("/reload");
+        Tests::sync();
+    });
+    OK(getFromSocket("/eval hl.config({ render = { cm_auto_hdr = 1 } })"));
+    for (const auto& output : outputs) {
+        if (output == "HEADLESS-1")
+            continue;
+        OK(getFromSocket(std::format("/output remove {}", output)));
+    }
+    OK(getFromSocket("/dispatch hl.dsp.focus({ monitor = 'HEADLESS-1' })"));
+    CProcess process(std::format("{}/color-management", binaryDir), std::vector<std::string>{"feedback-live"});
+    process.addEnv("WAYLAND_DISPLAY", WLDISPLAY);
+    ASSERT(process.runAsync(), true);
+    const CScopeGuard stopClient([&] { kill(process.pid(), SIGKILL); });
+    bool              mapped = false;
+    for (int i = 0; i < 50; ++i) {
+        if (getFromSocket("/clients").contains("class: cm-feedback-live")) {
+            mapped = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    ASSERT(mapped, true);
+    OK(getFromSocket("/eval hl.plugin.test.detached_monitor_feedback('retain')"));
+    OK(getFromSocket("/output remove HEADLESS-1"));
+    bool fallback = false;
+    for (int i = 0; i < 50; ++i) {
+        if (getFromSocket("/monitors all").contains("Monitor FALLBACK (ID ")) {
+            fallback = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    ASSERT(fallback, true);
+    OK(getFromSocket("/eval hl.plugin.test.detached_monitor_feedback('check')"));
+    ASSERT_CONTAINS(getFromSocket("/version"), "Hyprland");
+    // Reconnect while feedback is still active, and verify that the same client
+    // remains mapped after both preferred-description transitions.
+    OK(getFromSocket("/output create headless HEADLESS-1"));
+    Tests::sync();
+    ASSERT_CONTAINS(getFromSocket("/clients"), "class: cm-feedback-live");
+    ASSERT_CONTAINS(getFromSocket("/version"), "Hyprland");
 }
