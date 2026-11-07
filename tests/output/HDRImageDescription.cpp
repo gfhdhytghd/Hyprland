@@ -132,7 +132,7 @@ TEST_F(CHDRImageDescriptionTest, BothHDRPresetsEncodeBT2020WithEDIDMasteringVolu
 
     for (const auto cmType : {NCMType::CM_HDR, NCMType::CM_HDR_EDID}) {
         SCOPED_TRACE(NCMType::toString(cmType));
-        const auto& description = monitor->getHDRImageDescription(cmType)->value();
+        const auto description = monitor->getHDRImageDescription(cmType)->value();
 
         EXPECT_EQ(description.transferFunction, CM_TRANSFER_FUNCTION_ST2084_PQ);
         // HDR10 signals BT.2020 colorimetry, the EDID gamut is only the mastering volume
@@ -157,11 +157,42 @@ TEST_F(CHDRImageDescriptionTest, HDRPresetFallsBackWithoutEDIDAndHonoursReferenc
     const auto monitor            = makeMonitor(false);
     monitor->m_referenceLuminance = 250;
 
-    const auto& description = monitor->getHDRImageDescription(NCMType::CM_HDR)->value();
+    const auto description = monitor->getHDRImageDescription(NCMType::CM_HDR)->value();
     EXPECT_EQ(description.primaries, getPrimaries(CM_PRIMARIES_BT2020));
     EXPECT_FLOAT_EQ(description.luminances.min, HDR_MIN_LUMINANCE);
     EXPECT_EQ(description.luminances.reference, 250U);
     EXPECT_FLOAT_EQ(description.masteringLuminances.min, HDR_MIN_LUMINANCE);
+    EXPECT_EQ(description.masteringLuminances.max, sc<uint32_t>(HDR_MAX_LUMINANCE));
+    EXPECT_EQ(description.maxCLL, 0U);
+    EXPECT_EQ(description.maxFALL, 0U);
+}
+
+TEST_F(CHDRImageDescriptionTest, DetachedMonitorHasNoColorCapabilities) {
+    const auto monitor = makeMonitor(true);
+    monitor->m_output.reset();
+
+    EXPECT_FALSE(monitor->canSignalBT2020());
+    EXPECT_FALSE(monitor->supportsWideColor());
+    EXPECT_FALSE(monitor->supportsHDR());
+    EXPECT_FALSE(monitor->inHDR());
+    EXPECT_FALSE(monitor->canNoShaderCM());
+}
+
+TEST_F(CHDRImageDescriptionTest, DetachedMonitorUsesLuminanceDefaults) {
+    const auto monitor = makeMonitor(true);
+    monitor->m_output.reset();
+
+    EXPECT_FLOAT_EQ(monitor->minLuminance(0.2F), 0.2F);
+    EXPECT_EQ(monitor->maxLuminance(500), 500);
+    EXPECT_EQ(monitor->maxAvgLuminance(200), 200);
+    EXPECT_FLOAT_EQ(monitor->maxCLL(), 0);
+    EXPECT_FLOAT_EQ(monitor->maxFALL(), 0);
+    EXPECT_EQ(monitor->getMasteringPrimaries(), SPCPRimaries{});
+    EXPECT_FLOAT_EQ(monitor->getMasteringLuminances().min, 0);
+    EXPECT_EQ(monitor->getMasteringLuminances().max, 0U);
+
+    const auto description = monitor->getHDRImageDescription(NCMType::CM_HDR)->value();
+    EXPECT_FLOAT_EQ(description.luminances.min, HDR_MIN_LUMINANCE);
     EXPECT_EQ(description.masteringLuminances.max, sc<uint32_t>(HDR_MAX_LUMINANCE));
     EXPECT_EQ(description.maxCLL, 0U);
     EXPECT_EQ(description.maxFALL, 0U);

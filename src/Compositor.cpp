@@ -981,7 +981,9 @@ PImageDescription CCompositor::getPreferredImageDescription() {
         return getDefaultImageDescription();
     }
     // Surfaces that are not on a single known output get the default SDR description.
-    return State::monitorState()->monitors().size() == 1 ? State::monitorState()->monitors()[0]->m_imageDescription : getDefaultImageDescription();
+    return State::monitorState()->monitors().size() == 1 && State::monitorState()->monitors()[0]->hasOutput() && State::monitorState()->monitors()[0]->enabled() ?
+        State::monitorState()->monitors()[0]->m_imageDescription :
+        getDefaultImageDescription();
 }
 
 PImageDescription CCompositor::getHDRImageDescription() {
@@ -990,7 +992,7 @@ PImageDescription CCompositor::getHDRImageDescription() {
         return getDefaultImageDescription();
     }
 
-    return State::monitorState()->monitors().size() == 1 && State::monitorState()->monitors()[0]->m_output ?
+    return State::monitorState()->monitors().size() == 1 && State::monitorState()->monitors()[0]->hasOutput() && State::monitorState()->monitors()[0]->enabled() ?
         CImageDescription::from(SImageDescription{.transferFunction    = NColorManagement::CM_TRANSFER_FUNCTION_ST2084_PQ,
                                                   .primariesNameSet    = true,
                                                   .primariesNamed      = NColorManagement::CM_PRIMARIES_BT2020,

@@ -2460,7 +2460,8 @@ bool CMonitor::supportsHDR() {
 }
 
 float CMonitor::minLuminance(float defaultValue) {
-    return m_minLuminance >= 0 ? m_minLuminance : (m_output->parsedEDID.hdrMetadata.has_value() ? m_output->parsedEDID.hdrMetadata->desiredContentMinLuminance : defaultValue);
+    return m_minLuminance >= 0 ? m_minLuminance :
+                                 (m_output && m_output->parsedEDID.hdrMetadata.has_value() ? m_output->parsedEDID.hdrMetadata->desiredContentMinLuminance : defaultValue);
 }
 
 int CMonitor::referenceLuminance() const {
@@ -2470,14 +2471,14 @@ int CMonitor::referenceLuminance() const {
 int CMonitor::maxLuminance(int defaultValue) {
     if (m_maxLuminance > 0)
         return m_maxLuminance;
-    if (m_output->parsedEDID.hdrMetadata && m_output->parsedEDID.hdrMetadata->desiredContentMaxLuminance > 0)
+    if (m_output && m_output->parsedEDID.hdrMetadata && m_output->parsedEDID.hdrMetadata->desiredContentMaxLuminance > 0)
         return m_output->parsedEDID.hdrMetadata->desiredContentMaxLuminance;
     return defaultValue;
 }
 
 int CMonitor::maxAvgLuminance(int defaultValue) {
     return m_maxAvgLuminance > 0 ? m_maxAvgLuminance :
-                                   (m_output->parsedEDID.hdrMetadata.has_value() ? m_output->parsedEDID.hdrMetadata->desiredMaxFrameAverageLuminance : defaultValue);
+                                   (m_output && m_output->parsedEDID.hdrMetadata.has_value() ? m_output->parsedEDID.hdrMetadata->desiredMaxFrameAverageLuminance : defaultValue);
 }
 
 float CMonitor::maxFALL() {
@@ -2498,7 +2499,7 @@ bool CMonitor::wantsHDR() {
 }
 
 bool CMonitor::inHDR() {
-    return m_output->state->state().hdrMetadata.hdmi_metadata_type1.eotf == 2;
+    return m_output && m_output->state->state().hdrMetadata.hdmi_metadata_type1.eotf == 2;
 }
 
 std::optional<NColorManagement::PImageDescription> CMonitor::getFSImageDescription() {
@@ -2528,7 +2529,7 @@ std::optional<NColorManagement::PImageDescription> CMonitor::getAutoHDRImageDesc
 }
 
 NColorManagement::SPCPRimaries CMonitor::getMasteringPrimaries() {
-    return m_output->parsedEDID.chromaticityCoords.has_value() ?
+    return m_output && m_output->parsedEDID.chromaticityCoords.has_value() ?
         NColorManagement::SPCPRimaries{
             .red   = {.x = m_output->parsedEDID.chromaticityCoords->red.x, .y = m_output->parsedEDID.chromaticityCoords->red.y},
             .green = {.x = m_output->parsedEDID.chromaticityCoords->green.x, .y = m_output->parsedEDID.chromaticityCoords->green.y},
@@ -2540,7 +2541,7 @@ NColorManagement::SPCPRimaries CMonitor::getMasteringPrimaries() {
 
 NColorManagement::SImageDescription::SPCMasteringLuminances CMonitor::getMasteringLuminances() {
     return {
-        .min = m_minLuminance >= 0 ? m_minLuminance : (m_output->parsedEDID.hdrMetadata.has_value() ? m_output->parsedEDID.hdrMetadata->desiredContentMinLuminance : 0),
+        .min = minLuminance(0),
         .max = sc<uint32_t>(maxLuminance(0)),
     };
 }
@@ -2585,6 +2586,9 @@ bool CMonitor::needsCM() {
 
 // TODO support more drm properties
 bool CMonitor::canNoShaderCM(bool forDSmode) {
+    if (!m_output)
+        return false;
+
     static auto PNONSHADER = CConfigValue<Config::INTEGER>("render:non_shader_cm");
     if (*PNONSHADER == CM_NS_DISABLE)
         return false;
@@ -2767,8 +2771,11 @@ bool CMonitor::usesHardwareCM() const {
 }
 
 bool CMonitor::canSignalBT2020() const {
+    if (!m_output)
+        return false;
+
     // Other backends have no colorimetry signalling of their own.
-    if (!m_output || m_output->getBackend()->type() != Aquamarine::AQ_BACKEND_DRM)
+    if (m_output->getBackend()->type() != Aquamarine::AQ_BACKEND_DRM)
         return true;
     return supportsColorspace("BT2020_RGB");
 }

@@ -1,4 +1,8 @@
 #include <Compositor.hpp>
+#include <animation/AnimationManager.hpp>
+#include <config/shared/animation/AnimationTree.hpp>
+#include <output/Monitor.hpp>
+#include <state/MonitorState.hpp>
 #include <event/EventBus.hpp>
 #include <config/ConfigValue.hpp>
 #include <config/lua/ConfigManager.hpp>
@@ -145,6 +149,105 @@ void CColorManagementProtocolTest::createSurface() {
     PROTO::compositor->bindManager(m_client, nullptr, 6, 3);
     request(3, 0, {4});
     ASSERT_NE(wl_client_get_object(m_client, 4), nullptr);
+}
+
+class CFeedbackTestOutput : public Aquamarine::IOutput {
+  public:
+    bool commit() override {
+        return false;
+    }
+    bool test() override {
+        return false;
+    }
+    SP<Aquamarine::IBackendImplementation> getBackend() override {
+        return nullptr;
+    }
+    std::vector<SDRMFormat> getRenderFormats() override {
+        return {};
+    }
+    bool pendingPageFlip() override {
+        return false;
+    }
+    bool pendingIdleFrame() override {
+        return false;
+    }
+};
+
+class CFeedbackTestMonitor : public Monitor::CMonitor {
+  public:
+    CFeedbackTestMonitor(SP<Aquamarine::IOutput> output, bool enabled);
+    bool enabled() const override;
+
+  private:
+    bool m_testEnabled = false;
+};
+
+CFeedbackTestMonitor::CFeedbackTestMonitor(SP<Aquamarine::IOutput> output, bool enabled) : CMonitor(output), m_testEnabled(enabled) {
+    ;
+}
+
+bool CFeedbackTestMonitor::enabled() const {
+    return m_testEnabled;
+}
+
+class CColorManagementMonitorFeedbackTest : public CColorManagementProtocolTest {
+  protected:
+    void SetUp() override;
+    void TearDown() override;
+    void checkUnavailableMonitor(bool detached);
+
+  private:
+    UP<Animation::CHyprAnimationManager> m_previousAnimations;
+    UP<Config::CAnimationTreeController> m_previousTree;
+    UP<State::CMonitorStateTracker>      m_previousMonitors;
+};
+
+void CColorManagementMonitorFeedbackTest::SetUp() {
+    CColorManagementProtocolTest::SetUp();
+    m_previousAnimations    = std::move(Animation::mgr());
+    m_previousTree          = std::move(Config::animationTree());
+    m_previousMonitors      = std::move(State::monitorState());
+    Animation::mgr()        = makeUnique<Animation::CHyprAnimationManager>();
+    Config::animationTree() = makeUnique<Config::CAnimationTreeController>();
+    State::monitorState()   = makeUnique<State::CMonitorStateTracker>();
+}
+
+void CColorManagementMonitorFeedbackTest::TearDown() {
+    State::monitorState().reset();
+    Animation::mgr().reset();
+    Config::animationTree().reset();
+    CColorManagementProtocolTest::TearDown();
+    Animation::mgr()        = std::move(m_previousAnimations);
+    Config::animationTree() = std::move(m_previousTree);
+    State::monitorState()   = std::move(m_previousMonitors);
+}
+
+void CColorManagementMonitorFeedbackTest::checkUnavailableMonitor(bool detached) {
+    createSurface();
+    const auto surface = CWLSurfaceResource::fromResource(wl_client_get_object(m_client, 4));
+    ASSERT_TRUE(surface);
+    auto monitor                = makeShared<CFeedbackTestMonitor>(makeShared<CFeedbackTestOutput>(), detached);
+    monitor->m_self             = monitor;
+    monitor->m_imageDescription = DEFAULT_HDR_IMAGE_DESCRIPTION;
+    surface->m_enteredOutputs.emplace_back(monitor);
+    if (detached)
+        monitor->m_output.reset();
+
+    // The stale per-surface reference must not supply its old HDR description.
+    EXPECT_EQ(surface->getPreferredImageDescription(), getDefaultImageDescription());
+    request(2, 3, {5, 4}); // wp_color_manager_v1.get_surface_feedback
+    PROTO::colorManagement->onImagePreferredChanged();
+    request(5, 1, {6}); // wp_color_management_surface_feedback_v1.get_preferred
+    expectEvent(6, 1);  // wp_image_description_v1.ready
+    surface->m_enteredOutputs.clear();
+}
+
+TEST_F(CColorManagementMonitorFeedbackTest, DetachedMonitorUsesGlobalPreferredDescription) {
+    checkUnavailableMonitor(true);
+}
+
+TEST_F(CColorManagementMonitorFeedbackTest, DisabledMonitorUsesGlobalPreferredDescription) {
+    checkUnavailableMonitor(false);
 }
 
 TEST_F(CColorManagementProtocolTest, InertFeedbackSurvivesDescriptionChange) {

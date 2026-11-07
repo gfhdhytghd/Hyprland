@@ -728,7 +728,8 @@ PImageDescription CWLSurfaceResource::getPreferredImageDescription() {
     else if (m_hlSurface.valid() && WINDOW)
         monitor = WINDOW->m_monitor;
 
-    if (!monitor)
+    // Output destruction can leave a live monitor referenced by the surface or its window.
+    if (!monitor || !monitor->hasOutput() || !monitor->enabled())
         return g_pCompositor->getPreferredImageDescription();
 
     // auto HDR only switches once a fullscreen client submits HDR content, so offer it the description it would switch to
