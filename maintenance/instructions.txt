@@ -21,6 +21,7 @@ describe blockers when verification fails. Never falsify success receipts. Do no
 automation's scripts, instructions, timers, credentials or user settings.
 
 == Reporting ==
+- Set "idle": true when you posted, pushed, merged and closed nothing (for example no new activity since your last reply); such runs are not reported to the user.
 - The receipt summary must be Chinese, user-facing, at most 300 characters, and describe actions and evidence.
   It is sent verbatim to the user's Feishu DM.
 - Add optional "attention":"..." in Chinese only when the user personally must act: a tier-3 PR awaits their
