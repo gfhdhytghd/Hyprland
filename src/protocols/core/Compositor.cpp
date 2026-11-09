@@ -717,13 +717,11 @@ PImageDescription CWLSurfaceResource::getPreferredImageDescription() {
     // A subsurface follows its toplevel parent; its role can outlive the wl_subsurface object and the parent.
     auto parent = m_self.lock();
     if (parent->m_role->role() == SURFACE_ROLE_SUBSURFACE) {
-        const auto SUBSURFACE = sc<CSubsurfaceRole*>(parent->m_role.get())->m_subsurface.lock();
-        const auto T1PARENT   = SUBSURFACE ? SUBSURFACE->t1Parent() : nullptr;
-        if (T1PARENT)
-            parent = T1PARENT;
+        const auto subsurface = sc<CSubsurfaceRole*>(parent->m_role.get())->m_subsurface.lock();
+        parent                = subsurface ? subsurface->t1Parent() : nullptr;
     }
     PHLMONITORREF monitor;
-    if (parent->m_enteredOutputs.size() == 1)
+    if (parent && parent->m_enteredOutputs.size() == 1)
         monitor = parent->m_enteredOutputs[0];
     else if (m_hlSurface.valid() && WINDOW)
         monitor = WINDOW->m_monitor;

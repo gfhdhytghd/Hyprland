@@ -138,9 +138,10 @@ Vector2D CWLSubsurfaceResource::posRelativeToParent() {
     while (surf && surf->m_role->role() == SURFACE_ROLE_SUBSURFACE &&
            std::ranges::find_if(surfacesVisited, [surf](const auto& other) { return surf == other; }) == surfacesVisited.end()) {
         surfacesVisited.emplace_back(surf);
-        auto subsurface = sc<CSubsurfaceRole*>(surf->m_role.get())->m_subsurface.lock();
+        const auto subsurface = sc<CSubsurfaceRole*>(surf->m_role.get())->m_subsurface.lock();
         if (!subsurface)
             break;
+
         pos += subsurface->m_position;
         surf = subsurface->m_parent.lock();
     }
@@ -158,9 +159,10 @@ SP<CWLSurfaceResource> CWLSubsurfaceResource::t1Parent() {
     while (surf && surf->m_role->role() == SURFACE_ROLE_SUBSURFACE &&
            std::ranges::find_if(surfacesVisited, [surf](const auto& other) { return surf == other; }) == surfacesVisited.end()) {
         surfacesVisited.emplace_back(surf);
-        auto subsurface = sc<CSubsurfaceRole*>(surf->m_role.get())->m_subsurface.lock();
+        const auto subsurface = sc<CSubsurfaceRole*>(surf->m_role.get())->m_subsurface.lock();
         if (!subsurface)
             return nullptr;
+
         surf = subsurface->m_parent.lock();
     }
     return surf;
@@ -196,9 +198,13 @@ CWLSubcompositorResource::CWLSubcompositorResource(SP<CWlSubcompositor> resource
         SP<CWLSurfaceResource> t1Parent = nullptr;
 
         if (PARENT->m_role->role() == SURFACE_ROLE_SUBSURFACE) {
-            // The parent's wl_subsurface may be gone already, leaving the role behind.
-            if (const auto SUBSURFACE = sc<CSubsurfaceRole*>(PARENT->m_role.get())->m_subsurface.lock())
-                t1Parent = SUBSURFACE->t1Parent();
+            const auto subsurface = sc<CSubsurfaceRole*>(PARENT->m_role.get())->m_subsurface.lock();
+            if UNLIKELY (!subsurface) {
+                r->error(WL_SUBCOMPOSITOR_ERROR_BAD_PARENT, "Parent has no valid subsurface role");
+                return;
+            }
+
+            t1Parent = subsurface->t1Parent();
         } else
             t1Parent = PARENT;
 
