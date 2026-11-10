@@ -2443,7 +2443,15 @@ void CHyprOpenGLImpl::renderInnerGlow(CRenderContext& ctx, const CBox& box, int 
 
     const auto& glMatrix = g_pHyprRenderer->projectBoxToTarget(ctx, newBox);
 
-    auto        shader = useShader(getShaderVariant(SH_FRAG_INNER_GLOW, globalFeatures(ctx)));
+    WP<CShader> shader;
+    const bool  skipCM = !m_cmSupported || !g_pHyprRenderer->workBufferImageDescription(ctx)->needsCM(DEFAULT_SRGB_IMAGE_DESCRIPTION);
+    if (!skipCM) {
+        shader = useShader(getShaderVariant(SH_FRAG_INNER_GLOW, getDecoVariant(ctx)));
+        if (!shader)
+            return;
+        passCMUniforms(ctx, shader, DEFAULT_SRGB_IMAGE_DESCRIPTION);
+    } else
+        shader = useShader(getShaderVariant(SH_FRAG_INNER_GLOW, globalFeatures(ctx)));
     if (!shader)
         return;
 
@@ -2455,9 +2463,7 @@ void CHyprOpenGLImpl::renderInnerGlow(CRenderContext& ctx, const CBox& box, int 
     if (!grad1.m_colors.empty())
         color = grad1.m_colors[0];
 
-    const auto converted = g_pHyprRenderer->getConvertedColor(ctx, color.stripA());
-    shader->setUniformFloat4(SHADER_COLOR, converted.r, converted.g, converted.b, color.a * a);
-    shader->setUniformFloat4(SHADER_COLOR_SRGB, color.r, color.g, color.b, color.a * a);
+    shader->setUniformFloat4(SHADER_COLOR, color.r, color.g, color.b, color.a);
 
     shader->setUniform4fv(SHADER_GRADIENT, grad1.m_colorsOkLabA.size() / 4, grad1.m_colorsOkLabA);
     shader->setUniformInt(SHADER_GRADIENT_LENGTH, grad1.m_colorsOkLabA.size() / 4);
