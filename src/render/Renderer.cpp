@@ -43,6 +43,7 @@
 #include "../helpers/MainLoopExecutor.hpp"
 #include "../output/Monitor.hpp"
 #include "../output/OutputCommitCoordinator.hpp"
+#include "../output/MonitorWindowTransaction.hpp"
 #include "../state/MonitorState.hpp"
 #include "../state/WorkspaceState.hpp"
 #include "macros.hpp"
@@ -2250,6 +2251,14 @@ void IHyprRenderer::renderMonitor(PHLMONITOR pMonitor, bool commit) {
         if (pMonitor->m_activeWorkspace) // might be missing (mirror)
             pMonitor->m_activeWorkspace->space()->recalculate(Layout::RECALCULATE_REASON_RENDER_MONITOR);
     }
+
+    const auto TRANSACTION = WP<Monitor::CMonitorWindowTransaction>(pMonitor->m_windowTransaction);
+    if (TRANSACTION)
+        TRANSACTION->onPreRender();
+    const CScopeGuard transactionGuard([TRANSACTION] {
+        if (TRANSACTION)
+            TRANSACTION->onPostRender();
+    });
 
     if (!pMonitor->m_commitCoordinator->canBeginFrame()) {
         pMonitor->m_pendingFrame = true;

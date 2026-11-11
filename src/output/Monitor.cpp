@@ -55,6 +55,7 @@
 #include "../helpers/Drm.hpp"
 #include "MonitorFrameScheduler.hpp"
 #include "OutputCommitCoordinator.hpp"
+#include "MonitorWindowTransaction.hpp"
 #include <aquamarine/output/Output.hpp>
 #include "debug/log/Logger.hpp"
 #include "notification/NotificationOverlay.hpp"
@@ -270,6 +271,7 @@ void CMonitor::onConnect(bool noRule) {
 
     m_frameScheduler         = makeUnique<CMonitorFrameScheduler>(m_self.lock());
     m_frameScheduler->m_self = WP<CMonitorFrameScheduler>(m_frameScheduler);
+    m_windowTransaction      = makeUnique<CMonitorWindowTransaction>(m_self.lock());
 
     m_tearingState.canTear = m_output->getBackend()->type() == Aquamarine::AQ_BACKEND_DRM;
 
@@ -402,6 +404,7 @@ void CMonitor::onDisconnect(bool destroy) {
     }};
 
     m_frameScheduler.reset();
+    m_windowTransaction.reset();
     m_commitCoordinator->cancelPending();
     clearModeRetry();
 
