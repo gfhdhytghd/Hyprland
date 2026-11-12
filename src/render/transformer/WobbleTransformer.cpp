@@ -4,11 +4,12 @@
 #include "../../config/ConfigValue.hpp"
 #include "../../desktop/view/window/Window.hpp"
 #include "../../desktop/view/window/WindowEffectsController.hpp"
+#include "../../desktop/view/window/WindowPresentation.hpp"
 #include "../../desktop/state/WindowState.hpp"
 #include "../../event/EventBus.hpp"
+#include "../../managers/fullscreen/FullscreenController.hpp"
 #include "../../output/Monitor.hpp"
 #include "../../animation/AnimationManager.hpp"
-#include "../../managers/fullscreen/FullscreenController.hpp"
 #include "../OpenGL.hpp"
 #include "../Renderer.hpp"
 #include "../pass/ClearPassElement.hpp"
@@ -50,7 +51,7 @@ bool CWobbleTransformer::shouldEnable(PHLWINDOW window) {
     if (window->m_ruleApplicator->noWobble().valueOrDefault())
         return false;
 
-    return *PENABLED && !Fullscreen::controller()->isFullscreen(window);
+    return *PENABLED && !Fullscreen::controller()->isPresentedFullscreen(window);
 }
 
 void CWobbleTransformer::ensureTickListener() {
@@ -234,7 +235,7 @@ void CWobbleTransformer::scheduleFrame() const {
     if (!PWINDOW)
         return;
 
-    if (const auto PMONITOR = PWINDOW->m_monitor.lock())
+    if (const auto PMONITOR = PWINDOW->presentation().monitor())
         PMONITOR->scheduleFrame(Aquamarine::IOutput::AQ_SCHEDULE_ANIMATION);
 }
 

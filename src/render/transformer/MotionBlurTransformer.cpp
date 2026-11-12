@@ -31,7 +31,7 @@ bool CMotionBlurTransformer::shouldEnable(PHLWINDOW window) {
     if (!window)
         return false;
 
-    return *PMBENABLED && *PMBSAMPLES > 1 && !Fullscreen::controller()->isFullscreen(window);
+    return *PMBENABLED && *PMBSAMPLES > 1 && !Fullscreen::controller()->isPresentedFullscreen(window);
 }
 
 SWindowTransformBuffer CMotionBlurTransformer::transform(CRenderContext& ctx, const SWindowTransformBuffer& in, const SWindowTransformContext&) {
@@ -116,8 +116,9 @@ std::optional<MotionBlur::SState> CMotionBlurTransformer::state(bool allowStale)
     if (!shouldEnable(PWINDOW))
         return std::nullopt;
 
-    const Vector2D RENDEROFFSET = ((PWINDOW->m_state & Desktop::View::WINDOW_STATE_PINNED) || !PWINDOW->m_workspace ? Vector2D{} : PWINDOW->m_workspace->m_renderOffset->value()) +
-        PWINDOW->presentation().floatingOffset();
+    const auto     PWORKSPACE = PWINDOW->presentation().workspace();
+    const Vector2D RENDEROFFSET =
+        ((PWINDOW->m_state & Desktop::View::WINDOW_STATE_PINNED) || !PWORKSPACE ? Vector2D{} : PWORKSPACE->m_renderOffset->value()) + PWINDOW->presentation().floatingOffset();
     return stateForOffset(RENDEROFFSET, allowStale);
 }
 

@@ -1,4 +1,5 @@
 #include "FullscreenController.hpp"
+#include "FullscreenPresentation.hpp"
 
 #include "../../managers/fullscreen/handler/FullscreenHandler.hpp"
 #include "../../ipc/s2/S2.hpp"
@@ -11,8 +12,10 @@
 #include "../../layout/target/WindowTarget.hpp"
 
 #include "../../desktop/DesktopTypes.hpp"
+#include "../../desktop/view/Group.hpp"
 #include "../../desktop/view/window/Window.hpp"
 #include "../../desktop/view/window/WindowFullscreenPolicy.hpp"
+#include "../../desktop/view/window/WindowGroupMembership.hpp"
 #include "../../desktop/view/window/WindowPresentation.hpp"
 #include "../../desktop/view/window/WindowStateTracker.hpp"
 
@@ -87,6 +90,51 @@ SFullscreenMode CFullscreenController::getFullscreenModes(const PHLWINDOW window
     }
 
     return fsModes;
+}
+
+SFullscreenMode CFullscreenController::getPresentedFullscreenModes(const PHLWINDOW window) {
+    if (!window)
+        return {};
+
+    const auto& HELD = window->presentation().heldFullscreenState();
+    return HELD ? HELD->modes : getFullscreenModes(window);
+}
+
+bool CFullscreenController::isPresentedFullscreen(const PHLWINDOW window, const std::optional<eFullscreenMode> mode) {
+    if (!window)
+        return false;
+
+    const auto INTERNAL_MODE = getPresentedFullscreenModes(window).internal;
+    return mode ? INTERNAL_MODE == *mode : INTERNAL_MODE != FSMODE_NONE;
+}
+
+static bool allowedOverFullscreen(PHLWINDOW window, PHLWINDOW fullscreen) {
+    return window->fullscreenPolicy().effectiveAllowedOverFullscreen({
+        .isFullscreenWindow    = window == fullscreen,
+        .pinned                = sc<bool>(window->m_state & Desktop::View::WINDOW_STATE_PINNED),
+        .groupedWithFullscreen = fullscreen && fullscreen->grouping().group() && fullscreen->grouping().group()->has(window),
+    });
+}
+
+bool CFullscreenController::isAllowedOverFullscreen(const PHLWINDOW window) {
+    if (!window || !window->m_workspace)
+        return false;
+
+    return allowedOverFullscreen(window, getFullscreenWindow(window->m_workspace));
+}
+
+bool CFullscreenController::isAllowedOverPresentedFullscreen(const PHLWINDOW window) {
+    if (!window)
+        return false;
+
+    if (const auto& HELD = window->presentation().heldFullscreenState(); HELD)
+        return HELD->allowedOverFullscreen;
+
+    const auto WORKSPACE = window->presentation().workspace();
+    if (!WORKSPACE)
+        return false;
+
+    return allowedOverFullscreen(window, getPresentedFullscreenWindow(WORKSPACE));
 }
 
 bool CFullscreenController::layoutManagedFS(const PHLWINDOW window) {
@@ -206,6 +254,33 @@ SFullscreenMode CFullscreenController::getFullscreenModes(const PHLWORKSPACE wor
 
     const auto FSTARGET = HANDLERS.TILED_FS_HANDLER->getFullscreen(covering);
     return returnModesAfterErrorCorrection(HANDLERS.TILED_FS_HANDLER, FSTARGET);
+}
+
+PHLWINDOW CFullscreenController::getPresentedFullscreenWindow(const PHLWORKSPACE workspace, const std::optional<eFullscreenMode> mode) {
+    if (!workspace)
+        return nullptr;
+
+    if (const auto PRESENTATION = workspace->m_fullscreenPresentation.lock()) {
+        if (mode.has_value() && *mode != PRESENTATION->modes.internal)
+            return nullptr;
+        return PRESENTATION->window.lock();
+    }
+
+    const auto WINDOW = getFullscreenWindow(workspace);
+    if (mode && getFullscreenModes(WINDOW).internal != *mode)
+        return nullptr;
+
+    return WINDOW;
+}
+
+SFullscreenMode CFullscreenController::getPresentedFullscreenModes(const PHLWORKSPACE workspace) {
+    if (!workspace)
+        return {};
+
+    if (const auto PRESENTATION = workspace->m_fullscreenPresentation.lock())
+        return PRESENTATION->modes;
+
+    return getFullscreenModes(workspace);
 }
 
 bool CFullscreenController::hasFullscreen(const PHLMONITOR monitor, const std::optional<bool> covering) {
@@ -349,6 +424,8 @@ void CFullscreenController::setFullscreenMode(const PHLWINDOW window, std::optio
 
         /* Remove Window from Old handler */
 
+        window->presentation().stageFullscreen();
+
         if (WANT_SYNC) {
             setWindowFullscreenModeClient(window, FSMODE_NONE, WAS_LAYOUT_HANDLED);
             setWindowFullscreenModeInternal(window, FSMODE_NONE, WAS_LAYOUT_HANDLED, context);
@@ -399,6 +476,9 @@ void CFullscreenController::setFullscreenMode(const PHLWINDOW window, std::optio
 
     if (HANDLE_PINNED_WINDOW) {
 
+        if (stateChanged && pinnedWindowRequetsInternalFS.has_value())
+            window->presentation().stageFullscreen();
+
         if (pinnedWindowRequetsInternalFS.value_or(false)) {
             window->m_state &= ~Desktop::View::WINDOW_STATE_PINNED;
             window->fullscreenPolicy().setPinFullscreened(true);
@@ -416,6 +496,7 @@ void CFullscreenController::setFullscreenMode(const PHLWINDOW window, std::optio
     }
 
     if (stateChanged) {
+        window->presentation().stageFullscreen();
         setWindowFullscreenModeClient(window, targetClientMode, layoutAware.value_or(WAS_LAYOUT_HANDLED));
         setWindowFullscreenModeInternal(window, targetInternalMode, layoutAware.value_or(WAS_LAYOUT_HANDLED), context);
     }

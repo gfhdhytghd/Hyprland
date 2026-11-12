@@ -135,6 +135,9 @@ void CWindow::initialize() {
 }
 
 void CWindow::attachBackendListeners() {
+    if (const auto SURFACE = m_backend->surface(); SURFACE && !m_backend->isX11())
+        m_backendListeners.preUnmap = SURFACE->m_events.preUnmap.listen([this] { captureCloseSnapshots(); });
+
     m_backendListeners.map               = m_backend->m_events.map.listen([this] { mapWindow(); });
     m_backendListeners.unmap             = m_backend->m_events.unmap.listen([this] { unmapWindow(); });
     m_backendListeners.commit            = m_backend->m_events.commit.listen([this](bool initial) { commitWindow(initial); });
@@ -250,10 +253,10 @@ std::optional<CBox> CWindow::surfaceLogicalBox() const {
 }
 
 SBoxExtents CWindow::getFullWindowExtents() const {
-    const int BORDERSIZE = m_presentation->borderSize();
+    const int BORDERSIZE = m_presentation->renderBorderSize();
 
     if (m_ruleApplicator->dimAround().valueOrDefault()) {
-        if (const auto PMONITOR = m_monitor.lock(); PMONITOR)
+        if (const auto PMONITOR = m_presentation->monitor(); PMONITOR)
             return {.topLeft     = {m_realPosition->value().x - PMONITOR->m_position.x, m_realPosition->value().y - PMONITOR->m_position.y},
                     .bottomRight = {PMONITOR->m_size.x - (m_realPosition->value().x - PMONITOR->m_position.x),
                                     PMONITOR->m_size.y - (m_realPosition->value().y - PMONITOR->m_position.y)}};
@@ -290,7 +293,7 @@ SBoxExtents CWindow::getFullWindowExtents() const {
 
 CBox CWindow::getFullWindowBoundingBox() const {
     if (m_ruleApplicator->dimAround().valueOrDefault()) {
-        if (const auto PMONITOR = m_monitor.lock(); PMONITOR)
+        if (const auto PMONITOR = m_presentation->monitor(); PMONITOR)
             return {PMONITOR->m_position.x, PMONITOR->m_position.y, PMONITOR->m_size.x, PMONITOR->m_size.y};
     }
 
@@ -458,20 +461,13 @@ void CWindow::moveToWorkspace(PHLWORKSPACE pWorkspace) {
     static auto PCLOSEONLASTSPECIAL = CConfigValue<Config::INTEGER>("misc:close_special_on_empty");
 
     const auto  OLDWORKSPACE = m_workspace;
-
-    if (OLDWORKSPACE->visible()) {
-        m_presentation->alpha(WINDOW_ALPHA_MOVE_TO_WORKSPACE)->setValueAndWarp(1.F);
-        *m_presentation->alpha(WINDOW_ALPHA_MOVE_TO_WORKSPACE) = 0.F;
-        m_presentation->alpha(WINDOW_ALPHA_MOVE_TO_WORKSPACE)->setCallbackOnEnd([this](auto) {
-            m_presentation->alpha(WINDOW_ALPHA_MOVE_TO_WORKSPACE)->setValueAndWarp(1.F);
-            m_presentation->resetMonitorMovedFrom();
-        });
-        m_presentation->setMonitorMovedFrom(OLDWORKSPACE ? OLDWORKSPACE->monitorID() : -1);
-    }
+    const bool  WASVISIBLE   = OLDWORKSPACE && OLDWORKSPACE->visible();
+    m_presentation->stageWorkspace();
 
     m_workspace = pWorkspace;
+    m_presentation->animateWorkspaceMove(OLDWORKSPACE, WASVISIBLE);
     updateFullscreenInputState();
-    *m_presentation->alpha(WINDOW_ALPHA_FULLSCREEN) = isBlockedByFullscreen() ? 0.F : 1.F;
+    m_presentation->setFullscreenAlpha(isBlockedByFullscreen() ? 0.F : 1.F);
 
     m_presentation->setAnimationsToMove();
 
@@ -651,16 +647,7 @@ void CWindow::onInputBlockStateUpdated(bool blocked) {
 }
 
 bool CWindow::isAllowedOverFullscreen() const {
-
-    if (!m_workspace)
-        return false;
-
-    const auto FSWINDOW = Fullscreen::controller()->getFullscreenWindow(m_workspace);
-    return m_fullscreenPolicy->effectiveAllowedOverFullscreen({
-        .isFullscreenWindow    = m_self == Fullscreen::controller()->getFullscreenWindow(m_workspace, true),
-        .pinned                = sc<bool>(m_state & WINDOW_STATE_PINNED),
-        .groupedWithFullscreen = FSWINDOW && FSWINDOW->grouping().group() && FSWINDOW->grouping().group()->has(m_self.lock()),
-    });
+    return Fullscreen::controller()->isAllowedOverFullscreen(m_self.lock());
 }
 
 bool CWindow::isBlockedByFullscreen() const {
@@ -1616,8 +1603,30 @@ void CWindow::mapWindow() {
     PWORKSPACE->ready();
 }
 
+void CWindow::captureCloseSnapshots() {
+    if (!mapped() || m_closeSnapshots)
+        return;
+
+    // A tiled close may need its last image until the remaining tiles resize,
+    // even when close animations are disabled.
+    static const auto PTIMEOUT = CConfigValue<Config::INTEGER>("misc:transaction_timeout");
+    const bool FOR_TRANSACTION = !m_target->floating() && m_monitor && m_monitor->m_windowTransaction && (*PTIMEOUT > 0 || m_monitor->m_windowTransaction->hasPendingChanges());
+    const bool WANT_SNAPSHOT   = FOR_TRANSACTION || !m_ruleApplicator->noAnim().valueOrDefault();
+    m_closeSnapshots           = SCloseSnapshots{
+        .monitor   = WANT_SNAPSHOT && g_pHyprRenderer->shouldRenderWindow(m_self.lock()) ? g_pHyprRenderer->makeSnapshotFB(m_self.lock()) : nullptr,
+        .workspace = WANT_SNAPSHOT ? g_pHyprRenderer->makeSnapshotFB(m_self.lock(), Render::eSceneMode::WORKSPACE_WINDOWS) : nullptr,
+    };
+}
+
 void CWindow::unmapWindow() {
-    const auto PENDING_SIZE = m_pendingGeometry.transform([](const auto& geometry) { return geometry.box.size(); });
+    const auto TRANSACTION = m_monitor ? WP<Monitor::CMonitorWindowTransaction>(m_monitor->m_windowTransaction) : nullptr;
+    if (TRANSACTION)
+        TRANSACTION->beginLayoutUpdate();
+    const Hyprutils::Utils::CScopeGuard transactionGuard([TRANSACTION] {
+        if (TRANSACTION)
+            TRANSACTION->endLayoutUpdate();
+    });
+    const auto                          PENDING_SIZE = m_pendingGeometry.transform([](const auto& geometry) { return geometry.box.size(); });
     cancelPendingGeometry();
     m_geometryTransactionsBlocked = true;
     const Hyprutils::Utils::CScopeGuard geometryGuard([this] { m_geometryTransactionsBlocked = false; });
@@ -1658,10 +1667,10 @@ void CWindow::unmapWindow() {
             Fullscreen::controller()->setFullscreenMode(m_self.lock(), Fullscreen::FSMODE_NONE, Fullscreen::FSMODE_NONE);
     }
 
-    // Allow the renderer to catch the last frame.
-    const auto SNAPSHOT =
-        g_pHyprRenderer->shouldRenderWindow(m_self.lock()) && !m_ruleApplicator->noAnim().valueOrDefault() ? g_pHyprRenderer->makeSnapshotFB(m_self.lock()) : nullptr;
-    const auto WORKSPACE_SNAPSHOT = !m_ruleApplicator->noAnim().valueOrDefault() ? g_pHyprRenderer->makeSnapshotFB(m_self.lock(), Render::eSceneMode::WORKSPACE_WINDOWS) : nullptr;
+    // Null-buffer commits captured before the old surface state was replaced;
+    // destroy-based unmaps can still capture the image here.
+    captureCloseSnapshots();
+    const auto SNAPSHOTS = std::exchange(m_closeSnapshots, std::nullopt);
 
     bool       wasLastWindow = WAS_FOCUSED;
     PHLWINDOW  nextInGroup   = RESTORED_SWALLOW_WINDOW ? RESTORED_SWALLOW_WINDOW : [this] -> PHLWINDOW {
@@ -1762,7 +1771,7 @@ void CWindow::unmapWindow() {
     m_realSize->setConfig(Config::animationTree()->getAnimationPropertyConfig("windowsOut"));
     m_presentation->alpha(WINDOW_ALPHA_FADE)->setConfig(Config::animationTree()->getAnimationPropertyConfig("fadeOut"));
 
-    Desktop::fadingOutState()->add(CWindowFadeout::create(m_self.lock(), SNAPSHOT, FADEOUTALPHA, WORKSPACE_SNAPSHOT));
+    Desktop::fadingOutState()->add(CWindowFadeout::create(m_self.lock(), SNAPSHOTS->monitor, FADEOUTALPHA, SNAPSHOTS->workspace));
 
     // recheck idle inhibitors
     g_pInputManager->recheckIdleInhibitorStatus();
