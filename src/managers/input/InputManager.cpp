@@ -283,6 +283,7 @@ void CInputManager::mouseMoveUnified(uint32_t time, bool refocus, bool mouse, st
     SP<CWLSurfaceResource> foundSurface;
     Vector2D               surfaceCoords;
     Vector2D               surfacePos = Vector2D(-1337, -1337);
+    std::optional<CBox>    heldSurfaceBox;
     PHLWINDOW              pFoundWindow;
     PHLLS                  pFoundLayerSurface;
     const auto             FOCUS_REASON = refocus ? Desktop::FOCUS_REASON_CLICK : Desktop::FOCUS_REASON_FFM;
@@ -411,6 +412,7 @@ void CInputManager::mouseMoveUnified(uint32_t time, bool refocus, bool mouse, st
                     const auto PWINDOW = Desktop::View::CWindow::fromView(HLSurface->view());
                     const auto LS      = Desktop::View::CLayerSurface::fromView(HLSurface->view());
                     surfacePos         = BOX->pos();
+                    heldSurfaceBox     = BOX;
 
                     if (PWINDOW && PWINDOW->acceptsInput())
                         pFoundWindow = PWINDOW;
@@ -596,8 +598,14 @@ void CInputManager::mouseMoveUnified(uint32_t time, bool refocus, bool mouse, st
 
     Vector2D surfaceLocal = surfacePos == Vector2D(-1337, -1337) ? surfaceCoords : mouseCoords - surfacePos;
 
-    if (pFoundWindow && pFoundWindow->backend().isX11()) // for x11 force scale zero
-        surfaceLocal = pFoundWindow->backend().surfaceLocalToBuffer(surfaceLocal);
+    if (pFoundWindow && pFoundWindow->backend().isX11()) {
+        // a held button keeps the focus on this surface while the cursor may already be on another monitor (e.g. dragging),
+        // and X11 lays monitors out differently, so map the cursor where it really is instead of extrapolating from the surface
+        if (heldSurfaceBox && !heldSurfaceBox->containsPoint(mouseCoords))
+            surfaceLocal = pFoundWindow->backend().globalToBuffer(mouseCoords, surfacePos);
+        else // for x11 force scale zero
+            surfaceLocal = pFoundWindow->backend().surfaceLocalToBuffer(surfaceLocal);
+    }
 
     if (pointerOnly) {
         g_pSeatManager->setPointerFocus(foundSurface, surfaceLocal);
@@ -976,7 +984,7 @@ void CInputManager::onMouseWheel(IPointer::SAxisEvent e, SP<IPointer> pointer) {
     if (e.source == WL_POINTER_AXIS_SOURCE_WHEEL && e.deltaDiscrete == 0 && e.delta != 0)
         e.deltaDiscrete = std::round(e.delta * 8.0);
 
-    const bool ISTOUCHPADSCROLL = *PTOUCHPADSCROLLFACTOR <= 0.f || e.source == WL_POINTER_AXIS_SOURCE_FINGER;
+    const bool ISTOUCHPADSCROLL = e.source == WL_POINTER_AXIS_SOURCE_FINGER;
     auto       factor           = ISTOUCHPADSCROLL ? *PTOUCHPADSCROLLFACTOR : *PINPUTSCROLLFACTOR;
 
     if (pointer && pointer->m_scrollFactor.has_value())
@@ -990,11 +998,13 @@ void CInputManager::onMouseWheel(IPointer::SAxisEvent e, SP<IPointer> pointer) {
     if (e.mouse)
         recheckMouseWarpOnMouseInput();
 
-    PROTO::inputCapture->axis(e.axis, e.delta);
-    if (e.source == 0)
-        PROTO::inputCapture->axisValue120(e.axis, e.delta);
-    else if (e.delta == 0)
-        PROTO::inputCapture->axisStop(e.axis);
+    if (e.source == WL_POINTER_AXIS_SOURCE_WHEEL)
+        PROTO::inputCapture->axisValue120(e.axis, e.deltaDiscrete);
+    else {
+        PROTO::inputCapture->axis(e.axis, e.delta);
+        if (e.delta == 0)
+            PROTO::inputCapture->axisStop(e.axis);
+    }
     PROTO::inputCapture->frame();
 
     Hotkeys::mgr()->onAxis();
@@ -1048,7 +1058,7 @@ void CInputManager::onMouseWheel(IPointer::SAxisEvent e, SP<IPointer> pointer) {
     double discrete = (e.deltaDiscrete != 0) ? (factor * e.deltaDiscrete / std::abs(e.deltaDiscrete)) : 0;
     double delta    = e.delta * factor;
 
-    if (e.source == 0) {
+    if (e.source == 0 && factor != 0) {
         // if an application supports v120, it should ignore discrete anyways
         if ((*PEMULATEDISCRETE >= 1 && std::abs(e.deltaDiscrete) != 120) || *PEMULATEDISCRETE >= 2) {
 
@@ -1235,6 +1245,7 @@ void CInputManager::applyConfigToKeyboard(SP<IKeyboard> pKeyboard) {
     const auto ENABLED    = HASCONFIG && Config::mgr()->deviceConfigExplicitlySet(devname, "enabled") ? Config::mgr()->getDeviceInt(devname, "enabled") : true;
     const auto ALLOWBINDS = HASCONFIG && Config::mgr()->deviceConfigExplicitlySet(devname, "keybinds") ? Config::mgr()->getDeviceInt(devname, "keybinds") : true;
 
+    pKeyboard->m_deviceTags.clear();
     for (const auto& tagString : CVarList2(Config::mgr()->getDeviceString(devname, "tags"))) {
         pKeyboard->m_deviceTags.emplace(std::string_view(tagString));
     }
@@ -1356,6 +1367,7 @@ void CInputManager::setPointerConfigs() {
 
         const auto HASCONFIG = Config::mgr()->deviceConfigExists(devname);
 
+        m->m_deviceTags.clear();
         if (HASCONFIG) {
             const auto ENABLED = HASCONFIG && Config::mgr()->deviceConfigExplicitlySet(devname, "enabled") ? Config::mgr()->getDeviceInt(devname, "enabled") : true;
             if (ENABLED && !m->m_connected) {

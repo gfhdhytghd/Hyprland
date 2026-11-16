@@ -9,6 +9,17 @@ project(
   DESCRIPTION "A Modern C++ Wayland Compositor"
   VERSION ${VER})
 
+set(HYPRLAND_TESTS_DEFAULT OFF)
+if(CMAKE_BUILD_TYPE MATCHES Debug OR CMAKE_BUILD_TYPE MATCHES DEBUG)
+  set(HYPRLAND_TESTS_DEFAULT ON)
+endif()
+option(BUILD_TESTING "Build tests" ${HYPRLAND_TESTS_DEFAULT})
+# WITH_TESTS is the project-specific override for CTest's BUILD_TESTING option.
+if(DEFINED WITH_TESTS)
+  set(BUILD_TESTING "${WITH_TESTS}" CACHE BOOL "Build tests" FORCE)
+endif()
+option(WITH_COVERAGE "Enable coverage instrumentation when building tests" ON)
+
 include(CTest)
 include(CheckIncludeFile)
 include(GNUInstallDirs)
@@ -87,11 +98,9 @@ message(
 if(CMAKE_BUILD_TYPE MATCHES Debug OR CMAKE_BUILD_TYPE MATCHES DEBUG)
   message(STATUS "Configuring Hyprland in Debug with CMake")
   add_compile_definitions(HYPRLAND_DEBUG)
-  set(BUILD_TESTING ON)
 else()
   add_compile_options(-O3)
   message(STATUS "Configuring Hyprland in Release with CMake")
-  set(BUILD_TESTING OFF)
 endif()
 
 add_compile_definitions(HYPRLAND_VERSION="${HYPRLAND_VERSION}")
@@ -704,7 +713,7 @@ install(
   PATTERN "*.hpp"
   PATTERN "*.inc")
 
-if(BUILD_TESTING OR WITH_TESTS)
+if(BUILD_TESTING)
   message(STATUS "Building tests")
 
   # hyprtester
@@ -717,8 +726,6 @@ if(BUILD_TESTING OR WITH_TESTS)
   add_executable(hyprland_gtests ${TESTFILES})
   target_sources(hyprland_gtests PRIVATE hyprpm/src/core/CacheLogic.cpp)
   target_sources(hyprland_gtests PRIVATE hyprpm/src/helpers/JobControl.cpp)
-  target_compile_options(hyprland_gtests PRIVATE --coverage)
-  target_link_options(hyprland_gtests PRIVATE --coverage)
   # Inject GL failures without a GPU context; wrappers forward normally outside the test.
   foreach(GL_PROC CreateShader ShaderSource CompileShader GetShaderiv GetShaderInfoLog
                   DeleteShader CreateProgram AttachShader DetachShader LinkProgram
@@ -734,15 +741,20 @@ if(BUILD_TESTING OR WITH_TESTS)
 
   gtest_discover_tests(hyprland_gtests)
 
-  # Enable coverage in main hyprland lib
-  target_compile_options(hyprland_lib PRIVATE --coverage)
-  target_link_options(hyprland_lib PRIVATE --coverage)
-  target_link_libraries(hyprland_lib PUBLIC gcov)
+  if(WITH_COVERAGE)
+    target_compile_options(hyprland_gtests PRIVATE --coverage)
+    target_link_options(hyprland_gtests PRIVATE --coverage)
 
-  # Enable coverage in hyprland exe
-  target_compile_options(Hyprland PRIVATE --coverage)
-  target_link_options(Hyprland PRIVATE --coverage)
-  target_link_libraries(Hyprland gcov)
+    # Enable coverage in main hyprland lib
+    target_compile_options(hyprland_lib PRIVATE --coverage)
+    target_link_options(hyprland_lib PRIVATE --coverage)
+    target_link_libraries(hyprland_lib PUBLIC gcov)
+
+    # Enable coverage in hyprland exe
+    target_compile_options(Hyprland PRIVATE --coverage)
+    target_link_options(Hyprland PRIVATE --coverage)
+    target_link_libraries(Hyprland gcov)
+  endif()
 endif()
 
 if(BUILD_TESTING)
