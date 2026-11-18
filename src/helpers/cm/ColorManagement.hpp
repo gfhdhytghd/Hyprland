@@ -290,6 +290,7 @@ namespace NColorManagement {
 
         float encodingMinLuminance() const;
         float encodingMaxLuminance() const;
+        float getContentMaxLuminance(float fallback) const;
 
         float getTFMinLuminance(float sdrMinLuminance = -1.0f) const {
             switch (transferFunction) {

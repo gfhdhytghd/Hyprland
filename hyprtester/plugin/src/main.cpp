@@ -65,6 +65,7 @@ extern "C" {
 #include "SpecialWorkspaceGestures.hpp"
 #include "XWaylandSelection.hpp"
 #include "XWaylandPointer.hpp"
+#include "FractionalSubsurface.hpp"
 
 // Do NOT change this function.
 APICALL EXPORT std::string PLUGIN_API_VERSION() {
@@ -1995,6 +1996,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     SpecialWorkspaceGestures::registerFunctions();
     XWaylandSelection::registerFunctions();
     XWaylandPointer::registerFunctions();
+    FractionalSubsurface::registerFunctions();
 
     // init mouse
     g_mouse = CTestMouse::create(false);
@@ -2013,6 +2015,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 
 APICALL EXPORT void PLUGIN_EXIT() {
     g_retainedCMMonitor.reset();
+    FractionalSubsurface::reset();
     WorkspaceGestures::reset();
     SpecialWorkspaceGestures::reset();
     restoreCursorFixture();
