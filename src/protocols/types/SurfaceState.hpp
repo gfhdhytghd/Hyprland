@@ -4,6 +4,7 @@
 #include "../../helpers/time/Time.hpp"
 #include "../../managers/eventLoop/EventLoopTimer.hpp"
 #include "../WaylandProtocol.hpp"
+#include "../../helpers/cm/ColorRepresentation.hpp"
 #include "./Buffer.hpp"
 #include "../../helpers/cm/ColorManagement.hpp"
 
@@ -70,6 +71,7 @@ struct SSurfaceState {
             bool cursor : 1;
             bool xwayland : 1;
             bool xdgPopup : 1;
+            bool colorRepresentation : 1;
         } bits;
     } updated;
 
@@ -107,6 +109,9 @@ struct SSurfaceState {
         CBox     source;
     } viewport;
     Vector2D sourceSize();
+
+    // color representation protocol surface state
+    NColorManagement::SColorRepresentation colorRepresentation;
 
     // drm syncobj protocol surface state
     CDRMSyncPointState  acquire;

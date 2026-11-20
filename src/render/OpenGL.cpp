@@ -396,8 +396,9 @@ CHyprOpenGLImpl::CHyprOpenGLImpl() : m_drmFD(g_pCompositor->m_drmRenderNode.fd >
     LOG(Log::DEBUG, "Renderer: {}", rc<const char*>(glGetString(GL_RENDERER)));
     LOG(Log::DEBUG, "Supported extensions: ({}) {}", std::ranges::count(m_extensions, ' '), m_extensions);
 
-    m_exts.EXT_read_format_bgra        = m_extensions.contains("GL_EXT_read_format_bgra");
-    m_exts.EXT_color_buffer_half_float = m_extensions.contains("GL_EXT_color_buffer_half_float") || m_extensions.contains("GL_EXT_color_buffer_float");
+    m_exts.EXT_read_format_bgra         = m_extensions.contains("GL_EXT_read_format_bgra");
+    m_exts.EXT_color_buffer_half_float  = m_extensions.contains("GL_EXT_color_buffer_half_float") || m_extensions.contains("GL_EXT_color_buffer_float");
+    m_exts.OES_EGL_image_external_essl3 = m_extensions.contains("GL_OES_EGL_image_external_essl3");
 
     RASSERT(m_extensions.contains("GL_EXT_texture_format_BGRA8888"), "GL_EXT_texture_format_BGRA8888 support by the GPU driver is required");
 
@@ -497,9 +498,22 @@ CHyprOpenGLImpl::CHyprOpenGLImpl() : m_drmFD(g_pCompositor->m_drmRenderNode.fd >
     });
 
     m_finalScreenShader = makeShared<CShader>();
+
+    m_shaderCompilerReleaseTimer = makeShared<CEventLoopTimer>(
+        std::nullopt,
+        [this](SP<CEventLoopTimer> self, void* data) {
+            // lets the driver free its compiler state (e.g. mesa's GLSL builtins), it's rebuilt on the next compile
+            makeEGLCurrent();
+            glReleaseShaderCompiler();
+        },
+        nullptr);
+    g_pEventLoopManager->addTimer(m_shaderCompilerReleaseTimer);
 }
 
 CHyprOpenGLImpl::~CHyprOpenGLImpl() {
+    if (m_shaderCompilerReleaseTimer && g_pEventLoopManager)
+        g_pEventLoopManager->removeTimer(m_shaderCompilerReleaseTimer);
+
     m_monitorBGFBs.clear();
 
     if (m_eglDisplay && m_eglContext != EGL_NO_CONTEXT)
@@ -545,9 +559,12 @@ std::optional<std::vector<uint64_t>> CHyprOpenGLImpl::getModsForFormat(EGLint fo
     // reserve number of elements to avoid reallocations
     result.reserve(mods.size());
 
-    bool linearIsExternal = false;
+    // yuv is always sampled externally, so external-only modifiers are fine for it
+    const bool ALLOW_EXTERNAL = NFormatUtils::isFormatYUV(format);
+
+    bool       linearIsExternal = false;
     for (size_t i = 0; i < std::min(mods.size(), external.size()); ++i) {
-        if (external[i]) {
+        if (external[i] && !ALLOW_EXTERNAL) {
             if (mods[i] == DRM_FORMAT_MOD_LINEAR)
                 linearIsExternal = true;
             continue;
@@ -605,9 +622,10 @@ void CHyprOpenGLImpl::initDRMFormats() {
     // reserve number of elements to avoid reallocations
     dmaFormats.reserve(formats.size());
 
+    const bool EXTERNAL_SAMPLER = isLegacy() ? std::format(" {} ", m_extensions).contains(" GL_OES_EGL_image_external ") : m_exts.OES_EGL_image_external_essl3;
     for (auto const& fmt : formats) {
-        // Do not advertise YUV until the renderer supports it.
-        if (NFormatUtils::isFormatYUV(fmt))
+        // YUV can only be sampled externally
+        if (NFormatUtils::isFormatYUV(fmt) && !EXTERNAL_SAMPLER)
             continue;
 
         std::vector<uint64_t> mods;
@@ -673,8 +691,38 @@ void CHyprOpenGLImpl::initDRMFormats() {
         LOG(Log::WARN, "Your GPU does not support rendering to FP16 buffers, some effects and CM settings might be unavailable.");
 }
 
-EGLImageKHR CHyprOpenGLImpl::createEGLImage(const Aquamarine::SDMABUFAttrs& attrs) {
-    std::array<EGLint, 50> attribs;
+static std::vector<std::pair<EGLint, EGLint>> yuvHints(const SColorRepresentation& representation) {
+    std::vector<std::pair<EGLint, EGLint>> hints;
+
+    switch (representation.coefficients) {
+        case CM_YCBCR_COEFFICIENTS_BT601: hints.emplace_back(EGL_YUV_COLOR_SPACE_HINT_EXT, EGL_ITU_REC601_EXT); break;
+        case CM_YCBCR_COEFFICIENTS_BT709: hints.emplace_back(EGL_YUV_COLOR_SPACE_HINT_EXT, EGL_ITU_REC709_EXT); break;
+        case CM_YCBCR_COEFFICIENTS_BT2020: hints.emplace_back(EGL_YUV_COLOR_SPACE_HINT_EXT, EGL_ITU_REC2020_EXT); break;
+        case CM_YCBCR_COEFFICIENTS_UNSET: break;
+    }
+
+    switch (representation.range) {
+        case CM_YCBCR_RANGE_FULL: hints.emplace_back(EGL_SAMPLE_RANGE_HINT_EXT, EGL_YUV_FULL_RANGE_EXT); break;
+        case CM_YCBCR_RANGE_LIMITED: hints.emplace_back(EGL_SAMPLE_RANGE_HINT_EXT, EGL_YUV_NARROW_RANGE_EXT); break;
+        case CM_YCBCR_RANGE_UNSET: break;
+    }
+
+    if (representation.chromaLocation == CM_CHROMA_LOCATION_UNSET)
+        return hints;
+
+    // horizontally, types 0, 2 and 4 are cosited, 1, 3 and 5 are at the midpoint.
+    // vertically, types 0 and 1 are at the midpoint, 2 and 3 are cosited, 4 and 5 sit at 1.0, which EGL can't express.
+    const int TYPE = representation.chromaLocation - CM_CHROMA_LOCATION_TYPE_0;
+    hints.emplace_back(EGL_YUV_CHROMA_HORIZONTAL_SITING_HINT_EXT, TYPE % 2 == 0 ? EGL_YUV_CHROMA_SITING_0_EXT : EGL_YUV_CHROMA_SITING_0_5_EXT);
+
+    if (TYPE < 4)
+        hints.emplace_back(EGL_YUV_CHROMA_VERTICAL_SITING_HINT_EXT, TYPE < 2 ? EGL_YUV_CHROMA_SITING_0_5_EXT : EGL_YUV_CHROMA_SITING_0_EXT);
+
+    return hints;
+}
+
+EGLImageKHR CHyprOpenGLImpl::createEGLImage(const Aquamarine::SDMABUFAttrs& attrs, const SColorRepresentation& representation) {
+    std::array<EGLint, 64> attribs;
     size_t                 idx = 0;
 
     attribs[idx++] = EGL_WIDTH;
@@ -709,6 +757,13 @@ EGLImageKHR CHyprOpenGLImpl::createEGLImage(const Aquamarine::SDMABUFAttrs& attr
             attribs[idx++] = sc<uint32_t>(attrs.modifier & 0xFFFFFFFF);
             attribs[idx++] = attrNames[i].modhi;
             attribs[idx++] = sc<uint32_t>(attrs.modifier >> 32);
+        }
+    }
+
+    if (NFormatUtils::isFormatYUV(attrs.format)) {
+        for (const auto& [name, value] : yuvHints(representation)) {
+            attribs[idx++] = name;
+            attribs[idx++] = value;
         }
     }
 
@@ -1054,6 +1109,8 @@ void CHyprOpenGLImpl::applyScreenShader(const std::string& path) {
             return;
         }
     }
+
+    scheduleShaderCompilerRelease();
 
     if (!m_finalScreenShader->createProgram(              //
             fragmentShader.starts_with("#version 320 es") // do not break existing custom shaders
@@ -1476,19 +1533,9 @@ WP<CShader> CHyprOpenGLImpl::renderToFBInternal(CRenderContext& ctx, SP<ITexture
     switch (texType) {
         case TEXTURE_RGBA: shaderFeatures |= SH_FEAT_RGBA; break;
         case TEXTURE_RGBX: shaderFeatures &= ~SH_FEAT_RGBA; break;
-
-        // TODO set correct features
-        case TEXTURE_EXTERNAL:
-            if (isLegacy())
-                shaderFeatures |= SH_FEAT_RGBA;
-            else
-                shader = getShaderVariant(SH_FRAG_EXT, SH_FEAT_ROUNDING | SH_FEAT_DISCARD | SH_FEAT_TINT | globalFeatures(ctx));
-            break;
+        case TEXTURE_EXTERNAL: shaderFeatures |= SH_FEAT_EXTERNAL | (tex->m_opaque ? 0 : SH_FEAT_RGBA); break;
         default: RASSERT(false, "tex->m_iTarget unsupported!");
     }
-
-    if (texType == TEXTURE_EXTERNAL && !isLegacy() && !shader)
-        return nullptr;
 
     if (data.finalMonitorCM || (ctx.m_data.currentWindow && ctx.m_data.currentWindow->m_ruleApplicator->RGBX().valueOrDefault()))
         shaderFeatures &= ~SH_FEAT_RGBA;
@@ -1589,16 +1636,14 @@ WP<CShader> CHyprOpenGLImpl::renderToFBInternal(CRenderContext& ctx, SP<ITexture
                 shaderFeatures |= SH_FEAT_SDR_MOD;
         }
 
-        if (!shader)
-            shader = getShaderVariant(SH_FRAG_SURFACE, shaderFeatures | globalFeatures(ctx), settings.sourceTF, settings.targetTF);
+        shader = getShaderVariant(SH_FRAG_SURFACE, shaderFeatures | globalFeatures(ctx), settings.sourceTF, settings.targetTF);
         shader = useShader(shader);
         if (!shader)
             return nullptr;
 
         passCMUniforms(shader, SOURCE_IMAGE_DESCRIPTION, TARGET_IMAGE_DESCRIPTION, true, ctx.m_data.pMonitor->m_sdrMinLuminance, settings);
     } else {
-        if (!shader)
-            shader = getShaderVariant(isLegacy() && texType == TEXTURE_EXTERNAL ? SH_FRAG_EXT : SH_FRAG_SURFACE, shaderFeatures | globalFeatures(ctx));
+        shader = getShaderVariant(SH_FRAG_SURFACE, shaderFeatures | globalFeatures(ctx));
         shader = useShader(shader);
         if (!shader)
             return nullptr;
@@ -2753,6 +2798,8 @@ WP<CShader> CHyprOpenGLImpl::getShaderVariant(ePreparedFragmentShader frag, cons
 
         const auto fragSrc = g_pShaderLoader->getVariantSource(frag, variant);
 
+        scheduleShaderCompilerRelease();
+
         if (!shader->createProgram(m_shaders->TEXVERTSRC, fragSrc, true, true)) {
             LOG(Log::ERR, "shader features {} failed for {}", variant.features, FRAG_SHADERS[frag]);
             // Remember failures too, but never expose a shader with program 0 to draws.
@@ -2764,6 +2811,13 @@ WP<CShader> CHyprOpenGLImpl::getShaderVariant(ePreparedFragmentShader frag, cons
     }
 
     return it->second;
+}
+
+static constexpr auto SHADER_COMPILER_RELEASE_DELAY = std::chrono::seconds(10);
+
+// compiles tend to come in bursts, release once they've settled
+void CHyprOpenGLImpl::scheduleShaderCompilerRelease() {
+    m_shaderCompilerReleaseTimer->updateTimeout(SHADER_COMPILER_RELEASE_DELAY);
 }
 
 std::vector<SDRMFormat> CHyprOpenGLImpl::getDRMFormats() {

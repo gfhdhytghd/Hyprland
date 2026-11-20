@@ -4,10 +4,8 @@
 #include <config/ConfigValue.hpp>
 #include <config/lua/ConfigManager.hpp>
 #include <config/shared/inotify/ConfigWatcher.hpp>
-#include <glslang/Public/resource_limits_c.h>
+#include "ShaderCompiler.hpp"
 #include <gtest/gtest.h>
-#include <hyprutils/utils/ScopeGuard.hpp>
-#include <memory>
 
 using namespace Render;
 
@@ -32,9 +30,38 @@ TEST(GLES2Conversion, FragmentOutputPrecisionAndSampling) {
     EXPECT_NE(source->find("texture2D(tex, uv)"), std::string::npos);
 }
 
+TEST(GLES2Conversion, FragmentOutputsWithTrailingComments) {
+    const auto line = toGLES2("layout(location = 0) out vec4 fragColor; // output\n", true);
+    ASSERT_TRUE(line);
+    EXPECT_EQ(*line, "#define fragColor gl_FragColor\n");
+
+    const auto block = toGLES2("out vec4 c; /* output */\n", true);
+    ASSERT_TRUE(block);
+    EXPECT_EQ(*block, "#define c gl_FragColor\n");
+}
+
+TEST(GLES2Conversion, BlockCommentsPreserveTokensAndDirectives) {
+    const auto source = toGLES2("#if 1 /* first\nsecond */ && 1\nout/* type */vec4 c;\n#endif\n", true);
+    ASSERT_TRUE(source);
+    EXPECT_EQ(*source, "#if 1   && 1\n#define c gl_FragColor\n#endif\n");
+}
+
 TEST(GLES2Conversion, RejectsMRTAndIntegerOutputs) {
     EXPECT_FALSE(toGLES2("layout(location = 0) out vec4 color;\nlayout(location = 1) out vec4 mirror;\n", true));
     EXPECT_FALSE(toGLES2("out uvec4 color;\n", true));
+}
+
+TEST(GLES2Conversion, SurfaceKeepsGuardedBlurAndExternalBranches) {
+    CShaderLoader loader(SHADER_INCLUDES, FRAG_SHADERS, "", true);
+    const auto    source = loader.process("surface.frag", {{"LEGACY_GLES2", "1"}, {"USE_BLUR", "1"}, {"USE_DISCARD", "1"}, {"USE_BLUR_MATTE", "1"}, {"USE_EXTERNAL", "1"}});
+
+    EXPECT_TRUE(source.contains("#if USE_BLUR\nuniform vec2"));
+    EXPECT_TRUE(source.contains("uniform sampler2D blurredBG;"));
+    EXPECT_TRUE(source.contains("#if USE_BLUR_MATTE\nuniform sampler2D blurAlphaMatte;"));
+    EXPECT_TRUE(source.contains("#if USE_EXTERNAL\nuniform samplerExternalOES tex;\n#else\nuniform sampler2D tex;"));
+    EXPECT_TRUE(source.contains("#if LEGACY_GLES2 && USE_BLUR && USE_DISCARD\n    float legacyBlurMask ="));
+    EXPECT_TRUE(source.contains("pixBlurAlphaMask *= legacyBlurMask;"));
+    EXPECT_TRUE(source.contains("float pixBlurAlphaMask = legacyBlurMask * blurAlpha;"));
 }
 
 class CGLES2ShaderTest : public testing::Test {
@@ -48,11 +75,11 @@ class CGLES2ShaderTest : public testing::Test {
         m_previousConfig  = std::move(Config::mgr());
         Config::mgr()     = makeUnique<Config::Lua::CConfigManager>();
         CConfigValueBase::flushCaches();
-        ASSERT_TRUE(glslang_initialize_process());
+        if (!m_compiler.initialize(2))
+            GTEST_SKIP() << "Surfaceless EGL with OpenGL ES 2 is unavailable";
     }
 
     void TearDown() override {
-        glslang_finalize_process();
         Config::mgr()     = std::move(m_previousConfig);
         Config::watcher() = std::move(m_previousWatcher);
         if (Config::mgr())
@@ -61,24 +88,30 @@ class CGLES2ShaderTest : public testing::Test {
         Config::Supplementary::Jeremy::flushCachedCfgPath();
     }
 
-    void validate(const std::string& source, glslang_stage_t stage) {
+    void validate(const std::string& source, GLenum stage) {
         ASSERT_TRUE(source.starts_with("#version 100\n")) << source;
-        const glslang_input_t input{
-            .language        = GLSLANG_SOURCE_GLSL,
-            .stage           = stage,
-            .client          = GLSLANG_CLIENT_NONE,
-            .target_language = GLSLANG_TARGET_NONE,
-            .code            = source.c_str(),
-            .default_version = 100,
-            .default_profile = GLSLANG_ES_PROFILE,
-            .messages        = GLSLANG_MSG_DEFAULT_BIT,
-            .resource        = glslang_default_resource(),
-        };
-        const std::unique_ptr<glslang_shader_t, decltype(&glslang_shader_delete)> shader(glslang_shader_create(&input), glslang_shader_delete);
-        ASSERT_TRUE(shader);
-        ASSERT_TRUE(glslang_shader_preprocess(shader.get(), &input)) << glslang_shader_get_info_log(shader.get());
-        EXPECT_TRUE(glslang_shader_parse(shader.get(), &input)) << glslang_shader_get_info_log(shader.get());
+        EXPECT_TRUE(m_compiler.compile(source, stage));
     }
+
+    void validateBlurBlend(ShaderFeatureFlags textureFeatures) {
+        CShaderLoader loader(SHADER_INCLUDES, FRAG_SHADERS, "", true);
+        for (ShaderFeatureFlags base = 0; base < 16; ++base) {
+            for (const ShaderFeatureFlags blur :
+                 std::array<ShaderFeatureFlags, 7>{SH_FEAT_BLUR_ALPHA_MASK, SH_FEAT_BLUR, SH_FEAT_BLUR | SH_FEAT_BLUR_ALPHA_MASK, SH_FEAT_BLUR | SH_FEAT_BLUR_MATTE,
+                                                   SH_FEAT_BLUR | SH_FEAT_BLUR_ALPHA_MASK | SH_FEAT_BLUR_MATTE, SH_FEAT_BLUR | SH_FEAT_BLUR_PROPORTIONAL,
+                                                   SH_FEAT_BLUR | SH_FEAT_BLUR_MATTE | SH_FEAT_BLUR_PROPORTIONAL}) {
+                const auto features = sc<ShaderFeatureFlags>(base | blur | textureFeatures);
+                SCOPED_TRACE("surface.frag features=" + std::to_string(features));
+                const auto source = loader.getVariantSource(SH_FRAG_SURFACE, {.features = features});
+                EXPECT_NE(source.find(blur & SH_FEAT_BLUR ? "#define USE_BLUR 1\n" : "#define USE_BLUR 0\n"), std::string::npos);
+                EXPECT_NE(source.find(blur & SH_FEAT_BLUR_MATTE ? "#define USE_BLUR_MATTE 1\n" : "#define USE_BLUR_MATTE 0\n"), std::string::npos);
+                EXPECT_NE(source.find(textureFeatures & SH_FEAT_EXTERNAL ? "#define USE_EXTERNAL 1\n" : "#define USE_EXTERNAL 0\n"), std::string::npos);
+                validate(source, GL_FRAGMENT_SHADER);
+            }
+        }
+    }
+
+    CShaderCompiler m_compiler;
 
   private:
     UP<CCompositor>            m_previousCompositor;
@@ -88,11 +121,11 @@ class CGLES2ShaderTest : public testing::Test {
 
 TEST_F(CGLES2ShaderTest, AllLegacyVariantsCompile) {
     CShaderLoader loader(SHADER_INCLUDES, FRAG_SHADERS, "", true);
-    validate(loader.process("tex300.vert"), GLSLANG_STAGE_VERTEX);
-    for (const auto frag : {SH_FRAG_QUAD, SH_FRAG_PASSTHRURGBA, SH_FRAG_MATTE, SH_FRAG_EXT, SH_FRAG_SHADOW, SH_FRAG_INNER_GLOW, SH_FRAG_SURFACE, SH_FRAG_BORDER1, SH_FRAG_GLITCH}) {
+    validate(loader.process("tex300.vert"), GL_VERTEX_SHADER);
+    for (const auto frag : {SH_FRAG_QUAD, SH_FRAG_PASSTHRURGBA, SH_FRAG_MATTE, SH_FRAG_SHADOW, SH_FRAG_INNER_GLOW, SH_FRAG_SURFACE, SH_FRAG_BORDER1, SH_FRAG_GLITCH}) {
         for (ShaderFeatureFlags features = 0; features < 16; ++features) {
             SCOPED_TRACE(FRAG_SHADERS[frag] + " features=" + std::to_string(features));
-            validate(loader.getVariantSource(frag, {.features = features}), GLSLANG_STAGE_FRAGMENT);
+            validate(loader.getVariantSource(frag, {.features = features}), GL_FRAGMENT_SHADER);
         }
     }
 }
@@ -101,28 +134,24 @@ TEST_F(CGLES2ShaderTest, KawaseVariantsCompile) {
     CShaderLoader loader(SHADER_INCLUDES, FRAG_SHADERS, "", true);
     for (const auto frag : {SH_FRAG_BLUR1, SH_FRAG_BLUR2, SH_FRAG_BLURPREPARE, SH_FRAG_BLURFINISH}) {
         SCOPED_TRACE(FRAG_SHADERS[frag]);
-        validate(loader.getVariantSource(frag, {}), GLSLANG_STAGE_FRAGMENT);
+        validate(loader.getVariantSource(frag, {}), GL_FRAGMENT_SHADER);
     }
 }
 
 TEST_F(CGLES2ShaderTest, BlurBlendVariantsCompile) {
+    validateBlurBlend(0);
+}
+
+TEST_F(CGLES2ShaderTest, ExternalVariantsCompile) {
+    if (!m_compiler.supportsExtension("GL_OES_EGL_image_external"))
+        GTEST_SKIP() << "GL_OES_EGL_image_external is unavailable";
+
     CShaderLoader loader(SHADER_INCLUDES, FRAG_SHADERS, "", true);
-    for (const auto frag : {SH_FRAG_SURFACE, SH_FRAG_EXT}) {
-        for (ShaderFeatureFlags base = 0; base < 16; ++base) {
-            for (const ShaderFeatureFlags blur :
-                 std::array<ShaderFeatureFlags, 7>{SH_FEAT_BLUR_ALPHA_MASK, SH_FEAT_BLUR, SH_FEAT_BLUR | SH_FEAT_BLUR_ALPHA_MASK, SH_FEAT_BLUR | SH_FEAT_BLUR_MATTE,
-                                                   SH_FEAT_BLUR | SH_FEAT_BLUR_ALPHA_MASK | SH_FEAT_BLUR_MATTE, SH_FEAT_BLUR | SH_FEAT_BLUR_PROPORTIONAL,
-                                                   SH_FEAT_BLUR | SH_FEAT_BLUR_MATTE | SH_FEAT_BLUR_PROPORTIONAL}) {
-                SCOPED_TRACE(FRAG_SHADERS[frag] + " features=" + std::to_string(base | blur));
-                const auto source = loader.getVariantSource(frag, {.features = sc<ShaderFeatureFlags>(base | blur)});
-                EXPECT_EQ(source.find("uniform sampler2D blurredBG") != std::string::npos, (blur & SH_FEAT_BLUR) != 0);
-                EXPECT_EQ(source.find("uniform samplerExternalOES tex") != std::string::npos, frag == SH_FRAG_EXT);
-                EXPECT_EQ(source.find("legacyBlurMask") != std::string::npos, (base & SH_FEAT_DISCARD) != 0 && (blur & SH_FEAT_BLUR) != 0);
-                EXPECT_EQ(source.find("uniform sampler2D blurAlphaMatte") != std::string::npos, (blur & SH_FEAT_BLUR_MATTE) != 0);
-                validate(source, GLSLANG_STAGE_FRAGMENT);
-            }
-        }
+    for (ShaderFeatureFlags base = 0; base < 16; ++base) {
+        SCOPED_TRACE("surface.frag external features=" + std::to_string(base));
+        validate(loader.getVariantSource(SH_FRAG_SURFACE, {.features = sc<ShaderFeatureFlags>(base | SH_FEAT_EXTERNAL)}), GL_FRAGMENT_SHADER);
     }
+    validateBlurBlend(SH_FEAT_EXTERNAL);
 }
 
 TEST_F(CGLES2ShaderTest, UnsupportedFeaturesFallBack) {
@@ -130,6 +159,5 @@ TEST_F(CGLES2ShaderTest, UnsupportedFeaturesFallBack) {
     const auto    features = SH_FEAT_RGBA | SH_FEAT_BLUR | SH_FEAT_BLUR_ALPHA_MASK | SH_FEAT_BLUR_MATTE | SH_FEAT_ROUNDING;
     const auto    fallback = loader.getVariantSource(SH_FRAG_SURFACE, {.features = sc<ShaderFeatureFlags>(features)});
     EXPECT_EQ(loader.getVariantSource(SH_FRAG_SURFACE, {.features = sc<ShaderFeatureFlags>(features | SH_FEAT_MOTION_BLUR | SH_FEAT_CM | SH_FEAT_ICC | SH_FEAT_MIRROR)}), fallback);
-    EXPECT_EQ(fallback.find("textureSize"), std::string::npos);
-    validate(fallback, GLSLANG_STAGE_FRAGMENT);
+    validate(fallback, GL_FRAGMENT_SHADER);
 }

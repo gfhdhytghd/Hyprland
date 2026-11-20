@@ -6,6 +6,7 @@
 #include "../helpers/time/Timer.hpp"
 #include "../helpers/math/Math.hpp"
 #include "../helpers/Format.hpp"
+#include "../helpers/cm/ColorRepresentation.hpp"
 #include "../helpers/DeformableMesh.hpp"
 #include "../helpers/sync/SyncTimeline.hpp"
 #include <GLES3/gl32.h>
@@ -48,6 +49,7 @@ namespace Hyprgraphics::Egl {
 #define GLFB(ifb) dc<CGLFramebuffer*>(ifb.get())
 
 struct gbm_device;
+class CEventLoopTimer;
 namespace Render {
     class IHyprRenderer;
 }
@@ -239,7 +241,7 @@ namespace Render::GL {
 
         std::vector<SDRMFormat>                   getDRMFormats();
         std::vector<uint64_t>                     getDRMFormatModifiers(DRMFormat format);
-        EGLImageKHR                               createEGLImage(const Aquamarine::SDMABUFAttrs& attrs);
+        EGLImageKHR                               createEGLImage(const Aquamarine::SDMABUFAttrs& attrs, const NColorManagement::SColorRepresentation& representation = {});
 
         bool                                      initShaders(const std::string& path = "");
 
@@ -289,6 +291,7 @@ namespace Render::GL {
         struct {
             bool EXT_read_format_bgra               = false;
             bool EXT_color_buffer_half_float        = false;
+            bool OES_EGL_image_external_essl3       = false;
             bool EXT_image_dma_buf_import           = false;
             bool EXT_image_dma_buf_import_modifiers = false;
             bool KHR_context_flush_control          = false;
@@ -352,6 +355,9 @@ namespace Render::GL {
         SP<CShader>             m_finalScreenShader;
         GLuint                  m_currentProgram;
 
+        SP<CEventLoopTimer>     m_shaderCompilerReleaseTimer;
+
+        void                    scheduleShaderCompilerRelease();
         void                    initDRMFormats();
         void                    initEGL(bool gbm);
         EGLDeviceEXT            eglDeviceFromDRMFD(int drmFD);

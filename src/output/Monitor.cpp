@@ -2,6 +2,7 @@
 #include "../desktop/view/window/WindowEffectsController.hpp"
 #include "../desktop/view/window/WindowPresentation.hpp"
 #include "../helpers/MiscFunctions.hpp"
+#include "../helpers/Format.hpp"
 #include "../macros.hpp"
 #include "SharedDefs.hpp"
 #include "../helpers/TransferFunction.hpp"
@@ -695,6 +696,7 @@ bool CMonitor::applyMonitorRuleSoft(Config::CMonitorRule&& pMonitorRule) {
 
     // Include ICC and SDR adjustments which need not change the image description.
     Pointer::mgr()->onMonitorImageDescriptionChanged();
+    m_events.modeChanged.emit();
 
     return true;
 }
@@ -2057,9 +2059,9 @@ uint16_t CMonitor::isDSBlocked(bool full) {
             return reasons;
     }
 
-    // we can't scanout shm buffers.
+    // we can't scanout shm buffers, nor yuv, as we don't set the plane's color encoding.
     const auto params = PSURFACE->m_current.buffer->dmabuf();
-    if (!params.success || !PSURFACE->m_current.texture->isDMA() /* dmabuf */) {
+    if (!params.success || !PSURFACE->m_current.texture->isDMA() /* dmabuf */ || NFormatUtils::isFormatYUV(params.format)) {
         reasons |= DS_BLOCK_DMA;
         if (!full)
             return reasons;
@@ -2110,20 +2112,23 @@ bool CMonitor::attemptDirectScanout() {
     // Stage the candidate's signalling before testing or committing its first buffer.
     const auto  previousMetadata    = m_output->state->state().hdrMetadata;
     const bool  previousFromSurface = m_hdrMetadataFromSurface;
+    const auto  previousHDRWindow   = m_hdrMetadataWindow;
     const auto  description         = scanoutDescription(PSURFACE);
     const bool  fromSurface         = supportsHDR() && inHDR() && description->value().transferFunction == CM_TRANSFER_FUNCTION_ST2084_PQ;
     const auto  metadata            = selectHDRMetadata(m_imageDescription->value(), inHDR(), fromSurface ? description : PImageDescription{});
     const bool  metadataChanged     = !hdrMetadataEqual(previousMetadata, metadata);
     bool        scanoutCommitted    = false;
-    CScopeGuard rollbackMetadata    = {[this, previousMetadata, previousFromSurface, &scanoutCommitted]() {
+    CScopeGuard rollbackMetadata    = {[this, previousMetadata, previousFromSurface, previousHDRWindow, &scanoutCommitted]() {
         if (scanoutCommitted)
             return;
         m_output->state->setHDRMetadata(previousMetadata);
         m_hdrMetadataFromSurface = previousFromSurface;
+        m_hdrMetadataWindow      = previousHDRWindow;
     }};
     if (metadataChanged)
         m_output->state->setHDRMetadata(metadata);
     m_hdrMetadataFromSurface     = fromSurface;
+    m_hdrMetadataWindow          = fromSurface ? PCANDIDATE : PHLWINDOW{};
     const bool signallingChanged = m_output->state->state().committed & (Aquamarine::COutputState::AQ_OUTPUT_STATE_HDR | Aquamarine::COutputState::AQ_OUTPUT_STATE_WCG);
 
     // #TODO this entire bit needs figuring out, vrr goes down the drain without it

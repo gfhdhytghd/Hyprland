@@ -7,17 +7,14 @@
 #ifndef LEGACY_GLES2
 #define LEGACY_GLES2 0
 #endif
-#ifndef LEGACY_EXTERNAL
-#define LEGACY_EXTERNAL 0
-#endif
 
-#if LEGACY_EXTERNAL
+#if USE_EXTERNAL
 #extension GL_OES_EGL_image_external_essl3 : require
 #endif
 
 precision highp float;
 in vec2   v_texcoord;
-#if LEGACY_EXTERNAL
+#if USE_EXTERNAL
 uniform samplerExternalOES tex;
 #else
 uniform sampler2D tex;

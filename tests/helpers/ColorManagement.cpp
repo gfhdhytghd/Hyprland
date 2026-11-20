@@ -445,7 +445,13 @@ TEST(ColorManagement, ScanoutHDRMetadataIsSelectedForThePendingBuffer) {
     surface.maxCLL = 700;
     EXPECT_FALSE(hdrMetadataEqual(scanout, selectHDRMetadata(output, true, CImageDescription::from(surface))));
 
-    // Leaving or rejecting scanout restores the composited signalling, including unknown CLL/FALL.
+    // During a same-window dropout, keep the surface's mastering metadata but clear its content light levels.
+    const auto dropout = selectHDRMetadata(surface, true);
+    EXPECT_EQ(dropout.hdmi_metadata_type1.max_display_mastering_luminance, 1000);
+    EXPECT_EQ(dropout.hdmi_metadata_type1.max_cll, 0);
+    EXPECT_EQ(dropout.hdmi_metadata_type1.max_fall, 0);
+
+    // Otherwise, leaving or rejecting scanout restores the monitor's composited signalling.
     EXPECT_TRUE(hdrMetadataEqual(selectHDRMetadata(output, true), composited));
     EXPECT_EQ(selectHDRMetadata(output, false, candidate).hdmi_metadata_type1.eotf, 0);
     EXPECT_EQ(selectHDRMetadata(output, false, candidate).hdmi_metadata_type1.max_cll, 0);
