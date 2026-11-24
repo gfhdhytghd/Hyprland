@@ -521,4 +521,35 @@ namespace Render {
         EXPECT_FALSE(context.m_renderingCapture);
         EXPECT_FALSE(context.m_gl.applyFinalShader);
     }
+
+    class CClearRecordingRenderer : public CContextElementRenderer {
+      public:
+        std::vector<CHyprColor> m_clears;
+
+      private:
+        void draw(CRenderContext&, WP<CClearPassElement> element, const CRegion&) override {
+            m_clears.push_back(element->m_data.color);
+        }
+    };
+
+    // Regression: the dispatcher converted the clear colour and the backend converted it again.
+    TEST(RenderContext, ClearDispatchHandsTheBackendTheConfiguredSRGBColour) {
+        CRenderContext          context;
+        CClearRecordingRenderer renderer;
+        const CHyprColor        grey{0xff808080};
+        auto                    clear = makeUnique<CClearPassElement>(CClearPassElement::SClearData{grey});
+        WP<IPassElement>        element{clear};
+
+        renderer.drawElement(context, element, CRegion{0, 0, 4, 4});
+        renderer.drawElement(context, element, CRegion{0, 0, 4, 4});
+
+        ASSERT_EQ(renderer.m_clears.size(), 2U);
+        for (const auto& color : renderer.m_clears) {
+            EXPECT_FLOAT_EQ(color.r, grey.r);
+            EXPECT_FLOAT_EQ(color.g, grey.g);
+            EXPECT_FLOAT_EQ(color.b, grey.b);
+            EXPECT_FLOAT_EQ(color.a, grey.a);
+        }
+        EXPECT_FLOAT_EQ(clear->m_data.color.r, grey.r);
+    }
 }

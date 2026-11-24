@@ -299,6 +299,29 @@ TEST(ColorManagement, BT2390UsesTheBT2100ICtCpMatrices) {
     EXPECT_NEAR(red.c.b, 2.713443, 2e-3);
 }
 
+// Regression: ICtCp assumes D65, so a non-D65 target neutral picked up chroma before the intensity mapping.
+TEST(ColorManagement, ToneMappingKeepsNeutralsNeutralOnNonD65Targets) {
+    const auto pq = CImageDescription::from(SImageDescription{.transferFunction = CM_TRANSFER_FUNCTION_ST2084_PQ, .primariesNameSet = true, .primariesNamed = CM_PRIMARIES_BT2020});
+    const auto cinema =
+        CImageDescription::from(SImageDescription{.transferFunction = CM_TRANSFER_FUNCTION_LINEAR, .primariesNameSet = true, .primariesNamed = CM_PRIMARIES_DCI_P3});
+    auto settings              = conversionSettings(pq, cinema, {.min = 0, .max = 10000}, {.min = 0, .max = 10000});
+    settings.needsTonemap      = true;
+    settings.maxLuminance      = 394.08867F;
+    settings.dstMaxLuminance   = 80;
+    settings.dstPrimaries2XYZ  = Hyprgraphics::CMatrix3{cinema->getPrimaries()->toXYZ()}.mat();
+    const auto   targetNeutral = Hyprgraphics::CMatrix3{pq->getPrimaries()->convertMatrix(cinema->getPrimaries())}.invert().mat();
+    const double luminance     = 150;
+    const auto   signalFor     = [&](int channel) { return pqSignal(luminance * (targetNeutral[channel][0] + targetNeutral[channel][1] + targetNeutral[channel][2])); };
+    const auto   mapped        = convertColor(RGBAColor{{.r = signalFor(0), .g = signalFor(1), .b = signalFor(2), .a = 1}}, pq, cinema, settings);
+    EXPECT_LT(mapped.c.g, luminance);
+    EXPECT_NEAR(mapped.c.r, mapped.c.g, 1e-3 * mapped.c.g);
+    EXPECT_NEAR(mapped.c.b, mapped.c.g, 1e-3 * mapped.c.g);
+
+    // D65 targets are unchanged by the adaptation.
+    const auto d65 = Hyprgraphics::CMatrix3{CPrimaries::from(CM_PRIMARIES_BT2020)->toXYZ()}.mat();
+    EXPECT_EQ(toD65XYZ(d65).mat(), d65);
+}
+
 TEST(ColorManagement, AlternativeTonemapMatchesTheShader) {
     const auto pq = CImageDescription::from(SImageDescription{.transferFunction = CM_TRANSFER_FUNCTION_ST2084_PQ, .primariesNameSet = true, .primariesNamed = CM_PRIMARIES_BT2020});
     const auto linear =
@@ -564,6 +587,20 @@ TEST(ColorManagement, NativeLinearConversionPreservesPremultipliedAlpha) {
         const auto roundTrip = convertWithoutTonemapping(encoded, LINEAR_IMAGE_DESCRIPTION, source);
         expectNeutralColor(roundTrip, value, alpha);
     }
+}
+
+// Regression: decode and encode both divided by max(alpha, 0.001), attenuating FP16 pixels with alpha below 0.001.
+TEST(ColorManagement, ConversionKeepsPremultipliedColourBelowTheOldAlphaFloor) {
+    const auto source = nativeLinearDescription({.min = 0.0f, .max = 80, .reference = 80});
+    for (const double alpha : {1.0 / 2048.0, 1.0 / 65536.0}) {
+        const auto converted = convertWithoutTonemapping({{.r = alpha, .g = alpha, .b = alpha, .a = alpha}}, source, LINEAR_IMAGE_DESCRIPTION);
+        EXPECT_NEAR(converted.c.r / alpha, 1.0, 1e-9);
+        EXPECT_NEAR(converted.c.b / alpha, 1.0, 1e-9);
+        EXPECT_DOUBLE_EQ(converted.c.a, alpha);
+    }
+    // Fully transparent pixels stay empty.
+    const auto transparent = convertWithoutTonemapping({{.r = 0, .g = 0, .b = 0, .a = 0}}, source, DEFAULT_SRGB_IMAGE_DESCRIPTION);
+    expectNeutralColor(transparent, 0.0, 0.0);
 }
 
 TEST(ColorManagement, NativeLinearConversionPreservesExtendedRange) {

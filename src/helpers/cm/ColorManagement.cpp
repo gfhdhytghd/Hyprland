@@ -115,12 +115,14 @@ const SPCPRimaries& NColorManagement::getPrimaries(ePrimaries name) {
 
 CPrimaries::CPrimaries(const SPCPRimaries& primaries, const uint64_t primariesId) : m_id(primariesId), m_primaries(primaries), m_table(primariesTable()) {
     const auto matrix = rgbToXYZFromPrimaries(m_primaries);
-    if (!matrix) {
+    if (matrix) {
+        const auto values = matrix->getMatrix();
+        m_primaries2XYZ   = Hyprgraphics::CMatrix3({{{values[0], values[1], values[2]}, {values[3], values[4], values[5]}, {values[6], values[7], values[8]}}});
+    } else
         m_primaries2XYZ = Hyprgraphics::CMatrix3::identity();
-        return;
-    }
-    const auto values = matrix->getMatrix();
-    m_primaries2XYZ   = Hyprgraphics::CMatrix3({{{values[0], values[1], values[2]}, {values[3], values[4], values[5]}, {values[6], values[7], values[8]}}});
+
+    m_d65Matrices.forward = toD65XYZ(m_primaries2XYZ.mat());
+    m_d65Matrices.inverse = m_d65Matrices.forward.invert();
 }
 
 SP<const CPrimaries> CPrimaries::from(const SPCPRimaries& primaries) {
@@ -163,6 +165,10 @@ uint64_t CPrimaries::id() const {
 
 const Hyprgraphics::CMatrix3& CPrimaries::toXYZ() const {
     return m_primaries2XYZ;
+}
+
+const CPrimaries::SD65Matrices& CPrimaries::d65Matrices() const {
+    return m_d65Matrices;
 }
 
 Hyprgraphics::CMatrix3 CPrimaries::convertMatrix(const SP<const CPrimaries> dst) const {
@@ -665,6 +671,14 @@ static RGBAColor fromLinearRGB(RGBAColor color, eTransferFunction tf) {
     }
 }
 
+// Straight colour of a premultiplied pixel, see unpremultiply in cm_helpers.glsl.
+static RGBAColor unpremultiply(RGBAColor color) {
+    if (color.c.a <= 0.0)
+        return RGBAColor{{.r = 0, .g = 0, .b = 0, .a = color.c.a}};
+    color /= color.c.a;
+    return color;
+}
+
 static RGBAColor toNit(RGBAColor color, Render::STFRange range) {
     for (uint i = 0; i <= 2; i++) {
         color.v[i] = color.v[i] * (range.max - range.min) + range.min;
@@ -679,7 +693,7 @@ static RGBAColor fromLinearNit(RGBAColor color, eTransferFunction tf, Render::ST
     for (uint i = 0; i <= 2; i++) {
         color.v[i] = (color.v[i] - range.min * color.c.a) / (range.max - range.min);
     }
-    color /= std::max(color.c.a, 0.001);
+    color = unpremultiply(color);
     color = tf == CM_TRANSFER_FUNCTION_BT1886 ? tfBT1886(color, range) : (tf == CM_TRANSFER_FUNCTION_HLG ? tfHLG(color, range, coefficients) : fromLinearRGB(color, tf));
     color *= color.c.a;
     return color;
@@ -742,6 +756,23 @@ static RGBAColor limitLuminance(RGBAColor color, const std::array<double, 3>& lu
     return color;
 }
 
+Hyprgraphics::CMatrix3 NColorManagement::toD65XYZ(const std::array<std::array<double, 3>, 3>& rgbToXYZ) {
+    static constexpr Hyprgraphics::CColor::xy D65 = {.x = 0.3127, .y = 0.3290};
+
+    const double                              X   = rgbToXYZ[0][0] + rgbToXYZ[0][1] + rgbToXYZ[0][2];
+    const double                              Y   = rgbToXYZ[1][0] + rgbToXYZ[1][1] + rgbToXYZ[1][2];
+    const double                              Z   = rgbToXYZ[2][0] + rgbToXYZ[2][1] + rgbToXYZ[2][2];
+    const double                              sum = X + Y + Z;
+    if (sum <= 0)
+        return Hyprgraphics::CMatrix3{rgbToXYZ};
+
+    const Hyprgraphics::CColor::xy white = {.x = X / sum, .y = Y / sum};
+    if (std::abs(white.x - D65.x) < 1e-6 && std::abs(white.y - D65.y) < 1e-6)
+        return Hyprgraphics::CMatrix3{rgbToXYZ};
+
+    return Hyprgraphics::adaptWhite(white, D65) * Hyprgraphics::CMatrix3{rgbToXYZ};
+}
+
 static RGBAColor tonemap(RGBAColor color, const std::array<std::array<double, 3>, 3>& dstXYZ, const Render::SCMSettings& settings) {
     const auto& luminanceCoefficients = dstXYZ[1];
     if (settings.maxLuminance < settings.dstMaxLuminance * 1.01 || settings.tonemapMode == 2)
@@ -754,16 +785,17 @@ static RGBAColor tonemap(RGBAColor color, const std::array<std::array<double, 3>
         {0.00707978446074772, 0.07483966621863658, 0.8433265453898765},
     }}};
     static const Hyprgraphics::CMatrix3 LMS_TO_XYZ = Hyprgraphics::CMatrix3{XYZ_TO_LMS}.invert();
-    const Hyprgraphics::CMatrix3        rgbToXYZ{dstXYZ};
-    const auto                          toLMS   = XYZ_TO_LMS * rgbToXYZ;
-    const auto                          fromLMS = Hyprgraphics::CMatrix3{rgbToXYZ}.invert() * LMS_TO_XYZ;
+    // ICtCp is defined for D65: a target neutral must reach it as D65 to stay neutral through the chroma scaling.
+    const auto   rgbToXYZ = toD65XYZ(dstXYZ);
+    const auto   toLMS    = XYZ_TO_LMS * rgbToXYZ;
+    const auto   fromLMS  = Hyprgraphics::CMatrix3{rgbToXYZ}.invert() * LMS_TO_XYZ;
 
-    const auto                          lmsLinear = toLMS * Hyprgraphics::CColor::XYZ{.x = color.c.r, .y = color.c.g, .z = color.c.b};
-    const double                        L = pqEncode(lmsLinear.x), M = pqEncode(lmsLinear.y), S = pqEncode(lmsLinear.z);
-    const double                        I1 = 0.5 * L + 0.5 * M;
-    double                              Ct = (6610.0 * L - 13613.0 * M + 7003.0 * S) / 4096.0;
-    double                              Cp = (17933.0 * L - 17390.0 * M - 543.0 * S) / 4096.0;
-    double                              I2 = I1;
+    const auto   lmsLinear = toLMS * Hyprgraphics::CColor::XYZ{.x = color.c.r, .y = color.c.g, .z = color.c.b};
+    const double L = pqEncode(lmsLinear.x), M = pqEncode(lmsLinear.y), S = pqEncode(lmsLinear.z);
+    const double I1 = 0.5 * L + 0.5 * M;
+    double       Ct = (6610.0 * L - 13613.0 * M + 7003.0 * S) / 4096.0;
+    double       Cp = (17933.0 * L - 17390.0 * M - 543.0 * S) / 4096.0;
+    double       I2 = I1;
     if (settings.tonemapMode == 3) {
         // Alternative curve suggested by LionHeartP, see USE_ALT_TONEMAP in tonemap.glsl.
         const double luminance = pqDecode(I1);
@@ -835,7 +867,7 @@ RGBAColor NColorManagement::convertColor(RGBAColor color, PImageDescription srcD
     const auto targetLuminance = Hyprgraphics::CMatrix3{dstDesc->getPrimaries()->toXYZ()}.mat()[1];
     const auto alpha           = color.c.a;
 
-    color /= std::max(alpha, 0.001);
+    color = unpremultiply(color);
     color = settings.sourceTF == CM_TRANSFER_FUNCTION_BT1886 ?
         tfInvBT1886(color, settings.srcTFRange) :
         (settings.sourceTF == CM_TRANSFER_FUNCTION_HLG ? tfInvHLG(color, settings.srcTFRange, sourceLuminance, settings.srcTFRange.max / settings.srcReferenceScale) :

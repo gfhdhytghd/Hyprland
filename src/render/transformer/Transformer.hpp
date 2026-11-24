@@ -12,7 +12,9 @@ class CEventLoopTimer;
 namespace Render {
     struct SWindowRenderPresentation;
 
-    CBox pixelBoxForLogical(const CBox& box, double scale);
+    CBox                       pixelBoxForLogical(const CBox& box, double scale);
+
+    inline constexpr DRMFormat WINDOW_BLUR_MATTE_FORMAT = DRM_FORMAT_ABGR8888;
 
     struct SWindowTransformBuffer {
         SP<Render::IFramebuffer> framebuffer;
@@ -41,6 +43,7 @@ namespace Render {
         PHLMONITORREF monitor;
         bool          standalone        = false;
         bool          renderingSnapshot = false;
+        bool          blurMatte         = false;
     };
 
     // A window transformer can be attached to a window.

@@ -218,6 +218,13 @@ namespace NColorManagement {
         const Hyprgraphics::CMatrix3& toXYZ() const;                                       // toXYZ() * rgb -> xyz
         Hyprgraphics::CMatrix3        convertMatrix(const SP<const CPrimaries> dst) const; // convertMatrix(dst) * rgb with "this" primaries -> rgb with dst primaries
 
+        struct SD65Matrices {
+            Hyprgraphics::CMatrix3 forward;
+            Hyprgraphics::CMatrix3 inverse;
+        };
+
+        const SD65Matrices& d65Matrices() const;
+
         ~CPrimaries();
         CPrimaries(const CPrimaries&)            = delete;
         CPrimaries& operator=(const CPrimaries&) = delete;
@@ -229,6 +236,7 @@ namespace NColorManagement {
         SP<SInternTable<CPrimaries>> m_table;
 
         Hyprgraphics::CMatrix3       m_primaries2XYZ;
+        SD65Matrices                 m_d65Matrices;
     };
 
     struct SImageDescription {
@@ -400,9 +408,13 @@ namespace NColorManagement {
 
     using PImageDescription = SP<const CImageDescription>;
 
-    hdr_output_metadata createHDRMetadata(const SImageDescription& settings);
-    hdr_output_metadata selectHDRMetadata(const SImageDescription& output, bool hdr, PImageDescription scanout = {});
-    bool                hdrMetadataEqual(const hdr_output_metadata& a, const hdr_output_metadata& b);
+    // RGB -> XYZ with the white of rgbToXYZ chromatically adapted to D65, the white BT.2100 ICtCp is defined for.
+    // Returns rgbToXYZ itself when its white already is D65.
+    Hyprgraphics::CMatrix3 toD65XYZ(const std::array<std::array<double, 3>, 3>& rgbToXYZ);
+
+    hdr_output_metadata    createHDRMetadata(const SImageDescription& settings);
+    hdr_output_metadata    selectHDRMetadata(const SImageDescription& output, bool hdr, PImageDescription scanout = {});
+    bool                   hdrMetadataEqual(const hdr_output_metadata& a, const hdr_output_metadata& b);
     // Chromaticities a real (mastering) display can have, which CTA-861.3 metadata can carry.
     bool      isPhysicalDisplayChromaticities(const SPCPRimaries& primaries);
 

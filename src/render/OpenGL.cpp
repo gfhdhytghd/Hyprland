@@ -1402,12 +1402,21 @@ void CHyprOpenGLImpl::passCMUniforms(WP<CShader> shader, const NColorManagement:
         // clang-format on
         shader->setUniformMatrix3fv(SHADER_TARGET_PRIMARIES_XYZ, 1, false, glTargetPrimariesXYZ);
         if (settings.needsTonemap) {
-            const auto                   inverse              = Hyprgraphics::CMatrix3{mat}.invert().mat();
+            // ICtCp tone mapping works on XYZ with the target white adapted to D65.
+            const auto&                  matrices       = targetImageDescription->getPrimaries()->d65Matrices();
+            const auto                   forward        = Hyprgraphics::CMatrix3{matrices.forward}.mat();
+            const auto                   inverse        = Hyprgraphics::CMatrix3{matrices.inverse}.mat();
+            const std::array<GLfloat, 9> glTargetD65XYZ = {
+                forward[0][0], forward[1][0], forward[2][0], //
+                forward[0][1], forward[1][1], forward[2][1], //
+                forward[0][2], forward[1][2], forward[2][2], //
+            };
             const std::array<GLfloat, 9> glTargetXYZPrimaries = {
                 inverse[0][0], inverse[1][0], inverse[2][0], //
                 inverse[0][1], inverse[1][1], inverse[2][1], //
                 inverse[0][2], inverse[1][2], inverse[2][2], //
             };
+            shader->setUniformMatrix3fv(SHADER_TARGET_D65_XYZ, 1, false, glTargetD65XYZ);
             shader->setUniformMatrix3fv(SHADER_TARGET_XYZ_PRIMARIES, 1, false, glTargetXYZPrimaries);
         }
 
@@ -1543,32 +1552,14 @@ WP<CShader> CHyprOpenGLImpl::renderToFBInternal(CRenderContext& ctx, SP<ITexture
     if (data.finalMonitorCM || (ctx.m_data.currentWindow && ctx.m_data.currentWindow->m_ruleApplicator->RGBX().valueOrDefault()))
         shaderFeatures &= ~SH_FEAT_RGBA;
 
-    const auto surface                       = ctx.m_data.surface;
-    const auto WORK_BUFFER_IMAGE_DESCRIPTION = g_pHyprRenderer->workBufferImageDescription(ctx);
+    const auto  surface                       = ctx.m_data.surface;
+    const auto  WORK_BUFFER_IMAGE_DESCRIPTION = g_pHyprRenderer->workBufferImageDescription(ctx);
 
-    // chosenSdrEotf contains the valid eotf for this display
+    const auto  source                   = textureColorSource(tex->m_imageDescription, surface ? surface->m_current.imageDescription : nullptr,
+                                                              data.cmBackToSRGB || data.finalMonitorCM ? WORK_BUFFER_IMAGE_DESCRIPTION : nullptr);
+    const auto& SOURCE_IMAGE_DESCRIPTION = source.description;
 
-    const auto SOURCE_IMAGE_DESCRIPTION = [&] {
-        if (tex->m_imageDescription)
-            return tex->m_imageDescription;
-
-        // if valid CM surface, use that as a source
-        if (surface.valid() && surface->m_current.imageDescription)
-            return surface->m_current.imageDescription;
-
-        if (data.cmBackToSRGB)
-            return tex->m_imageDescription ? tex->m_imageDescription : WORK_BUFFER_IMAGE_DESCRIPTION;
-
-        // otherwise, if we are CM'ing back into source, use chosen, because that's what our work buffer is in
-        // the same applies to the final monitor CM
-        if (data.finalMonitorCM) // NOLINTNEXTLINE
-            return WORK_BUFFER_IMAGE_DESCRIPTION;
-
-        // otherwise, default
-        return getDefaultImageDescription();
-    }();
-
-    const auto TARGET_IMAGE_DESCRIPTION = [&] {
+    const auto  TARGET_IMAGE_DESCRIPTION = [&] {
         if (ctx.m_data.currentFB->imageDescription())
             return ctx.m_data.currentFB->imageDescription();
 
@@ -1605,16 +1596,24 @@ WP<CShader> CHyprOpenGLImpl::renderToFBInternal(CRenderContext& ctx, SP<ITexture
     // The unmodified copy is always BT.709 SDR, so it still needs CM when only the target matches the source.
     const bool mirrorNeedsCM  = (globalFeatures(ctx) & SH_FEAT_MIRROR) && TARGET_IMAGE_DESCRIPTION->needsCM(DEFAULT_SRGB_IMAGE_DESCRIPTION);
     const bool EXPLICIT_SCENE = ctx.sceneResources() && ctx.sceneResources()->bufferDescription().has_value();
-    const bool skipCM         = !*PENABLECM || !m_cmSupported                               /* CM unsupported or disabled */
-        || (!EXPLICIT_SCENE && ctx.m_data.pMonitor->doesNoShaderCM())                       /* monitor-only optimization */
-        || (!SOURCE_IMAGE_DESCRIPTION->needsCM(TARGET_IMAGE_DESCRIPTION) && !mirrorNeedsCM) /* Source and target have matching image descriptions */
+    // render:cm_sdr_eotf can decode a described sRGB source as gamma 2.2, which no longer matches an equal target description.
+    const bool sourceTFOverridden =
+        g_pHyprRenderer->effectiveSourceTF(ctx, SOURCE_IMAGE_DESCRIPTION, source.useSurfacePolicy) != SOURCE_IMAGE_DESCRIPTION->value().transferFunction;
+    const bool tinted = data.allowDim && ctx.m_data.currentWindow &&
+        (ctx.m_data.currentWindow->presentation().notRespondingTint() > 0 || ctx.m_data.currentWindow->presentation().dimPercent() > 0);
+    // A tint on PQ or HLG scales display light, which needs the target transfer function in the shader.
+    const auto targetTF    = TARGET_IMAGE_DESCRIPTION->value().transferFunction;
+    const bool tintNeedsCM = tinted && (targetTF == CM_TRANSFER_FUNCTION_ST2084_PQ || targetTF == CM_TRANSFER_FUNCTION_HLG);
+    const bool skipCM      = !*PENABLECM || !m_cmSupported            /* CM unsupported or disabled */
+        || (!EXPLICIT_SCENE && ctx.m_data.pMonitor->doesNoShaderCM()) /* monitor-only optimization */
+        || (!SOURCE_IMAGE_DESCRIPTION->needsCM(TARGET_IMAGE_DESCRIPTION) && !mirrorNeedsCM && !sourceTFOverridden &&
+            !tintNeedsCM) /* Source and target have matching image descriptions */
         ;
 
     if (ctx.m_data.pMonitor->needsACopyFB())
         LOG(Log::TRACE, "CM: render to FB skip={} {} -> {}", skipCM, SOURCE_IMAGE_DESCRIPTION->value(), TARGET_IMAGE_DESCRIPTION->value());
 
-    if (data.allowDim && ctx.m_data.currentWindow &&
-        (ctx.m_data.currentWindow->presentation().notRespondingTint() > 0 || ctx.m_data.currentWindow->presentation().dimPercent() > 0))
+    if (tinted)
         shaderFeatures |= SH_FEAT_TINT;
 
     if (data.round > 0)
@@ -1622,7 +1621,7 @@ WP<CShader> CHyprOpenGLImpl::renderToFBInternal(CRenderContext& ctx, SP<ITexture
 
     if (!skipCM) {
         const auto settings = g_pHyprRenderer->getCMSettings(ctx, SOURCE_IMAGE_DESCRIPTION, TARGET_IMAGE_DESCRIPTION, surface.valid() ? surface.lock() : nullptr, true,
-                                                             ctx.m_data.pMonitor->m_sdrMinLuminance, true);
+                                                             ctx.m_data.pMonitor->m_sdrMinLuminance, source.useSurfacePolicy);
 
         shaderFeatures |= SH_FEAT_CM;
 
@@ -2398,9 +2397,16 @@ void CHyprOpenGLImpl::renderRoundedShadow(CRenderContext& ctx, const CBox& box, 
 
     const auto& glMatrix = g_pHyprRenderer->projectBoxToTarget(ctx, newBox);
 
-    const auto  TF      = m_renderData.currentFB->imageDescription()->value().transferFunction;
-    const bool  needsCM = TF != CM_TRANSFER_FUNCTION_EXT_LINEAR;
-    auto        shader  = useShader(getShaderVariant(SH_FRAG_SHADOW, (needsCM ? SH_FEAT_CM : 0) | globalFeatures(ctx), TF));
+    // Shadow colours are sRGB config colours like the other decorations, converted per pixel after the falloff is known.
+    WP<CShader> shader;
+    const bool  skipCM = !m_cmSupported || !g_pHyprRenderer->workBufferImageDescription(ctx)->needsCM(DEFAULT_SRGB_IMAGE_DESCRIPTION);
+    if (!skipCM) {
+        shader = useShader(getShaderVariant(SH_FRAG_SHADOW, getDecoVariant(ctx)));
+        if (!shader)
+            return;
+        passCMUniforms(ctx, shader, DEFAULT_SRGB_IMAGE_DESCRIPTION);
+    } else
+        shader = useShader(getShaderVariant(SH_FRAG_SHADOW, globalFeatures(ctx)));
     if (!shader)
         return;
 
@@ -2412,9 +2418,7 @@ void CHyprOpenGLImpl::renderRoundedShadow(CRenderContext& ctx, const CBox& box, 
     if (!grad1.m_colors.empty())
         color = grad1.m_colors[0];
 
-    const auto converted = g_pHyprRenderer->getConvertedColor(ctx, color.stripA());
-    shader->setUniformFloat4(SHADER_COLOR, converted.r, converted.g, converted.b, color.a);
-    shader->setUniformFloat4(SHADER_COLOR_SRGB, color.r, color.g, color.b, color.a);
+    shader->setUniformFloat4(SHADER_COLOR, color.r, color.g, color.b, color.a);
 
     shader->setUniform4fv(SHADER_GRADIENT, grad1.m_colorsOkLabA.size() / 4, grad1.m_colorsOkLabA);
     shader->setUniformInt(SHADER_GRADIENT_LENGTH, grad1.m_colorsOkLabA.size() / 4);

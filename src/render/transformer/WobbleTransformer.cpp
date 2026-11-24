@@ -74,7 +74,8 @@ SWindowTransformBuffer CWobbleTransformer::transform(CRenderContext& ctx, const 
     if (OUTPUTCANVAS.empty())
         return in;
 
-    const auto OUT = g_pHyprRenderer->getWorkBuffer(ctx, OUTPUTCANVAS.size());
+    const auto OUT = context.blurMatte ? g_pHyprRenderer->getWorkBuffer(ctx, OUTPUTCANVAS.size(), WINDOW_BLUR_MATTE_FORMAT, in.framebuffer->imageDescription()) :
+                                         g_pHyprRenderer->getWorkBuffer(ctx, OUTPUTCANVAS.size());
     if (!OUT)
         return {
             .framebuffer = in.framebuffer,

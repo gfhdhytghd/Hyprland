@@ -1,4 +1,5 @@
 #include <render/CMSettings.hpp>
+#include <helpers/TransferFunction.hpp>
 #include <gtest/gtest.h>
 
 using namespace Render;
@@ -105,4 +106,40 @@ TEST(CMSettings, BlackOverrideCannotCollapseSourceRange) {
     const auto       source   = DEFAULT_SRGB_IMAGE_DESCRIPTION;
     const auto       settings = cache.get(source, source, {.needsSDRmod = true, .sdrMinLuminance = 80});
     EXPECT_DOUBLE_EQ(settings.srcTFRange.min, source->value().encodingMinLuminance());
+}
+
+// The renderer compares this against the described TF before skipping CM for equal descriptions (SHD-05).
+TEST(CMSettings, ForcedGammaOverridesTheDescribedSRGBOfCMAwareSurfaces) {
+    using namespace NTransferFunction;
+    // gamma22force decodes a CM-aware sRGB surface as gamma 2.2, so an equal sRGB target still needs conversion.
+    EXPECT_EQ(resolveSourceTF(CM_TRANSFER_FUNCTION_SRGB, true, true, TF_FORCED_GAMMA22), CM_TRANSFER_FUNCTION_GAMMA22);
+    EXPECT_EQ(resolveSourceTF(CM_TRANSFER_FUNCTION_SRGB, true, true, TF_GAMMA22), CM_TRANSFER_FUNCTION_SRGB);
+    EXPECT_EQ(resolveSourceTF(CM_TRANSFER_FUNCTION_GAMMA22, true, true, TF_SRGB), CM_TRANSFER_FUNCTION_GAMMA22);
+    // Surfaces without a CM extension follow the SDR policy.
+    EXPECT_EQ(resolveSourceTF(CM_TRANSFER_FUNCTION_GAMMA22, true, false, TF_SRGB), CM_TRANSFER_FUNCTION_SRGB);
+    EXPECT_EQ(resolveSourceTF(CM_TRANSFER_FUNCTION_SRGB, true, false, TF_GAMMA22), CM_TRANSFER_FUNCTION_GAMMA22);
+    EXPECT_EQ(resolveSourceTF(CM_TRANSFER_FUNCTION_SRGB, true, false, TF_DEFAULT), CM_TRANSFER_FUNCTION_SRGB);
+    // Non-surface sources and other transfer functions are never overridden.
+    EXPECT_EQ(resolveSourceTF(CM_TRANSFER_FUNCTION_SRGB, false, false, TF_FORCED_GAMMA22), CM_TRANSFER_FUNCTION_SRGB);
+    EXPECT_EQ(resolveSourceTF(CM_TRANSFER_FUNCTION_ST2084_PQ, true, true, TF_FORCED_GAMMA22), CM_TRANSFER_FUNCTION_ST2084_PQ);
+}
+
+TEST(CMSettings, TaggedBlurBackdropAndClientShareSurfaceContext) {
+    const auto srgb     = DEFAULT_SRGB_IMAGE_DESCRIPTION;
+    const auto client   = textureColorSource(nullptr, srgb, nullptr);
+    const auto backdrop = textureColorSource(srgb, srgb, nullptr);
+    EXPECT_EQ(client.description, srgb);
+    EXPECT_EQ(backdrop.description, srgb);
+    EXPECT_EQ(resolveSourceTF(client.description->value().transferFunction, client.useSurfacePolicy, true, NTransferFunction::TF_FORCED_GAMMA22), CM_TRANSFER_FUNCTION_GAMMA22);
+    EXPECT_EQ(resolveSourceTF(backdrop.description->value().transferFunction, backdrop.useSurfacePolicy, true, NTransferFunction::TF_FORCED_GAMMA22), CM_TRANSFER_FUNCTION_SRGB);
+}
+
+TEST(CMSettings, ToneMapDrawsReuseTargetPrimaryMatrices) {
+    const auto  target   = CPrimaries::from(CM_PRIMARIES_DCI_P3);
+    const auto& cached   = target->d65Matrices();
+    auto        expected = toD65XYZ(Hyprgraphics::CMatrix3{target->toXYZ()}.mat());
+    EXPECT_EQ(Hyprgraphics::CMatrix3{cached.forward}.mat(), expected.mat());
+    EXPECT_EQ(Hyprgraphics::CMatrix3{cached.inverse}.mat(), expected.invert().mat());
+    EXPECT_NE(&CPrimaries::from(CM_PRIMARIES_SRGB)->d65Matrices(), &cached);
+    EXPECT_EQ(&CPrimaries::from(CM_PRIMARIES_DCI_P3)->d65Matrices(), &cached);
 }

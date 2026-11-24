@@ -24,7 +24,7 @@ vec4 blurPrepare(vec4 pixColor, float contrast, float brightness
     srcTFRange.y = tfRangeSpans.x;
     dstTFRange.y = tfRangeSpans.y;
     float alpha  = pixColor.a;
-    pixColor.rgb /= max(alpha, 0.001);
+    pixColor.rgb = unpremultiply(pixColor.rgb, alpha);
     pixColor.rgb = toLinearRGB(pixColor.rgb, sourceTF, srcTFRange);
     pixColor     = toNit(pixColor, srcTFRange);
     pixColor.rgb /= max(sdrBrightnessMultiplier, 0.001);
