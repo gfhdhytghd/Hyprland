@@ -1,4 +1,5 @@
 #include "ColorManagement.hpp"
+#include "OutputEncoding.hpp"
 #include "../../macros.hpp"
 #include "../Color.hpp"
 #include "../TransferFunction.hpp"
@@ -227,13 +228,8 @@ bool CImageDescription::needsCM(SP<const CImageDescription> target) const {
     if (m_id == target->m_id)
         return false;
 
-    const auto  sourcePeak      = m_imageDescription.maxCLL > 0 ?
-        m_imageDescription.maxCLL :
-        (m_imageDescription.masteringLuminances.max > 0 ? m_imageDescription.masteringLuminances.max : m_imageDescription.luminances.max);
-    const auto& destination     = target->m_imageDescription;
-    const auto  destinationPeak = destination.masteringLuminances.max > 0 ? destination.masteringLuminances.max : destination.luminances.max;
-
-    return sourcePeak >= destinationPeak * 1.01f || m_imageDescription.icc.present || target->m_imageDescription.icc.present // TODO compare ICC
+    return peakNeedsToneMapping(contentPeakLuminance(m_imageDescription), displayPeakLuminance(target->m_imageDescription)) || m_imageDescription.icc.present ||
+        target->m_imageDescription.icc.present // TODO compare ICC
         || m_imageDescription.isWindows != target->m_imageDescription.isWindows || m_imageDescription.isInternal != target->m_imageDescription.isInternal ||
         m_imageDescription.transferFunction != target->m_imageDescription.transferFunction //
         //|| m_imageDescription.transferFunctionPower != target->m_imageDescription.transferFunctionPower // TODO unsupported
@@ -712,7 +708,7 @@ static RGBAColor limitLuminance(RGBAColor color, const std::array<double, 3>& lu
 
 static RGBAColor tonemap(RGBAColor color, const std::array<std::array<double, 3>, 3>& dstXYZ, const Render::SCMSettings& settings) {
     const auto& luminanceCoefficients = dstXYZ[1];
-    if (settings.maxLuminance < settings.dstMaxLuminance * 1.01 || settings.tonemapMode == 2)
+    if (!peakNeedsToneMapping(settings.maxLuminance, settings.dstMaxLuminance) || settings.tonemapMode == 2)
         return limitLuminance(color, luminanceCoefficients, settings.dstMaxLuminance);
 
     // BT.2100 Table 7 RGB -> LMS (integers / 4096) composed with D65 XYZ -> BT.2020 RGB.
@@ -787,8 +783,16 @@ bool NColorManagement::isWindowsScRGB(const SImageDescription& description) {
 }
 
 bool NColorManagement::isHDR(const SImageDescription& description) {
-    return description.transferFunction == CM_TRANSFER_FUNCTION_ST2084_PQ || description.transferFunction == CM_TRANSFER_FUNCTION_HLG || isWindowsScRGB(description) ||
-        (description.transferFunction == CM_TRANSFER_FUNCTION_EXT_LINEAR && description.luminances.max > description.luminances.reference);
+    if (description.transferFunction == CM_TRANSFER_FUNCTION_ST2084_PQ || description.transferFunction == CM_TRANSFER_FUNCTION_HLG || isWindowsScRGB(description))
+        return true;
+
+    if (description.transferFunction != CM_TRANSFER_FUNCTION_EXT_LINEAR)
+        return false;
+
+    // Extended linear content can exceed its primary volume (color-management-v1, set_mastering_luminance): the target volume and the
+    // content light level describe its highlights just as well as a primary maximum above reference white.
+    const auto REFERENCE = description.luminances.reference;
+    return description.luminances.max > REFERENCE || description.masteringLuminances.max > REFERENCE || description.maxCLL > REFERENCE;
 }
 
 float NColorManagement::referenceLuminanceScale(const SImageDescription& source, const SImageDescription& target) {

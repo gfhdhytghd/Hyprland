@@ -1168,6 +1168,10 @@ bool CHyprOpenGLImpl::isLegacy() const {
     return m_eglContextVersion == EGL_CONTEXT_GLES_2_0;
 }
 
+bool CHyprOpenGLImpl::cmSupported() const {
+    return m_cmSupported;
+}
+
 GLint CHyprOpenGLImpl::textureInternalFormat(const Hyprgraphics::Egl::SPixelFormat* format) const {
     if (isLegacy() || !format->glInternalFormat)
         return format->glFormat;
@@ -1602,9 +1606,10 @@ WP<CShader> CHyprOpenGLImpl::renderToFBInternal(CRenderContext& ctx, SP<ITexture
     // The unmodified copy is always BT.709 SDR, so it still needs CM when only the target matches the source.
     const bool mirrorNeedsCM  = (globalFeatures(ctx) & SH_FEAT_MIRROR) && TARGET_IMAGE_DESCRIPTION->needsCM(DEFAULT_SRGB_IMAGE_DESCRIPTION);
     const bool EXPLICIT_SCENE = ctx.sceneResources() && ctx.sceneResources()->bufferDescription().has_value();
-    const bool skipCM         = !*PENABLECM || !m_cmSupported                               /* CM unsupported or disabled */
-        || (!EXPLICIT_SCENE && ctx.m_data.pMonitor->doesNoShaderCM())                       /* monitor-only optimization */
-        || (!SOURCE_IMAGE_DESCRIPTION->needsCM(TARGET_IMAGE_DESCRIPTION) && !mirrorNeedsCM) /* Source and target have matching image descriptions */
+    // The fullscreen CTM converts only the frame KMS scans out. Captures, copies and other scenes still need their own conversion.
+    const bool skipCM = !*PENABLECM || !m_cmSupported                                                                /* CM unsupported or disabled */
+        || shaderCMBypassed(ctx.m_data.pMonitor->doesNoShaderCM(), ctx.m_mode == RENDER_MODE_NORMAL, EXPLICIT_SCENE) /* monitor-only optimization */
+        || (!SOURCE_IMAGE_DESCRIPTION->needsCM(TARGET_IMAGE_DESCRIPTION) && !mirrorNeedsCM)                          /* Source and target have matching image descriptions */
         ;
 
     if (ctx.m_data.pMonitor->needsACopyFB())

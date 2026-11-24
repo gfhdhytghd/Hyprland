@@ -312,6 +312,8 @@ namespace Render::GL {
 
         // GLES2-only hardware: no blur, CM, FP16, ICC, MRT mirror copy or texture swizzles
         bool isLegacy() const;
+        // whether the shaders were built with color management, see render:cm_enabled
+        bool cmSupported() const;
         // the sized internal format, or the unsized one GLES2 requires
         GLint textureInternalFormat(const Hyprgraphics::Egl::SPixelFormat* format) const;
 

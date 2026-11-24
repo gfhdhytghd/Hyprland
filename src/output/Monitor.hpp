@@ -25,6 +25,7 @@
 #include <optional>
 #include "../helpers/cm/ColorManagement.hpp"
 #include "../helpers/cm/HardwareCM.hpp"
+#include "../helpers/cm/OutputEncoding.hpp"
 #include "../helpers/signal/Signal.hpp"
 #include "DamageRing.hpp"
 #include <aquamarine/output/Output.hpp>
@@ -47,6 +48,18 @@ namespace Monitor {
     class COutputCommitCoordinator;
     class CMonitorWindowTransaction;
     class CMonitor;
+
+    // The fullscreen window the output presents, resolved once per frame. The output encoding, the CTM, scanout CM, the HDR metadata and
+    // the auto HDR offer all use this one snapshot, so a held fullscreen transaction can't split them between two windows. Its colour
+    // sources are searched on first use only: most frames on most outputs need neither.
+    struct SFullscreenColorSource {
+        PHLWINDOWREF                        window;
+        bool                                contentResolved = false;
+        NColorManagement::PImageDescription content; // the description CWLSurfaceResource::findWithCM selects, null while untagged
+        bool                                solitaryResolved = false;
+        WP<CWLSurfaceResource>              solitary;            // the window's solitary resource while it is the solitary client
+        NColorManagement::PImageDescription solitaryDescription; // its description, the default one while untagged
+    };
 
     class CMonitorState {
       public:
@@ -109,34 +122,36 @@ namespace Monitor {
 
         CMonitorZoomController      m_zoomController;
         bool                        m_zoomSoftwareCursorLock = false;
-        int                         m_damageBlinkCleanup     = 0;
+        // the cursor zoom renderMonitor sampled for this frame, which both its cursor lock and the conversion bypass follow
+        float                  m_frameCursorZoom    = 1.F;
+        int                    m_damageBlinkCleanup = 0;
 
-        bool                        m_dpmsStatus         = true;
-        bool                        m_vrrActive          = false; // this can be TRUE even if VRR is not active in the case that this display does not support it.
-        bool                        m_enabled10bit       = false; // as above, this can be TRUE even if 10 bit failed.
-        NCMType::eCMType            m_cmType             = NCMType::CM_SRGB;
-        NTransferFunction::eTF      m_sdrEotf            = NTransferFunction::TF_DEFAULT;
-        float                       m_sdrSaturation      = 1.0f;
-        float                       m_sdrBrightness      = 1.0f;
-        float                       m_sdrMinLuminance    = 0.2f;
-        int                         m_referenceLuminance = -1;
-        bool                        m_createdByUser      = false;
-        bool                        m_isUnsafeFallback   = false;
+        bool                   m_dpmsStatus         = true;
+        bool                   m_vrrActive          = false; // this can be TRUE even if VRR is not active in the case that this display does not support it.
+        bool                   m_enabled10bit       = false; // as above, this can be TRUE even if 10 bit failed.
+        NCMType::eCMType       m_cmType             = NCMType::CM_SRGB;
+        NTransferFunction::eTF m_sdrEotf            = NTransferFunction::TF_DEFAULT;
+        float                  m_sdrSaturation      = 1.0f;
+        float                  m_sdrBrightness      = 1.0f;
+        float                  m_sdrMinLuminance    = 0.2f;
+        int                    m_referenceLuminance = -1;
+        bool                   m_createdByUser      = false;
+        bool                   m_isUnsafeFallback   = false;
 
-        SP<CEventLoopTimer>         m_dpmsRetryTimer;
+        SP<CEventLoopTimer>    m_dpmsRetryTimer;
 
-        bool                        m_pendingFrame    = false; // if we schedule a frame during rendering, reschedule it after
-        bool                        m_renderingActive = false;
+        bool                   m_pendingFrame    = false; // if we schedule a frame during rendering, reschedule it after
+        bool                   m_renderingActive = false;
 
-        bool                        m_ratsScheduled = false;
-        CTimer                      m_lastPresentationTimer;
+        bool                   m_ratsScheduled = false;
+        CTimer                 m_lastPresentationTimer;
 
-        bool                        m_isBeingLeased = false;
+        bool                   m_isBeingLeased = false;
 
-        Config::CMonitorRule        m_activeMonitorRule;
+        Config::CMonitorRule   m_activeMonitorRule;
 
-        SP<Render::ITexture>        m_splash;
-        SP<Render::ITexture>        m_background;
+        SP<Render::ITexture>   m_splash;
+        SP<Render::ITexture>   m_background;
 
         // explicit sync
         Hyprutils::OS::CFileDescriptor m_inFence; // TODO: remove when aq uses CFileDescriptor
@@ -371,31 +386,59 @@ namespace Monitor {
         uint32_t                                                    getPreferredReadFormat();
 
         bool                                                        needsCM();
+
+        /// Resolves the presented fullscreen window for this frame, see SFullscreenColorSource
+        PHLWINDOW updateFullscreenColorSource();
+        /// The description of the presented fullscreen window's content (findWithCM), null while untagged
+        NColorManagement::PImageDescription fullscreenContentDescription();
+        /// The presented fullscreen window's solitary resource while it is the solitary client: the buffer direct scanout submits and
+        /// the only pixels a solitary frame shows. Null otherwise.
+        SP<CWLSurfaceResource> solitaryColorSurface();
+        /// Its description, the default one while untagged, null without a solitary surface
+        NColorManagement::PImageDescription solitaryColorDescription();
+        /// Whether a composited frame draws nothing but the solitary surface: no software cursor (also none cursor zoom is about to
+        /// lock for this frame) and no DPMS fade
+        bool fullscreenCoversFrame();
+        /// Decides the auto HDR offer for the installed description and the presented window, returns whether it changed
+        bool updateAutoHDROffer();
+
+        /// Output colour mode, one decision for the encoding, the signalling and the auto HDR offer. See NColorManagement::resolveOutputEncoding.
+        NColorManagement::SOutputColorCapabilities colorCapabilities();
+        NColorManagement::SOutputEncodingInputs    outputEncodingInputs(const NColorManagement::SOutputColorCapabilities& caps);
+        /// Rebuilds the image description for the encoding's preset, returns whether it changed
+        bool applyOutputEncoding(const NColorManagement::SOutputEncoding& encoding);
+        /// The fullscreen CTM decision's inputs for this frame. Queries only what the configured policy needs.
+        NColorManagement::SFullscreenCTMInputs fullscreenCTMInputs();
+
         /// Can do CM without shader (forDSmode ? check output image description : check workbuffer image description)
-        bool                                canNoShaderCM(bool forDSmode = false);
-        bool                                doesNoShaderCM();
+        bool canNoShaderCM(bool forDSmode = false);
+        /// Whether the KMS CTM alone converts source pixels to the target encoding
+        bool                                   ctmConvertsTo(const NColorManagement::PImageDescription& source, const NColorManagement::PImageDescription& target);
+        bool                                   doesNoShaderCM();
 
-        bool                                m_enabled             = false;
-        bool                                m_renderingInitPassed = false;
+        bool                                   m_enabled             = false;
+        bool                                   m_renderingInitPassed = false;
 
-        PHLWINDOWREF                        m_previousFSWindow;
-        PHLWINDOWREF                        m_autoHDRWindow;
-        bool                                m_needsHDRupdate         = false;
-        bool                                m_hdrMetadataFromSurface = false;
-        PHLWINDOWREF                        m_hdrMetadataWindow;
+        PHLWINDOWREF                           m_previousFSWindow;
+        PHLWINDOWREF                           m_autoHDRWindow; // the fullscreen window auto HDR offers its HDR description to
+        std::optional<NCMType::eCMType>        m_autoHDROffer;  // ... and the preset it offers
+        NColorManagement::SFullscreenCTMInputs m_fullscreenCTMInputs;
+        bool                                   m_needsHDRupdate         = false;
+        bool                                   m_hdrMetadataFromSurface = false;
+        PHLWINDOWREF                           m_hdrMetadataWindow;
 
-        std::optional<dev_t>                m_cachedAllocatorDRMDev;
-        std::optional<dev_t>                m_cachedCompositorDRMDev;
-        int                                 m_cachedAllocatorDRMFD  = -1;
-        int                                 m_cachedCompositorDRMFD = -1;
-        std::optional<bool>                 m_cachedSameGPU;
+        std::optional<dev_t>                   m_cachedAllocatorDRMDev;
+        std::optional<dev_t>                   m_cachedCompositorDRMDev;
+        int                                    m_cachedAllocatorDRMFD  = -1;
+        int                                    m_cachedCompositorDRMFD = -1;
+        std::optional<bool>                    m_cachedSameGPU;
 
-        NColorManagement::PImageDescription m_imageDescription = NColorManagement::CImageDescription::from(NColorManagement::SImageDescription{});
-        bool                                m_noShaderCTM      = false; // sets drm CTM, restore needed
-        bool                                m_noShaderCM       = false; // the drm CTM performs the CM, shaders skip it
+        NColorManagement::PImageDescription    m_imageDescription = NColorManagement::CImageDescription::from(NColorManagement::SImageDescription{});
+        bool                                   m_noShaderCTM      = false; // sets drm CTM, restore needed
+        bool                                   m_noShaderCM       = false; // the drm CTM performs the CM, shaders skip it
 
-        bool                                m_blurFBDirty        = true;
-        bool                                m_blurFBShouldRender = false;
+        bool                                   m_blurFBDirty        = true;
+        bool                                   m_blurFBShouldRender = false;
 
         // For the list lookup
 
@@ -424,8 +467,17 @@ namespace Monitor {
         bool                                       m_doneScheduled = false;
         bool                                       m_vcgtRampsSet  = false;
 
+        std::optional<NCMType::eCMType>            m_appliedCMType;                         // the preset m_imageDescription was built from, nullopt before the first one
+        NCMType::eCMType                           m_configuredCMType   = NCMType::CM_SRGB; // cm of the last monitor rule whose colour state was applied
+        NColorManagement::eCMFallback              m_reportedCMFallback = NColorManagement::CM_FALLBACK_NONE;
+        SFullscreenColorSource                     m_fullscreenColorSource;
+        mutable std::optional<bool>                m_bt2020Signal; // canSignalBT2020, fixed per connector and refreshed on connect
+        void                                       reportCMFallback(NColorManagement::eCMFallback fallback, NCMType::eCMType configured);
+        void                                       onImageDescriptionChanged();
+
         bool                                       stageScanoutCM(const NColorManagement::SImageDescription& source, bool& changed);
         bool                                       scanoutCMNeedsUpdate(SP<CWLSurfaceResource> surface);
+        bool                                       scanoutNeedsHardwareCM(const NColorManagement::PImageDescription& surfaceDescription);
         static NColorManagement::PImageDescription scanoutDescription(SP<CWLSurfaceResource> surface);
         void                                       clearScanoutCM();
 
@@ -451,6 +503,7 @@ namespace Monitor {
             CHyprSignalListener presented;
             CHyprSignalListener commit;
             CHyprSignalListener commitResult;
+            CHyprSignalListener configReloaded;
         } m_listeners;
 
         int   m_supportsWideColor = 0;

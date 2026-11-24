@@ -250,6 +250,8 @@ I18n::CI18nEngine::CI18nEngine() {
     registerEntry("en_US", TXT_KEY_NOTIF_FAILED_TO_LOAD_PLUGIN, "Failed to load plugin {name}: {error}");
     registerEntry("en_US", TXT_KEY_NOTIF_CM_RELOAD_FAILED, "CM shader reload failed, falling back to rgba/rgbx.");
     registerEntry("en_US", TXT_KEY_NOTIF_WIDE_COLOR_NOT_10B, "Monitor {name}: wide color gamut is enabled but the display is not in 10-bit mode.");
+    registerEntry("en_US", TXT_KEY_NOTIF_CM_NEEDS_SHADER_CM, "Monitor {name}: cm = {cm} needs render:cm_enabled = true, using sRGB instead.");
+    registerEntry("en_US", TXT_KEY_NOTIF_CM_AUTO_HDR_NEEDS_SHADER_CM, "Monitor {name}: auto HDR needs render:cm_enabled = true, showing the fullscreen HDR content in SDR.");
     registerEntry("en_US", TXT_KEY_NOTIF_NO_WATCHDOG, "Hyprland was started without start-hyprland. This is strongly discouraged unless you are in a debugging environment.");
     registerEntry("en_US", TXT_KEY_NOTIF_DEPRECATED_CONFIG_OPTS, [](const Hyprutils::I18n::translationVarMap& vars) {
         int assetsNo = std::stoi(vars.at("count"));
