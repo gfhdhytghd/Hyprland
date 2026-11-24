@@ -711,12 +711,11 @@ static std::vector<std::pair<EGLint, EGLint>> yuvHints(const SColorRepresentatio
         return hints;
 
     // horizontally, types 0, 2 and 4 are cosited, 1, 3 and 5 are at the midpoint.
-    // vertically, types 0 and 1 are at the midpoint, 2 and 3 are cosited, 4 and 5 sit at 1.0, which EGL can't express.
+    // vertically, types 0 and 1 are at the midpoint, 2 and 3 are cosited, 4 and 5 sit at 1.0, which EGL can't express:
+    // they get the midpoint, the nearest position EGL has, instead of an unspecified driver default.
     const int TYPE = representation.chromaLocation - CM_CHROMA_LOCATION_TYPE_0;
     hints.emplace_back(EGL_YUV_CHROMA_HORIZONTAL_SITING_HINT_EXT, TYPE % 2 == 0 ? EGL_YUV_CHROMA_SITING_0_EXT : EGL_YUV_CHROMA_SITING_0_5_EXT);
-
-    if (TYPE < 4)
-        hints.emplace_back(EGL_YUV_CHROMA_VERTICAL_SITING_HINT_EXT, TYPE < 2 ? EGL_YUV_CHROMA_SITING_0_5_EXT : EGL_YUV_CHROMA_SITING_0_EXT);
+    hints.emplace_back(EGL_YUV_CHROMA_VERTICAL_SITING_HINT_EXT, TYPE == 2 || TYPE == 3 ? EGL_YUV_CHROMA_SITING_0_EXT : EGL_YUV_CHROMA_SITING_0_5_EXT);
 
     return hints;
 }
