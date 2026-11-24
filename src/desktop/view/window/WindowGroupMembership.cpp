@@ -76,9 +76,9 @@ bool CWindowGroupMembership::canBeGroupedInto(const SP<CGroup>& group) const {
     if (!group || m_window.backend().traits().overrideRedirect)
         return false;
 
-    static auto ALLOWGROUPMERGE       = CConfigValue<Config::INTEGER>("group:merge_groups_on_drag");
+    static auto ALLOWGROUPMERGE       = CConfigValue<Config::BOOL>("group:merge_groups_on_drag");
     const bool  isGroup               = !!m_group;
-    const bool  disallowDragIntoGroup = g_layoutManager->dragController()->wasDraggingWindow() && isGroup && !sc<bool>(*ALLOWGROUPMERGE);
+    const bool  disallowDragIntoGroup = g_layoutManager->dragController()->wasDraggingWindow() && isGroup && !(*ALLOWGROUPMERGE);
 
     return !Desktop::windowState()->groupsLocked()                                  // global group lock disengaged
         && ((m_rules & GROUP_INVADE && (m_window.m_state & WINDOW_STATE_FIRST_MAP)) // window ignores local group locks, or

@@ -289,13 +289,13 @@ void CImageCopyCaptureCursorSession::createFrame(SP<CExtImageCopyCaptureFrameV1>
             if (result != RESULT_TIMESTAMP)
                 m_pendingFrame.reset();
             switch (result) {
-                case RESULT_COPIED: m_frameResource->sendReady(); break;
-                case RESULT_NOT_COPIED: m_frameResource->sendFailed(EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_UNKNOWN); break;
+                case RESULT_COPIED: frame->sendReady(); break;
+                case RESULT_NOT_COPIED: frame->sendFailed(EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_UNKNOWN); break;
                 case RESULT_TIMESTAMP:
                     auto [sec, nsec] = Time::secNsec(Time::steadyNow());
                     uint32_t tvSecHi = (sizeof(sec) > 4) ? sec >> 32 : 0;
                     uint32_t tvSecLo = sec & 0xFFFFFFFF;
-                    m_frameResource->sendPresentationTime(tvSecHi, tvSecLo, nsec);
+                    frame->sendPresentationTime(tvSecHi, tvSecLo, nsec);
                     break;
             }
         });

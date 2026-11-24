@@ -696,7 +696,7 @@ class CWindowGeometryTest : public CMonitorWindowTransactionTest {
         PROTO::fractional    = makeUnique<CFractionalScaleProtocol>(&wp_fractional_scale_manager_v1_interface, 1, "geometry-fractional-scale-test");
         *CConfigValue<Config::INTEGER>("misc:transaction_timeout").ptr()       = 0;
         *CConfigValue<Config::INTEGER>("general:border_size").ptr()            = 1;
-        *CConfigValue<Config::INTEGER>("misc:size_limits_tiled").ptr()         = 0;
+        *CConfigValue<Config::BOOL>("misc:size_limits_tiled").ptr()         = false;
         *CConfigValue<Config::VEC2>("layout:single_window_aspect_ratio").ptr() = {};
         *CConfigValue<Config::BOOL>("group:groupbar:enabled").ptr()            = false;
         setGaps("general:gaps_in", {-1});
@@ -1141,7 +1141,7 @@ TEST_F(CWindowGeometryTest, MaximizedGeometryAndSyncUseTheSameFractionalWorkArea
 }
 
 TEST_F(CWindowGeometryTest, SizeLimitedTilesStayOnTheDeviceGridAfterCentering) {
-    *CConfigValue<Config::INTEGER>("misc:size_limits_tiled").ptr() = 1;
+    *CConfigValue<Config::BOOL>("misc:size_limits_tiled").ptr() = true;
     setGaps("general:gaps_in", {0});
     m_monitor->m_position = {};
     m_monitor->m_size     = {503, 503};

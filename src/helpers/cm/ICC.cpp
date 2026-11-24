@@ -307,7 +307,7 @@ std::expected<SPCPRimaries, std::string> NColorManagement::iccPrimaries(cmsHPROF
 }
 
 std::expected<SImageDescription, std::string> SImageDescription::fromICC(const std::filesystem::path& file, SP<const CImageDescription> previous) {
-    static auto     PVCGTENABLED = CConfigValue<Config::INTEGER>("render:icc_vcgt_enabled");
+    static auto     PVCGTENABLED = CConfigValue<Config::BOOL>("render:icc_vcgt_enabled");
 
     std::error_code ec;
     if (!std::filesystem::exists(file, ec) || ec)
