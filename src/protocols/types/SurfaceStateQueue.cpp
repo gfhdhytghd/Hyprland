@@ -5,10 +5,22 @@
 
 CSurfaceStateQueue::CSurfaceStateQueue(WP<CWLSurfaceResource> surf) : m_surface(std::move(surf)) {}
 
-void CSurfaceStateQueue::clear() {
-    for (const auto& state : m_queue) {
-        state->cancelFenceWaiter();
-        PROTO::presentation->discardFeedbacks(state->presentationFeedbacks);
+void CSurfaceStateQueue::applyNullAttachment(SSurfaceState& state) {
+    // Keep the last committed representation, even when its buffer never reached presentation.
+    if (!state.updated.bits.colorRepresentation) {
+        for (const auto& queued : m_queue | std::views::reverse) {
+            if (!queued->updated.bits.colorRepresentation)
+                continue;
+            state.colorRepresentation              = queued->colorRepresentation;
+            state.updated.bits.colorRepresentation = true;
+            break;
+        }
+    }
+    m_surface->commitState(state);
+
+    for (const auto& queued : m_queue) {
+        queued->cancelFenceWaiter();
+        PROTO::presentation->discardFeedbacks(queued->presentationFeedbacks);
     }
 
     m_queue.clear();

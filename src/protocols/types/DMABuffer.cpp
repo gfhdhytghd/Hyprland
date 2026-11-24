@@ -11,11 +11,6 @@ CDMABuffer::CDMABuffer(uint32_t id, wl_client* client, const Aquamarine::SDMABUF
     for (size_t i = 0; i < m_fds.size(); ++i)
         m_attrs.fds[i] = m_fds[i].get();
 
-    m_listeners.resourceDestroy = events.destroy.listen([this] {
-        closeFDs();
-        m_listeners.resourceDestroy.reset();
-    });
-
     size       = m_attrs.size;
     m_resource = CWLBufferResource::create(makeShared<CWlBuffer>(client, 1, id));
     if UNLIKELY (!m_resource->good())
@@ -44,8 +39,6 @@ CDMABuffer::CDMABuffer(uint32_t id, wl_client* client, const Aquamarine::SDMABUF
 CDMABuffer::~CDMABuffer() {
     if (m_resource)
         m_resource->sendRelease();
-
-    closeFDs();
 }
 
 Aquamarine::eBufferCapability CDMABuffer::caps() {
@@ -97,14 +90,6 @@ SP<Render::ITexture> CDMABuffer::textureFor(const NColorManagement::SColorRepres
 
 bool CDMABuffer::good() {
     return m_success;
-}
-
-void CDMABuffer::closeFDs() {
-    for (auto& fd : m_fds)
-        fd.reset();
-
-    m_attrs.fds.fill(-1);
-    m_attrs.planes = 0;
 }
 
 std::vector<CFileDescriptor> CDMABuffer::exportSyncFiles() {

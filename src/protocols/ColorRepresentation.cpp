@@ -39,10 +39,6 @@ static eYCbCrRange rangeFromWP(wpColorRepresentationSurfaceV1Range range) {
     }
 }
 
-static bool isYUVBuffer(const CHLBufferReference& buffer) {
-    return buffer->type() == Aquamarine::BUFFER_TYPE_DMABUF && NFormatUtils::isFormatYUV(buffer->dmabuf().format);
-}
-
 CColorRepresentationSurface::CColorRepresentationSurface(UP<CWpColorRepresentationSurfaceV1>&& resource, SP<CWLSurfaceResource> surface) :
     m_surface(surface), m_resource(std::move(resource)) {
     if UNLIKELY (!good())
@@ -120,22 +116,16 @@ void CColorRepresentationSurface::setPending(const SColorRepresentation& represe
 }
 
 void CColorRepresentationSurface::onPrecommit() {
-    auto& pending = m_surface->m_pending;
+    auto&      pending = m_surface->m_pending;
 
-    // the current contents look different now, repaint them
-    if (pending.updated.bits.colorRepresentation && pending.colorRepresentation != m_surface->m_current.colorRepresentation) {
-        pending.bufferDamage.add(CBox{{}, pending.bufferSize});
-        pending.updated.bits.damage = true;
-    }
-
-    if (pending.colorRepresentation == SColorRepresentation{})
+    const auto format = m_surface->m_committingFormat;
+    if (!format || pending.colorRepresentation == SColorRepresentation{})
         return;
 
-    const auto& BUFFER = pending.updated.bits.buffer ? pending.buffer : m_surface->m_current.buffer;
-    if (!BUFFER || isYUVBuffer(BUFFER))
+    if (NFormatUtils::isFormatYUV(*format) && (pending.colorRepresentation.chromaLocation == CM_CHROMA_LOCATION_UNSET || NFormatUtils::isFormatYUV420(*format)))
         return;
 
-    m_resource->error(WP_COLOR_REPRESENTATION_SURFACE_V1_ERROR_PIXEL_FORMAT, "color representation set for a non-YUV buffer");
+    m_resource->error(WP_COLOR_REPRESENTATION_SURFACE_V1_ERROR_PIXEL_FORMAT, "color representation incompatible with buffer format");
     pending.rejected = true;
 }
 

@@ -1,4 +1,9 @@
 #include <protocols/core/Output.hpp>
+#include <protocols/GammaControl.hpp>
+#include <protocols/CTMControl.hpp>
+#include <state/MonitorState.hpp>
+#include <filesystem>
+#include <thread>
 #include <protocols/core/Compositor.hpp>
 #include <protocols/XDGOutput.hpp>
 #include <protocols/OutputPower.hpp>
@@ -42,12 +47,19 @@ struct SOutputTestEvent {
 
 class COutputTestOutput : public Aquamarine::IOutput {
   public:
+    bool                  m_rejectGamma = false;
+    std::vector<uint16_t> m_testedGamma;
+    size_t                getGammaSize() override {
+        return m_rejectGamma ? 2 : 0;
+    }
     bool commit() override {
         ADD_FAILURE() << "Unexpected output commit";
         return false;
     }
     bool test() override {
-        ADD_FAILURE() << "Unexpected output test";
+        if (!m_rejectGamma)
+            ADD_FAILURE() << "Unexpected output test";
+        m_testedGamma = state->state().gammaLut;
         return false;
     }
     SP<Aquamarine::IBackendImplementation> getBackend() override {
@@ -888,3 +900,162 @@ TEST_P(COutputPowerModeTest, HealthyModesAreForwardedAndChildOutlivesOutputAndMa
 }
 
 INSTANTIATE_TEST_SUITE_P(Modes, COutputPowerModeTest, ::testing::Values(false, true));
+
+class COutputColorControlTest : public COutputTest {
+  protected:
+    void SetUp() override {
+        ASSERT_NO_FATAL_FAILURE(COutputTest::SetUp());
+        Aquamarine::SBackendImplementationOptions backend;
+        backend.backendType        = Aquamarine::AQ_BACKEND_NULL;
+        g_pCompositor->m_aqBackend = Aquamarine::CBackend::create({backend}, Aquamarine::SBackendOptions{});
+        ASSERT_TRUE(g_pCompositor->m_aqBackend);
+        ASSERT_NO_FATAL_FAILURE(bindOutput());
+        std::vector<SOutputTestEvent> events;
+        readOutputEvents(events);
+    }
+
+    void replaceOutput(uint32_t id) {
+        m_protocol->remove();
+        PROTO::defunctOutputs.emplace_back(m_protocol);
+        auto replacement                     = makeProtocol(m_monitor);
+        PROTO::outputs.at(m_monitor->m_name) = replacement;
+        replacement->bindManager(m_client, nullptr, 4, id);
+        std::vector<SOutputTestEvent> events;
+        readOutputEvents(events);
+    }
+
+    void request(uint32_t id, uint32_t opcode, std::initializer_list<uint32_t> args = {}, int fd = -1) {
+        std::vector<uint32_t> words{id, sc<uint32_t>((2 + args.size()) * sizeof(uint32_t) << 16) | opcode};
+        words.insert(words.end(), args);
+        iovec  data{words.data(), words.size() * sizeof(uint32_t)};
+        msghdr message{};
+        message.msg_iov    = &data;
+        message.msg_iovlen = 1;
+        alignas(cmsghdr) std::array<char, CMSG_SPACE(sizeof(int))> control{};
+        if (fd >= 0) {
+            message.msg_control    = control.data();
+            message.msg_controllen = control.size();
+            auto header            = CMSG_FIRSTHDR(&message);
+            header->cmsg_level     = SOL_SOCKET;
+            header->cmsg_type      = SCM_RIGHTS;
+            header->cmsg_len       = CMSG_LEN(sizeof(fd));
+            std::memcpy(CMSG_DATA(header), &fd, sizeof(fd));
+        }
+
+        ASSERT_EQ(sendmsg(m_socket.get(), &message, MSG_NOSIGNAL), sc<ssize_t>(data.iov_len));
+        ASSERT_EQ(wl_event_loop_dispatch(wl_display_get_event_loop(m_display.get()), 0), 0);
+    }
+};
+
+TEST_F(COutputColorControlTest, RejectedGammaControlsReleaseOwnership) {
+    auto                                previous = std::move(PROTO::gamma);
+    const Hyprutils::Utils::CScopeGuard restore{[&] {
+        wl_display_destroy_clients(m_display.get());
+        PROTO::gamma = std::move(previous);
+    }};
+    PROTO::gamma = makeUnique<CGammaControlProtocol>(&zwlr_gamma_control_manager_v1_interface, 1, "gamma-test");
+    PROTO::gamma->bindManager(m_client, nullptr, 1, 3);
+    auto output           = sc<COutputTestOutput*>(m_monitor->m_output.get());
+    output->swapchain     = Aquamarine::CSwapchain::create(nullptr, nullptr);
+    output->m_rejectGamma = true;
+    request(3, 0, {4, 2});
+    request(3, 0, {5, 2});
+    std::vector<SOutputTestEvent> events;
+    readOutputEvents(events);
+    EXPECT_EQ(events, (std::vector<SOutputTestEvent>{{4, 0, {2}}, {5, 1, {}}}));
+    request(5, 1);
+    EXPECT_EQ(wl_client_get_object(m_client, 5), nullptr);
+    request(4, 1);
+    request(3, 0, {6, 2});
+    readOutputEvents(events);
+    std::erase_if(events, [](const auto& event) { return event.objectID == 1 && event.opcode == 1; }); // wl_display.delete_id
+    ASSERT_EQ(events, (std::vector<SOutputTestEvent>{{6, 0, {2}}}));
+
+    const std::array<uint16_t, 6> table{1, 2, 3, 4, 5, 6};
+    auto                          path = (std::filesystem::temp_directory_path() / "hyprland-gamma-XXXXXX").string();
+    CFileDescriptor               file{mkstemp(path.data())};
+    ASSERT_TRUE(file.isValid());
+    ASSERT_EQ(unlink(path.c_str()), 0);
+    ASSERT_EQ(write(file.get(), table.data(), sizeof(table)), sc<ssize_t>(sizeof(table)));
+    const int flags = fcntl(file.get(), F_GETFL);
+    request(6, 0, {}, file.get());
+    EXPECT_EQ(lseek(file.get(), 0, SEEK_CUR), sc<off_t>(sizeof(table)));
+    EXPECT_EQ(fcntl(file.get(), F_GETFL), flags);
+    EXPECT_EQ(output->m_testedGamma, (std::vector<uint16_t>{1, 3, 5, 2, 4, 6}));
+    EXPECT_TRUE(output->state->state().gammaLut.empty());
+    readOutputEvents(events);
+    EXPECT_EQ(events, (std::vector<SOutputTestEvent>{{6, 1, {}}}));
+    replaceOutput(7);
+    request(3, 0, {8, 2});
+    request(3, 0, {9, 7}); // Both failed controllers are still alive.
+    readOutputEvents(events);
+    EXPECT_EQ(events, (std::vector<SOutputTestEvent>{{8, 1, {}}, {9, 0, {2}}}));
+}
+
+TEST_F(COutputColorControlTest, CTMConsumesAssignmentsAndRetargetsFromAppliedMatrix) {
+    auto                                previous         = std::move(PROTO::ctm);
+    auto                                previousMonitors = std::move(State::monitorState());
+    CConfigValue<Config::INTEGER>       animation("render:ctm_animation");
+    const auto                          savedAnimation = *animation;
+    const Hyprutils::Utils::CScopeGuard restore{[&] {
+        wl_display_destroy_clients(m_display.get());
+        PROTO::ctm            = std::move(previous);
+        State::monitorState() = std::move(previousMonitors);
+        *animation.ptr()      = savedAnimation;
+    }};
+    *animation.ptr()      = 0;
+    State::monitorState() = makeUnique<State::CMonitorStateTracker>();
+    Event::bus()->m_events.monitor.added.emit(m_monitor);
+    PROTO::ctm = makeUnique<CHyprlandCTMControlProtocol>(&hyprland_ctm_control_manager_v1_interface, 2, "ctm-test");
+    PROTO::ctm->bindManager(m_client, nullptr, 2, 3);
+
+    uint32_t   outputID = 2;
+    const auto setHalf  = [&] { request(3, 0, {outputID, 128, 0, 0, 0, 256, 0, 0, 0, 256}); };
+    setHalf();
+    request(3, 1);
+    EXPECT_FLOAT_EQ(m_monitor->m_ctm.getMatrix()[0], 0.5F);
+    request(3, 1);
+    EXPECT_FLOAT_EQ(m_monitor->m_ctm.getMatrix()[0], 1.F);
+
+    setHalf();
+    auto replacement = makeMonitor(); // reuses the connector name
+    Event::bus()->m_events.monitor.removed.emit(m_monitor);
+    Event::bus()->m_events.monitor.added.emit(replacement);
+    request(3, 1);
+    EXPECT_FLOAT_EQ(replacement->m_ctm.getMatrix()[0], 1.F);
+    Event::bus()->m_events.monitor.removed.emit(replacement);
+    Event::bus()->m_events.monitor.added.emit(m_monitor);
+
+    setHalf();
+    replaceOutput(4);
+    request(3, 1);
+    EXPECT_FLOAT_EQ(m_monitor->m_ctm.getMatrix()[0], 1.F);
+    setHalf(); // request through the retired global
+    request(3, 1);
+    EXPECT_FLOAT_EQ(m_monitor->m_ctm.getMatrix()[0], 1.F);
+    outputID         = 4;
+    *animation.ptr() = 1;
+    setHalf();
+    request(3, 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    Animation::mgr()->tick();
+    const auto sampled = m_monitor->m_ctm.getMatrix()[0];
+    ASSERT_LT(sampled, 1.F);
+    ASSERT_GT(sampled, 0.5F);
+    request(3, 1);
+    EXPECT_FLOAT_EQ(m_monitor->m_ctm.getMatrix()[0], sampled);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    Animation::mgr()->tick();
+    EXPECT_GT(m_monitor->m_ctm.getMatrix()[0], sampled);
+    EXPECT_LT(m_monitor->m_ctm.getMatrix()[0], 1.F);
+    Config::animationTree()->setConfigForNode("__internal_fadeCTM", 1, 0.01F, "linear");
+    Animation::mgr()->tick();
+    EXPECT_FLOAT_EQ(m_monitor->m_ctm.getMatrix()[0], 1.F);
+
+    request(3, 1);
+    *animation.ptr() = 0;
+    setHalf();
+    request(3, 1);
+    Animation::mgr()->tick();
+    EXPECT_FLOAT_EQ(m_monitor->m_ctm.getMatrix()[0], 0.5F);
+}

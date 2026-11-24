@@ -38,7 +38,7 @@ class CDMABUFParamsTest : public ::testing::Test {
     void                                                       TearDown() override;
     void                                                       addPlane(uint32_t plane, CFileDescriptor& reader, uint64_t modifier = 0, uint32_t offset = 0, uint32_t stride = 4);
     void                                                       sendFDRequest(std::span<uint32_t> request, CFileDescriptor& reader);
-    void                                                       createBuffer(int32_t width, int32_t height, uint32_t flags = 0);
+    void                                                       createBuffer(int32_t width, int32_t height, uint32_t flags = 0, uint32_t format = DRM_FORMAT_XRGB8888);
     void                                                       expectOpen(const CFileDescriptor& reader);
     void                                                       expectClosed(const CFileDescriptor& reader);
 
@@ -119,9 +119,9 @@ void CDMABUFParamsTest::sendFDRequest(std::span<uint32_t> request, CFileDescript
     ASSERT_EQ(wl_event_loop_dispatch(wl_display_get_event_loop(m_display.get()), 0), 0);
 }
 
-void CDMABUFParamsTest::createBuffer(int32_t width, int32_t height, uint32_t flags) {
+void CDMABUFParamsTest::createBuffer(int32_t width, int32_t height, uint32_t flags, uint32_t format) {
     std::array<uint32_t, 7> request = {
-        2, (7U * sizeof(uint32_t) << 16) | 3U, 3, sc<uint32_t>(width), sc<uint32_t>(height), DRM_FORMAT_XRGB8888, flags,
+        2, (7U * sizeof(uint32_t) << 16) | 3U, 3, sc<uint32_t>(width), sc<uint32_t>(height), format, flags,
     };
     ASSERT_EQ(send(m_socket.get(), request.data(), sizeof(request), MSG_NOSIGNAL), sc<ssize_t>(sizeof(request)));
     ASSERT_EQ(wl_event_loop_dispatch(wl_display_get_event_loop(m_display.get()), 0), 0);
@@ -1600,27 +1600,25 @@ TEST_F(CDMABUFBufferTest, InvalidTextureClosesTransferredPlane) {
     expectClosed(reader);
 }
 
-TEST_F(CDMABUFBufferTest, ResourceDestroyThenDestructorDoesNotCloseReusedFD) {
+TEST_F(CDMABUFBufferTest, ResourceDestroyRetainsPlanesForRepresentationImport) {
     CFileDescriptor reader;
     addPlane(0, reader);
-    createBuffer(1, 1);
+    createBuffer(2, 2, 0, DRM_FORMAT_NV12);
     auto buffer = createdBuffer();
     ASSERT_TRUE(buffer);
-    const auto attrs = buffer->dmabuf();
-    const int  fd    = attrs.fds[0];
     m_params.reset();
+    const std::array<uint32_t, 2> destroy = {wl_resource_get_id(buffer->m_resource->getResource()), 8U << 16};
+    ASSERT_EQ(send(m_socket.get(), destroy.data(), sizeof(destroy), MSG_NOSIGNAL), sc<ssize_t>(sizeof(destroy)));
+    ASSERT_EQ(wl_event_loop_dispatch(wl_display_get_event_loop(m_display.get()), 0), 0);
+    EXPECT_EQ(wl_client_get_object(m_client, destroy.front()), nullptr);
     expectOpen(reader);
 
-    wl_resource_destroy(buffer->m_resource->getResource());
-    expectClosed(reader);
-    EXPECT_EQ(buffer->dmabuf().planes, 0);
-    EXPECT_EQ(buffer->dmabuf().fds[0], -1);
-
-    CFileDescriptor reused{fcntl(reader.get(), F_DUPFD_CLOEXEC, fd)};
-    ASSERT_EQ(reused.get(), fd);
-    buffer->events.destroy.emit();
+    NColorManagement::SColorRepresentation representation{.coefficients = NColorManagement::CM_YCBCR_COEFFICIENTS_BT709, .range = NColorManagement::CM_YCBCR_RANGE_LIMITED};
+    EXPECT_NE(buffer->textureFor(representation), buffer->m_texture);
+    ASSERT_EQ(renderer().m_imports.size(), 2U);
+    EXPECT_EQ(renderer().m_imports.back().planes, 1);
     buffer.reset();
-    EXPECT_NE(fcntl(reused.get(), F_GETFD), -1);
+    expectClosed(reader);
 }
 
 TEST_F(CDMABUFBufferTest, ConstructorUnwindClosesAllMovedFDs) {

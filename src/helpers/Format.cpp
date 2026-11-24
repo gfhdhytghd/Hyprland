@@ -30,6 +30,37 @@ DRMFormat NFormatUtils::shmToDRM(SHMFormat shm) {
     return shm;
 }
 
+bool NFormatUtils::isFormatYUV420(uint32_t drmFormat) {
+    switch (drmFormat & ~DRM_FORMAT_BIG_ENDIAN) {
+        case DRM_FORMAT_Y0L0:
+        case DRM_FORMAT_X0L0:
+        case DRM_FORMAT_Y0L2:
+        case DRM_FORMAT_X0L2:
+        case DRM_FORMAT_YUV420_8BIT:
+        case DRM_FORMAT_YUV420_10BIT:
+        case DRM_FORMAT_NV12:
+        case DRM_FORMAT_NV21:
+        case DRM_FORMAT_NV15:
+        case DRM_FORMAT_P010:
+        case DRM_FORMAT_P012:
+        case DRM_FORMAT_P016:
+        case DRM_FORMAT_P030:
+        case DRM_FORMAT_YUV420:
+        case DRM_FORMAT_YVU420:
+#ifdef DRM_FORMAT_S010
+        case DRM_FORMAT_S010:
+#endif
+#ifdef DRM_FORMAT_S012
+        case DRM_FORMAT_S012:
+#endif
+#ifdef DRM_FORMAT_S016
+        case DRM_FORMAT_S016:
+#endif
+            return true;
+        default: return false;
+    }
+}
+
 bool NFormatUtils::isFormatYUV(uint32_t drmFormat) {
     switch (drmFormat & ~DRM_FORMAT_BIG_ENDIAN) {
         case DRM_FORMAT_YUYV:
@@ -54,26 +85,13 @@ bool NFormatUtils::isFormatYUV(uint32_t drmFormat) {
         case DRM_FORMAT_XVYU2101010:
         case DRM_FORMAT_XVYU12_16161616:
         case DRM_FORMAT_XVYU16161616:
-        case DRM_FORMAT_Y0L0:
-        case DRM_FORMAT_X0L0:
-        case DRM_FORMAT_Y0L2:
-        case DRM_FORMAT_X0L2:
-        case DRM_FORMAT_YUV420_8BIT:
-        case DRM_FORMAT_YUV420_10BIT:
-        case DRM_FORMAT_NV12:
-        case DRM_FORMAT_NV21:
         case DRM_FORMAT_NV16:
         case DRM_FORMAT_NV61:
         case DRM_FORMAT_NV24:
         case DRM_FORMAT_NV42:
-        case DRM_FORMAT_NV15:
         case DRM_FORMAT_NV20:
         case DRM_FORMAT_NV30:
         case DRM_FORMAT_P210:
-        case DRM_FORMAT_P010:
-        case DRM_FORMAT_P012:
-        case DRM_FORMAT_P016:
-        case DRM_FORMAT_P030:
 #ifdef DRM_FORMAT_P230
         case DRM_FORMAT_P230:
 #endif
@@ -83,17 +101,14 @@ bool NFormatUtils::isFormatYUV(uint32_t drmFormat) {
         case DRM_FORMAT_T430:
 #endif
 #ifdef DRM_FORMAT_S010
-        case DRM_FORMAT_S010:
         case DRM_FORMAT_S210:
         case DRM_FORMAT_S410:
 #endif
 #ifdef DRM_FORMAT_S012
-        case DRM_FORMAT_S012:
         case DRM_FORMAT_S212:
         case DRM_FORMAT_S412:
 #endif
 #ifdef DRM_FORMAT_S016
-        case DRM_FORMAT_S016:
         case DRM_FORMAT_S216:
         case DRM_FORMAT_S416:
 #endif
@@ -101,13 +116,11 @@ bool NFormatUtils::isFormatYUV(uint32_t drmFormat) {
         case DRM_FORMAT_YVU410:
         case DRM_FORMAT_YUV411:
         case DRM_FORMAT_YVU411:
-        case DRM_FORMAT_YUV420:
-        case DRM_FORMAT_YVU420:
         case DRM_FORMAT_YUV422:
         case DRM_FORMAT_YVU422:
         case DRM_FORMAT_YUV444:
         case DRM_FORMAT_YVU444: return true;
-        default: return false;
+        default: return isFormatYUV420(drmFormat);
     }
 }
 

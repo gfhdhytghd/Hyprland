@@ -19,7 +19,6 @@ class CDMABuffer : public IHLBuffer {
     virtual void                                   endDataPtr();
     virtual SP<Render::ITexture>                   textureFor(const NColorManagement::SColorRepresentation& representation);
     bool                                           good();
-    void                                           closeFDs();
     std::vector<Hyprutils::OS::CFileDescriptor>    exportSyncFiles();
     bool                                           m_success = false;
 
@@ -31,8 +30,4 @@ class CDMABuffer : public IHLBuffer {
     // yuv re-imported with a color representation, m_texture uses the driver's defaults
     SP<Render::ITexture>                   m_representedTexture;
     NColorManagement::SColorRepresentation m_representation;
-
-    struct {
-        CHyprSignalListener resourceDestroy;
-    } m_listeners;
 };

@@ -4,9 +4,10 @@
 #include <cstdint>
 #include "WaylandProtocol.hpp"
 #include "hyprland-ctm-control-v1.hpp"
-#include <unordered_map>
 #include <map>
 #include "../helpers/AnimatedVariable.hpp"
+
+class CWLOutputProtocol;
 
 class CHyprlandCTMControlResource {
   public:
@@ -19,7 +20,7 @@ class CHyprlandCTMControlResource {
   private:
     UP<CHyprlandCtmControlManagerV1>        m_resource;
 
-    std::unordered_map<std::string, Mat3x3> m_ctms;
+    std::map<WP<CWLOutputProtocol>, Mat3x3> m_ctms;
     bool                                    m_blocked = false;
 };
 

@@ -162,8 +162,19 @@ CWLSurfaceResource::CWLSurfaceResource(SP<CWlSurface> resource_) : m_resource(re
         else
             m_pending.damage.intersect(CBox{{}, m_pending.size});
 
+        const auto previousFormat = m_committingFormat;
+        if (m_pending.updated.bits.buffer) {
+            if (!m_pending.buffer)
+                m_committingFormat.reset();
+            else if (m_pending.buffer->type() == Aquamarine::BUFFER_TYPE_DMABUF)
+                m_committingFormat = m_pending.buffer->dmabuf().format;
+            else
+                m_committingFormat = m_pending.buffer->shm().format;
+        }
+
         m_events.precommit.emit();
         if (m_pending.rejected) {
+            m_committingFormat = previousFormat;
             m_pending.rejected = false;
             PROTO::presentation->discardFeedbacks(m_pending.presentationFeedbacks);
             dropPendingBuffer();
@@ -182,10 +193,7 @@ CWLSurfaceResource::CWLSurfaceResource(SP<CWlSurface> resource_) : m_resource(re
 
         // null buffer attached
         if (!m_pending.buffer && m_pending.updated.bits.buffer) {
-            commitState(m_pending);
-
-            // remove any pending states.
-            m_stateQueue.clear();
+            m_stateQueue.applyNullAttachment(m_pending);
             m_pending.reset();
 
             // A destroyed role can leave the wl_surface mapped, suppressing a new role's
@@ -212,6 +220,7 @@ CWLSurfaceResource::CWLSurfaceResource(SP<CWlSurface> resource_) : m_resource(re
         m_events.stateCommit2.emit(state);
 
         if (state->rejected) {
+            m_committingFormat = previousFormat;
             m_stateQueue.dropState(state);
             return;
         }
