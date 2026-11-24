@@ -24,6 +24,10 @@
 #include <output/MonitorResources.hpp>
 #include <pointer/PointerManager.hpp>
 #include <protocols/LayerShell.hpp>
+#include <protocols/ImageCopyCapture.hpp>
+#include <protocols/LinuxDMABUF.hpp>
+#include <protocols/core/Seat.hpp>
+#include <managers/SeatManager.hpp>
 #include <protocols/LockNotify.hpp>
 #include <protocols/PresentationTime.hpp>
 #include <protocols/SessionLock.hpp>
@@ -40,6 +44,7 @@
 
 #include <array>
 #include <memory>
+#include <map>
 #include <sys/socket.h>
 #include <thread>
 #include <utility>
@@ -345,8 +350,9 @@ class CSessionTestRenderer : public Render::IHyprRenderer {
     std::vector<SDRMFormat> getDRMFormats() override {
         return {};
     }
+    std::vector<uint64_t> m_exportModifiers;
     std::vector<uint64_t> getDRMFormatModifiers(DRMFormat) override {
-        return {};
+        return m_exportModifiers;
     }
     SP<Render::IFramebuffer> createFB(const std::string&) override {
         if (m_elements->m_simpleExport)
@@ -833,12 +839,12 @@ class CWorkspaceCaptureFrameTest : public CWorkspaceCaptureSessionTest {
         EXPECT_TRUE(full.copy().subtract(clear.damage).empty());
     }
 
-    wl_client* m_client = nullptr; // Owned by the isolated display.
-    uint32_t   m_nextID = 2;
+    wl_client*                     m_client = nullptr; // Owned by the isolated display.
+    uint32_t                       m_nextID = 2;
+    Hyprutils::OS::CFileDescriptor m_socket;
 
   private:
     bool                            m_installedFrameGlobals = false;
-    Hyprutils::OS::CFileDescriptor  m_socket;
     UP<State::CMonitorStateTracker> m_previousMonitors;
     UP<CDynamicPermissionManager>   m_previousPermissions;
     UP<CSessionLockManager>         m_previousSessionLock;
@@ -1912,4 +1918,182 @@ TEST_F(CWorkspaceCaptureFrameTest, SnapshotDemandIgnoresOtherCaptureTypes) {
         ASSERT_EQ(frame->share(buffer(session->bufferSize()), {}, [](auto) { ; }), Screenshare::ERROR_NONE);
         EXPECT_FALSE(Screenshare::mgr()->needsWorkspaceCaptureSnapshot(window));
     }
+}
+
+// Simulate DRM device discovery on an isolated Wayland display.
+static void setCaptureTestDevice(CLinuxDMABufV1Protocol& protocol, dev_t device);
+template <auto Device>
+struct SCaptureTestDeviceAccess {
+    friend void setCaptureTestDevice(CLinuxDMABufV1Protocol& protocol, dev_t device) {
+        protocol.*Device = device;
+    }
+};
+template struct SCaptureTestDeviceAccess<&CLinuxDMABufV1Protocol::m_mainDevice>;
+
+class CCursorCaptureRobustnessTest : public CWorkspaceCaptureSceneTest {
+  protected:
+    void SetUp() override {
+        CWorkspaceCaptureSceneTest::SetUp();
+        ASSERT_FALSE(HasFatalFailure());
+        ASSERT_FALSE(PROTO::linuxDma);
+        m_monitor->m_enabled    = true;
+        m_monitor->m_dpmsStatus = false;
+        m_previousSeat          = std::move(PROTO::seat);
+        m_previousSeatManager   = std::move(g_pSeatManager);
+        PROTO::seat             = makeUnique<CWLSeatProtocol>(&wl_seat_interface, 9, "cursor-test-seat");
+        g_pSeatManager          = makeUnique<CSeatManager>();
+        auto wire               = makeShared<CWlPointer>(m_client, 1, m_nextID++);
+        m_pointer               = makeShared<CWLPointerResource>(wire, nullptr);
+        Pointer::mgr()->setCursorBuffer(buffer({16, 16}), {}, 1.F);
+    }
+
+    void TearDown() override {
+        m_cursor.reset();
+        m_pointer.reset();
+        PROTO::linuxDma.reset();
+        g_pSeatManager = std::move(m_previousSeatManager);
+        PROTO::seat    = std::move(m_previousSeat);
+        CWorkspaceCaptureSceneTest::TearDown();
+    }
+
+    void enableDma() {
+        PROTO::linuxDma = makeUnique<CLinuxDMABufV1Protocol>(&zwp_linux_dmabuf_v1_interface, 5, "cursor-test-dma");
+    }
+
+    void request(uint32_t id, uint32_t opcode, std::initializer_list<uint32_t> args = {}) {
+        std::vector<uint32_t> words{id, sc<uint32_t>(((args.size() + 2) * sizeof(uint32_t) << 16) | opcode)};
+        words.insert(words.end(), args);
+        ASSERT_EQ(send(m_socket.get(), words.data(), words.size() * sizeof(uint32_t), MSG_NOSIGNAL), sc<ssize_t>(words.size() * sizeof(uint32_t)));
+        ASSERT_EQ(wl_event_loop_dispatch(wl_display_get_event_loop(m_display.get()), 0), 0);
+    }
+
+    uint32_t cursor(SP<CImageCaptureSource> source) {
+        auto wire = makeShared<CExtImageCopyCaptureCursorSessionV1>(m_client, 1, m_nextID++);
+        m_cursor  = makeUnique<CImageCopyCaptureCursorSession>(wire, source, m_pointer);
+        return wl_resource_get_id(wire->resource());
+    }
+    void startChild(uint32_t cursorID) {
+        m_sessionID = m_nextID++;
+        request(cursorID, 1, {m_sessionID});
+    }
+    void start(SP<CImageCaptureSource> source) {
+        startChild(cursor(source));
+    }
+
+    using Events = std::vector<std::vector<uint32_t>>;
+    Events events(uint32_t object) {
+        wl_display_flush_clients(m_display.get());
+        std::array<uint32_t, 256> words{};
+        const auto                bytes = recv(m_socket.get(), words.data(), sizeof(words), MSG_DONTWAIT);
+        for (ssize_t i = 0; i + 2 <= bytes / 4;) {
+            const auto length = (words[i + 1] >> 16) / 4;
+            if (length < 2 || i + length > bytes / 4) {
+                ADD_FAILURE() << "Incomplete Wayland event";
+                break;
+            }
+            auto& event = m_events[words[i]].emplace_back(1, words[i + 1] & 0xffff);
+            event.insert(event.end(), words.begin() + i + 2, words.begin() + i + length);
+            i += length;
+        }
+        return std::exchange(m_events[object], {});
+    }
+
+    uint32_t attachedFrame(SP<CSessionTestBuffer> target) {
+        const auto id = m_nextID++;
+        request(m_sessionID, 0, {id});
+        request(id, 1, {wl_resource_get_id(target->m_resource->getResource())});
+        events(id); // Initial damage and transform.
+        return id;
+    }
+
+    std::map<uint32_t, Events>         m_events;
+    uint32_t                           m_sessionID = 0;
+    UP<CImageCopyCaptureCursorSession> m_cursor;
+    SP<CWLPointerResource>             m_pointer;
+    UP<CWLSeatProtocol>                m_previousSeat;
+    UP<CSeatManager>                   m_previousSeatManager;
+};
+
+TEST_F(CCursorCaptureRobustnessTest, ShmOnlyCompletesCursorConstraints) {
+    renderer().m_exportModifiers = {DRM_FORMAT_MOD_LINEAR};
+    start(makeShared<CImageCaptureSource>(nullptr, m_monitor));
+    EXPECT_EQ(events(m_sessionID), (Events{{1, WL_SHM_FORMAT_ARGB8888}, {0, 16, 16}, {4}}));
+}
+
+TEST_F(CCursorCaptureRobustnessTest, DmaEventsRequireDeviceAndModifiers) {
+    enableDma();
+    const auto   source = makeShared<CImageCaptureSource>(nullptr, m_monitor);
+    const Events shmOnly{{1, WL_SHM_FORMAT_ARGB8888}, {0, 16, 16}, {4}};
+    renderer().m_exportModifiers = {DRM_FORMAT_MOD_LINEAR};
+    start(source);
+    EXPECT_EQ(events(m_sessionID), shmOnly);
+    setCaptureTestDevice(*PROTO::linuxDma, 7);
+    renderer().m_exportModifiers.clear();
+    start(source);
+    EXPECT_EQ(events(m_sessionID), shmOnly);
+    renderer().m_exportModifiers = {DRM_FORMAT_MOD_LINEAR};
+    start(source);
+    const auto advertised = events(m_sessionID);
+    ASSERT_EQ(advertised.size(), 5U);
+    EXPECT_EQ(advertised[0], shmOnly[0]);
+    EXPECT_EQ(advertised[1], (std::vector<uint32_t>{3, DRM_FORMAT_ARGB8888, sizeof(uint64_t), 0, 0}));
+    EXPECT_EQ(advertised[2][0], 2U);
+    EXPECT_EQ(advertised[2][1], sizeof(dev_t));
+    EXPECT_EQ(advertised[3], shmOnly[1]);
+    EXPECT_EQ(advertised[4], shmOnly[2]);
+}
+
+TEST_F(CCursorCaptureRobustnessTest, DestroyedWindowStopsSessionAndFailsFrame) {
+    enableDma();
+    setCaptureTestDevice(*PROTO::linuxDma, 7);
+    // A pending permission suppresses metadata while the window is alive.
+    *CConfigValue<Config::INTEGER>("ecosystem:enforce_permissions").ptr() = 1;
+    g_pDynamicPermissionManager->addConfigPermissionRule(".*", PERMISSION_TYPE_CURSOR_POS, PERMISSION_RULE_ALLOW_MODE_PENDING);
+    auto window = makeSnapshotTestWindow(m_workspace);
+    start(makeShared<CImageCaptureSource>(nullptr, window));
+    events(m_sessionID);
+    const auto target = buffer({16, 16});
+    const auto frame  = attachedFrame(target);
+    window.reset();
+    EXPECT_EQ(events(m_sessionID), (Events{{5}}));
+    request(frame, 3);
+    EXPECT_EQ(events(frame), (Events{{4, EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_STOPPED}}));
+}
+
+TEST_F(CCursorCaptureRobustnessTest, UnmappedWindowStopsChildCreatedAfterUnmap) {
+    enableDma();
+    setCaptureTestDevice(*PROTO::linuxDma, 7);
+    *CConfigValue<Config::INTEGER>("ecosystem:enforce_permissions").ptr() = 1;
+    g_pDynamicPermissionManager->addConfigPermissionRule(".*", PERMISSION_TYPE_CURSOR_POS, PERMISSION_RULE_ALLOW_MODE_PENDING);
+    auto       window = makeSnapshotTestWindow(m_workspace);
+    const auto id     = cursor(makeShared<CImageCaptureSource>(nullptr, window));
+    window->m_events.unmap.emit();
+    startChild(id);
+    EXPECT_EQ(events(m_sessionID), (Events{{5}}));
+}
+
+TEST_F(CCursorCaptureRobustnessTest, OutputDisconnectFailsPendingAndLaterCaptures) {
+    enableDma();
+    setCaptureTestDevice(*PROTO::linuxDma, 7);
+    renderer().m_elements->m_simpleExport = true;
+    start(makeShared<CImageCaptureSource>(nullptr, m_monitor));
+    events(m_sessionID);
+    const auto target = buffer({16, 16});
+    const auto first  = attachedFrame(target);
+    request(first, 3);
+    const auto copied = events(first);
+    ASSERT_FALSE(copied.empty());
+    ASSERT_EQ(copied.back(), (std::vector<uint32_t>{3}));
+    request(first, 0);
+    const auto pending = attachedFrame(target);
+    request(pending, 3);
+    ASSERT_TRUE(events(pending).empty());
+    m_monitor->m_events.disconnect.emit();
+    EXPECT_EQ(events(m_sessionID), (Events{{5}}));
+    EXPECT_EQ(events(pending), (Events{{4, EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_STOPPED}}));
+    request(pending, 0);
+    const auto next = attachedFrame(target);
+    request(next, 3);
+    EXPECT_EQ(events(next), (Events{{4, EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_STOPPED}}));
+    EXPECT_EQ(target->m_readbacks.size(), 1U);
 }

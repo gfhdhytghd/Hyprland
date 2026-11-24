@@ -135,7 +135,7 @@ class CLinuxDMABufV1Protocol : public IWaylandProtocol {
     std::vector<UP<CLinuxDMABuffer>>              m_buffers;
 
     UP<CDMABUFFormatTable>                        m_formatTable;
-    dev_t                                         m_mainDevice;
+    dev_t                                         m_mainDevice = 0;
     Hyprutils::OS::CFileDescriptor                m_mainDeviceFD;
     CHyprSignalListener                           m_configRefreshed;
 

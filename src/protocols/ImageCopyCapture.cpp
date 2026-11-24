@@ -138,7 +138,7 @@ CImageCopyCaptureCursorSession::CImageCopyCaptureCursorSession(SP<CExtImageCopyC
         });
 
         // Workspace captures are a cursor-free placeholder for now.
-        if (!m_source || m_source->m_workspace || (!m_source->m_monitor && !m_source->m_window)) {
+        if (m_sourceLost || !m_source || m_source->m_workspace || (!m_source->m_monitor && !m_source->m_window)) {
             m_sessionResource->sendStopped();
             return;
         }
@@ -158,13 +158,38 @@ CImageCopyCaptureCursorSession::CImageCopyCaptureCursorSession(SP<CExtImageCopyC
     if (!m_source || m_source->m_workspace || (!m_source->m_monitor && !m_source->m_window))
         return;
 
-    const auto PMONITOR = m_source->m_monitor.expired() ? m_source->m_window->m_monitor.lock() : m_source->m_monitor.lock();
-    if (!PMONITOR)
-        return;
+    auto lost = [this] { onSourceLost(); };
+    if (const auto window = m_source->m_window.lock()) {
+        m_listeners.sourceRemoved   = window->m_events.unmap.listen(lost);
+        m_listeners.sourceDestroyed = window->m_events.destroy.listen(lost);
+    } else if (const auto monitor = m_source->m_monitor.lock()) {
+        m_listeners.sourceRemoved   = monitor->m_events.disconnect.listen(lost);
+        m_listeners.sourceDestroyed = monitor->m_events.destroy.listen(lost);
+    }
 
-    // TODO: add listeners for source being destroyed
-    sendCursorEvents();
-    m_listeners.commit = PMONITOR->m_events.commit.listen([this, PMONITOR]() { sendCursorEvents(); });
+    if (const auto monitor = sourceMonitor()) {
+        sendCursorEvents();
+        m_listeners.commit = monitor->m_events.commit.listen([this] { sendCursorEvents(); });
+    }
+}
+
+PHLMONITOR CImageCopyCaptureCursorSession::sourceMonitor() const {
+    if (m_sourceLost || !m_source)
+        return nullptr;
+    if (const auto window = m_source->m_window.lock(); window && window->mapped())
+        return window->m_monitor.lock();
+    return m_source->m_monitor.lock();
+}
+
+void CImageCopyCaptureCursorSession::onSourceLost() {
+    m_sourceLost = true;
+    m_listeners  = {};
+    if (auto frame = m_pendingFrame.lock())
+        frame->sendFailed(EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_STOPPED);
+    m_pendingFrame.reset();
+    m_session.reset();
+    if (m_sessionResource)
+        m_sessionResource->sendStopped();
 }
 
 CImageCopyCaptureCursorSession::~CImageCopyCaptureCursorSession() {
@@ -248,16 +273,21 @@ void CImageCopyCaptureCursorSession::createFrame(SP<CExtImageCopyCaptureFrameV1>
             return;
         }
 
-        if (!m_session) {
+        const auto PMONITOR = sourceMonitor();
+        if (!m_session || !PMONITOR || !PMONITOR->m_enabled) {
             m_captured = true;
             m_frameResource->sendFailed(EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_STOPPED);
             return;
         }
 
-        const auto PMONITOR = m_source->m_monitor.expired() ? m_source->m_window->m_monitor.lock() : m_source->m_monitor.lock();
+        m_pendingFrame = m_frameResource;
 
-        auto       sourceBoxCallback = [this]() { return m_source ? m_source->logicalBox() : CBox(); };
-        auto       error             = m_session->share(PMONITOR, m_buffer, sourceBoxCallback, [this](eScreenshareResult result) {
+        auto sourceBoxCallback = [this]() { return m_source ? m_source->logicalBox() : CBox(); };
+        auto error             = m_session->share(PMONITOR, m_buffer, sourceBoxCallback, [this, frame = m_pendingFrame](eScreenshareResult result) {
+            if (!frame || frame != m_pendingFrame)
+                return;
+            if (result != RESULT_TIMESTAMP)
+                m_pendingFrame.reset();
             switch (result) {
                 case RESULT_COPIED: m_frameResource->sendReady(); break;
                 case RESULT_NOT_COPIED: m_frameResource->sendFailed(EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_UNKNOWN); break;
@@ -270,6 +300,8 @@ void CImageCopyCaptureCursorSession::createFrame(SP<CExtImageCopyCaptureFrameV1>
             }
         });
 
+        if (error != ERROR_NONE)
+            m_pendingFrame.reset();
         if (!m_frameResource)
             return;
 
@@ -308,21 +340,14 @@ void CImageCopyCaptureCursorSession::sendConstraints() {
 
     m_sessionResource->sendShmFormat(NFormatUtils::drmToShm(format));
 
-    auto     modifiers = g_pHyprRenderer->getDRMFormatModifiers(format);
-
-    wl_array modsArr;
-    wl_array_init(&modsArr);
-    if (const auto PMODIFIERS = sc<uint64_t*>(wl_array_add(&modsArr, modifiers.size() * sizeof(uint64_t))))
-        std::ranges::copy(modifiers, PMODIFIERS);
-    m_sessionResource->sendDmabufFormat(format, &modsArr);
-    wl_array_release(&modsArr);
-
-    dev_t           device    = PROTO::linuxDma->getMainDevice();
-    struct wl_array deviceArr = {
-        .size = sizeof(device),
-        .data = sc<void*>(&device),
-    };
-    m_sessionResource->sendDmabufDevice(&deviceArr);
+    dev_t device    = PROTO::linuxDma ? PROTO::linuxDma->getMainDevice() : 0;
+    auto  modifiers = device ? g_pHyprRenderer->getDRMFormatModifiers(format) : std::vector<uint64_t>{};
+    if (!modifiers.empty()) {
+        wl_array modsArr{.size = modifiers.size() * sizeof(uint64_t), .data = modifiers.data()};
+        m_sessionResource->sendDmabufFormat(format, &modsArr);
+        wl_array deviceArr{.size = sizeof(device), .data = &device};
+        m_sessionResource->sendDmabufDevice(&deviceArr);
+    }
 
     m_bufferSize = m_session->bufferSize();
     m_sessionResource->sendBufferSize(m_bufferSize.x, m_bufferSize.y);
@@ -335,9 +360,8 @@ void CImageCopyCaptureCursorSession::sendCursorEvents() {
     if (PERM != PERMISSION_RULE_ALLOW_MODE_ALLOW)
         return;
 
-    const auto PMONITOR  = m_source->m_monitor.expired() ? m_source->m_window->m_monitor.lock() : m_source->m_monitor.lock();
-    CBox       sourceBox = m_source->logicalBox();
-    bool       overlaps  = Pointer::mgr()->getCursorBoxGlobal().overlaps(sourceBox);
+    CBox sourceBox = m_source->logicalBox();
+    bool overlaps  = Pointer::mgr()->getCursorBoxGlobal().overlaps(sourceBox);
 
     if (m_entered && !overlaps) {
         m_entered = false;
