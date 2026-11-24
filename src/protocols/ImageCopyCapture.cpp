@@ -283,11 +283,12 @@ void CImageCopyCaptureCursorSession::createFrame(SP<CExtImageCopyCaptureFrameV1>
         m_pendingFrame = m_frameResource;
 
         auto sourceBoxCallback = [this]() { return m_source ? m_source->logicalBox() : CBox(); };
-        auto error             = m_session->share(PMONITOR, m_buffer, sourceBoxCallback, [this, frame = m_pendingFrame](eScreenshareResult result) {
-            if (!frame || frame != m_pendingFrame)
+        // the callback may run after this session is gone (e.g. from a GPU fence), don't capture this
+        auto error = m_session->share(PMONITOR, m_buffer, sourceBoxCallback, [self = m_self, frame = m_pendingFrame](eScreenshareResult result) {
+            if (!self || !frame || frame != self->m_pendingFrame)
                 return;
             if (result != RESULT_TIMESTAMP)
-                m_pendingFrame.reset();
+                self->m_pendingFrame.reset();
             switch (result) {
                 case RESULT_COPIED: frame->sendReady(); break;
                 case RESULT_NOT_COPIED: frame->sendFailed(EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_UNKNOWN); break;
@@ -553,8 +554,9 @@ void CImageCopyCaptureProtocol::bindManager(wl_client* client, void* data, uint3
         if (PERM == PERMISSION_RULE_ALLOW_MODE_DENY)
             return;
 
-        m_cursorSessions.emplace_back(makeShared<CImageCopyCaptureCursorSession>(makeShared<CExtImageCopyCaptureCursorSessionV1>(pMgr->client(), pMgr->version(), id), source,
-                                                                                 CWLPointerResource::fromResource(pointer_)));
+        const auto PSESSION = m_cursorSessions.emplace_back(makeShared<CImageCopyCaptureCursorSession>(
+            makeShared<CExtImageCopyCaptureCursorSessionV1>(pMgr->client(), pMgr->version(), id), source, CWLPointerResource::fromResource(pointer_)));
+        PSESSION->m_self    = PSESSION;
 
         LOG(Log::INFO, "New image copy capture cursor session for source ({}): \"{}\"", source->getTypeName(), source->getName());
     });

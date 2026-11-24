@@ -1968,8 +1968,9 @@ class CCursorCaptureRobustnessTest : public CWorkspaceCaptureSceneTest {
     }
 
     uint32_t cursor(SP<CImageCaptureSource> source) {
-        auto wire = makeShared<CExtImageCopyCaptureCursorSessionV1>(m_client, 1, m_nextID++);
-        m_cursor  = makeUnique<CImageCopyCaptureCursorSession>(wire, source, m_pointer);
+        auto wire        = makeShared<CExtImageCopyCaptureCursorSessionV1>(m_client, 1, m_nextID++);
+        m_cursor         = makeShared<CImageCopyCaptureCursorSession>(wire, source, m_pointer);
+        m_cursor->m_self = m_cursor;
         return wl_resource_get_id(wire->resource());
     }
     void startChild(uint32_t cursorID) {
@@ -2008,7 +2009,7 @@ class CCursorCaptureRobustnessTest : public CWorkspaceCaptureSceneTest {
 
     std::map<uint32_t, Events>         m_events;
     uint32_t                           m_sessionID = 0;
-    UP<CImageCopyCaptureCursorSession> m_cursor;
+    SP<CImageCopyCaptureCursorSession> m_cursor;
     SP<CWLPointerResource>             m_pointer;
     UP<CWLSeatProtocol>                m_previousSeat;
     UP<CSeatManager>                   m_previousSeatManager;

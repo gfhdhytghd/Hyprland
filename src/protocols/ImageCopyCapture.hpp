@@ -75,7 +75,9 @@ class CImageCopyCaptureCursorSession {
     CImageCopyCaptureCursorSession(SP<CExtImageCopyCaptureCursorSessionV1> resource, SP<CImageCaptureSource> source, SP<CWLPointerResource> pointer);
     ~CImageCopyCaptureCursorSession();
 
-    bool good();
+    bool                               good();
+
+    WP<CImageCopyCaptureCursorSession> m_self;
 
   private:
     SP<CExtImageCopyCaptureCursorSessionV1> m_resource;
