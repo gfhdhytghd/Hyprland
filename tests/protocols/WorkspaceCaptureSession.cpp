@@ -853,7 +853,7 @@ class CWorkspaceCaptureFrameTest : public CWorkspaceCaptureSessionTest {
 };
 
 TEST_F(CWorkspaceCaptureFrameTest, PendingPermissionSnapshotUsesNegotiatedTenBitFormat) {
-    renderer().m_elements->m_simpleExport                                 = true;
+    renderer().m_elements->m_simpleExport                              = true;
     *CConfigValue<Config::BOOL>("ecosystem:enforce_permissions").ptr() = true;
     *CConfigValue<Config::BOOL>("misc:screencopy_force_8b").ptr()      = false;
     m_monitor->m_output->state->setFormat(DRM_FORMAT_XRGB2101010);
@@ -895,10 +895,10 @@ TEST_F(CWorkspaceCaptureFrameTest, PendingPermissionSnapshotUsesNegotiatedTenBit
 }
 
 TEST_F(CWorkspaceCaptureFrameTest, PendingSnapshotExpiresOnDenialCancellationOrStop) {
-    renderer().m_elements->m_simpleExport                                 = true;
+    renderer().m_elements->m_simpleExport                              = true;
     *CConfigValue<Config::BOOL>("ecosystem:enforce_permissions").ptr() = true;
-    renderer().m_screencopyDeniedTexture                                  = makeShared<CSessionTestTexture>(Vector2D{8, 8});
-    const auto resources                                                  = m_monitor->resources();
+    renderer().m_screencopyDeniedTexture                               = makeShared<CSessionTestTexture>(Vector2D{8, 8});
+    const auto resources                                               = m_monitor->resources();
     ASSERT_TRUE(resources->mirrorFB());
     resources->markMirrorFBUpdated();
     const auto setPermission = [](auto mode) {
@@ -1394,7 +1394,7 @@ TEST_F(CWorkspaceCaptureSceneTest, LockAndRemovalSuppressQueuedContentEvenWithLo
     auto cursor        = Desktop::View::CWLSurface::create();
     cursor->assign(cursorSurface);
     seedSessionCursor(*Pointer::mgr(), cursor, m_monitor->m_position + Vector2D{20, 30});
-    m_monitor->m_activeWorkspace                                   = m_workspace;
+    m_monitor->m_activeWorkspace                                = m_workspace;
     *CConfigValue<Config::BOOL>("misc:session_lock_xray").ptr() = true;
     for (const bool dma : {false, true}) {
         auto state   = source(HYPRLAND_WORKSPACE_IMAGE_CAPTURE_SOURCE_MANAGER_V1_CAPTURE_MODE_EVERYTHING);
