@@ -15,6 +15,7 @@ namespace Config {
         bool                       parseScale(const std::string& value);
         bool                       parseTransform(const std::string& value);
         bool                       parseBitdepth(const std::string& value);
+        bool                       parseSDREotf(const std::string& value);
         bool                       parseCM(const std::string& value);
         bool                       parseSDRBrightness(const std::string& value);
         bool                       parseSDRSaturation(const std::string& value);

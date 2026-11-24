@@ -995,19 +995,10 @@ PImageDescription CCompositor::getHDRImageDescription() {
         return getDefaultImageDescription();
     }
 
-    return State::monitorState()->monitors().size() == 1 && State::monitorState()->monitors()[0]->hasOutput() && State::monitorState()->monitors()[0]->enabled() ?
-        CImageDescription::from(SImageDescription{.transferFunction    = NColorManagement::CM_TRANSFER_FUNCTION_ST2084_PQ,
-                                                  .primariesNameSet    = true,
-                                                  .primariesNamed      = NColorManagement::CM_PRIMARIES_BT2020,
-                                                  .primaries           = NColorManagement::getPrimaries(NColorManagement::CM_PRIMARIES_BT2020),
-                                                  .masteringPrimaries  = State::monitorState()->monitors()[0]->getMasteringPrimaries(),
-                                                  .luminances          = {.min       = State::monitorState()->monitors()[0]->minLuminance(HDR_MIN_LUMINANCE),
-                                                                          .max       = HDR_MAX_LUMINANCE,
-                                                                          .reference = sc<uint32_t>(State::monitorState()->monitors()[0]->referenceLuminance())},
-                                                  .masteringLuminances = State::monitorState()->monitors()[0]->getMasteringLuminances(),
-                                                  .maxCLL              = State::monitorState()->monitors()[0]->maxCLL(),
-                                                  .maxFALL             = State::monitorState()->monitors()[0]->maxFALL()}) :
-        DEFAULT_HDR_IMAGE_DESCRIPTION;
+    const auto& monitors = State::monitorState()->monitors();
+    if (monitors.size() == 1 && monitors.front()->hasOutput() && monitors.front()->enabled())
+        return monitors.front()->getHDRImageDescription(NCMType::CM_HDR);
+    return DEFAULT_HDR_IMAGE_DESCRIPTION;
 }
 
 bool CCompositor::shouldChangePreferredImageDescription() {

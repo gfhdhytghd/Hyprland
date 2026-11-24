@@ -1,4 +1,5 @@
 #include "ColorManagement.hpp"
+#include "../helpers/cm/Luminance.hpp"
 #include "Compositor.hpp"
 #include "color-management-v1.hpp"
 #include "../output/Monitor.hpp"
@@ -841,7 +842,7 @@ CColorManagementImageDescriptionInfo::CColorManagementImageDescriptionInfo(SP<CW
     if (m_settings.transferFunctionPower != 1.0f)
         m_resource->sendTfPower(std::round(m_settings.transferFunctionPower * 10000));
 
-    m_resource->sendLuminances(std::round(m_settings.luminances.min * 10000), m_settings.luminances.max, m_settings.luminances.reference);
+    m_resource->sendLuminances(NColorManagement::encodeMinimumLuminance(m_settings.luminances.min), m_settings.luminances.max, m_settings.luminances.reference);
 
     const auto& targetPrimaries = (                                                                                               //
                                       m_settings.masteringPrimaries.red.x != 0 || m_settings.masteringPrimaries.red.y != 0 ||     //
@@ -857,9 +858,9 @@ CColorManagementImageDescriptionInfo::CColorManagementImageDescriptionInfo(SP<CW
         toProto(targetPrimaries.white.x), toProto(targetPrimaries.white.y));
     // clang-format on
     if (m_settings.masteringLuminances.max > 0)
-        m_resource->sendTargetLuminance(std::round(m_settings.masteringLuminances.min * 10000), m_settings.masteringLuminances.max);
+        m_resource->sendTargetLuminance(NColorManagement::encodeMinimumLuminance(m_settings.masteringLuminances.min), m_settings.masteringLuminances.max);
     else
-        m_resource->sendTargetLuminance(std::round(m_settings.luminances.min * 10000), m_settings.luminances.max);
+        m_resource->sendTargetLuminance(NColorManagement::encodeMinimumLuminance(m_settings.luminances.min), m_settings.luminances.max);
 
     if (m_settings.maxCLL > 0)
         m_resource->sendTargetMaxCll(m_settings.maxCLL);

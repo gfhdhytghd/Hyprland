@@ -20,6 +20,7 @@ namespace Config::Lua {
         virtual Config::STRING        asString();
 
         const Config::STRING&         parsed();
+        static uint64_t               generation();
 
       private:
         Config::STRING                                                      m_default = "[[EMPTY]]";

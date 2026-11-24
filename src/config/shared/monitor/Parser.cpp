@@ -235,6 +235,20 @@ bool CMonitorRuleParser::parseTransform(const std::string& value) {
 
 bool CMonitorRuleParser::parseBitdepth(const std::string& value) {
     m_rule.m_enable10bit = value == "10";
+    if (value != "8" && value != "10") {
+        m_error += std::format("invalid bitdepth '{}' (expected 8 or 10) ", value);
+        return false;
+    }
+    return true;
+}
+
+bool CMonitorRuleParser::parseSDREotf(const std::string& value) {
+    const auto tf    = NTransferFunction::parse(value);
+    m_rule.m_sdrEotf = tf.value_or(NTransferFunction::TF_DEFAULT);
+    if (!tf) {
+        m_error += std::format("invalid sdr_eotf '{}' ", value);
+        return false;
+    }
     return true;
 }
 

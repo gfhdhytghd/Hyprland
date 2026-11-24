@@ -182,6 +182,21 @@ TEST(Config, monitorParserBitdepth) {
     CMonitorRuleParser p2("DP-1");
     EXPECT_TRUE(p2.parseBitdepth("8"));
     EXPECT_FALSE(p2.rule().m_enable10bit);
+
+    EXPECT_FALSE(p1.parseBitdepth("12"));
+    EXPECT_FALSE(p1.rule().m_enable10bit);
+}
+
+TEST(Config, monitorParserSDREotf) {
+    CMonitorRuleParser parser("DP-1");
+    EXPECT_TRUE(parser.parseSDREotf("default"));
+    EXPECT_EQ(parser.rule().m_sdrEotf, NTransferFunction::TF_DEFAULT);
+    EXPECT_TRUE(parser.parseSDREotf("0"));
+    EXPECT_EQ(parser.rule().m_sdrEotf, NTransferFunction::TF_DEFAULT);
+    EXPECT_TRUE(parser.parseSDREotf("gamma22"));
+    EXPECT_EQ(parser.rule().m_sdrEotf, NTransferFunction::TF_GAMMA22);
+    EXPECT_FALSE(parser.parseSDREotf("gama22"));
+    EXPECT_EQ(parser.rule().m_sdrEotf, NTransferFunction::TF_DEFAULT);
 }
 
 TEST(Config, monitorParserCM) {

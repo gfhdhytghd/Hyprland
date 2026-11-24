@@ -2291,6 +2291,13 @@ void IHyprRenderer::renderMonitor(PHLMONITOR pMonitor, bool commit) {
 
     // Resolve output color state before the damage gate and before choosing render resources.
     handleFullscreenSettings(pMonitor);
+
+    static const auto PSENDCONTENTTYPE   = CConfigValue<Config::INTEGER>("render:send_content_type");
+    const auto        desiredContentType = *PSENDCONTENTTYPE ? pMonitor->m_output->state->state().contentType : DRM_MODE_CONTENT_TYPE_NO_DATA;
+    const bool        contentTypeChanged = pMonitor->stageContentType(desiredContentType);
+    if (contentTypeChanged)
+        pMonitor->m_damage.damageEntire();
+
     if (!pMonitor->m_output->needsFrame && pMonitor->m_forceFullFrames == 0 && !pMonitor->m_damage.hasChanged())
         return;
 
@@ -2298,8 +2305,10 @@ void IHyprRenderer::renderMonitor(PHLMONITOR pMonitor, bool commit) {
         Debug::overlay()->frameData(pMonitor);
 
     // tearing and DS first
-    bool       shouldTear              = pMonitor->updateTearing();
-    const bool canAttemptDirectScanout = pMonitor->canAttemptDirectScanoutFast();
+    const bool shouldTear                    = pMonitor->updateTearing() && !contentTypeChanged;
+    pMonitor->m_tearingState.activelyTearing = shouldTear;
+    // Same-buffer direct scanout can skip the commit. A pending content type needs a real submission.
+    const bool canAttemptDirectScanout = !contentTypeChanged && pMonitor->canAttemptDirectScanoutFast();
     const auto presentationMode =
         shouldTear ? Aquamarine::eOutputPresentationMode::AQ_OUTPUT_PRESENTATION_IMMEDIATE : Aquamarine::eOutputPresentationMode::AQ_OUTPUT_PRESENTATION_VSYNC;
     if (pMonitor->m_output->state->state().presentationMode != presentationMode)

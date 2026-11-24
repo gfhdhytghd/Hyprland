@@ -2,6 +2,7 @@
 #include <animation/AnimationManager.hpp>
 #include <config/ConfigValue.hpp>
 #include <config/lua/ConfigManager.hpp>
+#include <config/lua/types/LuaConfigValue.hpp>
 #include <config/shared/animation/AnimationTree.hpp>
 #include <config/shared/complex/ComplexDataTypes.hpp>
 #include <config/shared/inotify/ConfigWatcher.hpp>
@@ -22,6 +23,7 @@
 #include <layout/target/WindowGeometry.hpp>
 #include <layout/target/WindowGroupTarget.hpp>
 #include <layout/target/WindowTarget.hpp>
+#include <pointer/PointerManager.hpp>
 #include <protocols/FractionalScale.hpp>
 #include <managers/fullscreen/FullscreenController.hpp>
 #include <managers/fullscreen/handler/FullscreenHandler.hpp>
@@ -54,6 +56,10 @@
 #include <memory>
 #include <sys/socket.h>
 #include <utility>
+
+extern "C" {
+#include <lauxlib.h>
+}
 
 using namespace Desktop::View;
 using namespace std::chrono_literals;
@@ -536,6 +542,33 @@ class CMonitorWindowTransactionTest : public ::testing::Test {
     UP<Desktop::CFadingOutState>                               m_previousFadeouts;
     UP<Layout::CLayoutManager>                                 m_previousLayout;
 };
+
+TEST_F(CMonitorWindowTransactionTest, AutoOutputTransferFollowsGlobalChangeWithUnchangedRule) {
+    m_monitor->m_enabled = true;
+    m_monitor->m_sdrEotf = m_monitor->m_activeMonitorRule.m_sdrEotf = NTransferFunction::TF_AUTO;
+    ASSERT_EQ(m_monitor->m_imageDescription->value().transferFunction, NColorManagement::CM_TRANSFER_FUNCTION_SRGB);
+
+    const auto                                             mgr = sc<Config::Lua::CConfigManager*>(Config::mgr().get());
+    const std::unique_ptr<lua_State, decltype(&lua_close)> lua{luaL_newstate(), lua_close};
+    ASSERT_TRUE(lua);
+    lua_pushliteral(lua.get(), "gamma22");
+    ASSERT_EQ(mgr->m_configValues.at("render.cm_sdr_eotf")->parse(lua.get()).errorCode, Config::Lua::PARSE_ERROR_OK);
+
+    auto previousPointer = std::move(Pointer::mgr());
+    Pointer::mgr()       = makeUnique<Pointer::CPointerManager>();
+    Hyprutils::Utils::CScopeGuard restorePointer([&] { Pointer::mgr() = std::move(previousPointer); });
+    m_monitor->refreshColorConfig();
+    EXPECT_EQ(m_monitor->m_imageDescription->value().transferFunction, NColorManagement::CM_TRANSFER_FUNCTION_GAMMA22);
+    EXPECT_EQ(m_monitor->m_activeMonitorRule.m_sdrEotf, NTransferFunction::TF_AUTO);
+
+    // A fullscreen Auto HDR transition can temporarily override the configured SDR target.
+    const auto hdr                = m_monitor->getHDRImageDescription(NCMType::CM_HDR);
+    m_monitor->m_imageDescription = hdr;
+    lua_pushliteral(lua.get(), "srgb");
+    ASSERT_EQ(mgr->m_configValues.at("render.cm_sdr_eotf")->parse(lua.get()).errorCode, Config::Lua::PARSE_ERROR_OK);
+    m_monitor->refreshColorConfig();
+    EXPECT_EQ(m_monitor->m_imageDescription, hdr);
+}
 
 TEST_F(CMonitorWindowTransactionTest, SettledSubsurfacesCoverFractionalWindowContent) {
     m_monitor->m_position = {};

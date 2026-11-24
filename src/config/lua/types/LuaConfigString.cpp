@@ -5,9 +5,15 @@
 using namespace Config;
 using namespace Config::Lua;
 
+static uint64_t stringGeneration = 0;
+
+uint64_t        CLuaConfigString::generation() {
+    return stringGeneration;
+}
+
 CLuaConfigString::CLuaConfigString(Config::STRING def, std::function<std::expected<void, std::string>(const std::string&)>&& validator) :
     m_default(def), m_data(def), m_validator(std::move(validator)) {
-    ;
+    ++stringGeneration;
 }
 
 SParseError CLuaConfigString::parse(lua_State* s) {
@@ -24,6 +30,7 @@ SParseError CLuaConfigString::parse(lua_State* s) {
 
     m_data       = std::move(str);
     m_bSetByUser = true;
+    ++stringGeneration;
 
     return {.errorCode = PARSE_ERROR_OK};
 }
@@ -57,4 +64,5 @@ const Config::STRING& CLuaConfigString::parsed() {
 
 void CLuaConfigString::reset() {
     m_data = m_default;
+    ++stringGeneration;
 }

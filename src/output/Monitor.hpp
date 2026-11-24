@@ -111,17 +111,20 @@ namespace Monitor {
         bool                        m_zoomSoftwareCursorLock = false;
         int                         m_damageBlinkCleanup     = 0;
 
-        bool                        m_dpmsStatus         = true;
-        bool                        m_vrrActive          = false; // this can be TRUE even if VRR is not active in the case that this display does not support it.
-        bool                        m_enabled10bit       = false; // as above, this can be TRUE even if 10 bit failed.
-        NCMType::eCMType            m_cmType             = NCMType::CM_SRGB;
-        NTransferFunction::eTF      m_sdrEotf            = NTransferFunction::TF_DEFAULT;
-        float                       m_sdrSaturation      = 1.0f;
-        float                       m_sdrBrightness      = 1.0f;
-        float                       m_sdrMinLuminance    = 0.2f;
-        int                         m_referenceLuminance = -1;
-        bool                        m_createdByUser      = false;
-        bool                        m_isUnsafeFallback   = false;
+        bool                        m_appliedVCGTEnabled   = true;
+        uint16_t                    m_committedContentType = DRM_MODE_CONTENT_TYPE_GRAPHICS;
+        NTransferFunction::eTF      m_appliedGlobalSdrEotf = NTransferFunction::TF_DEFAULT;
+        bool                        m_dpmsStatus           = true;
+        bool                        m_vrrActive            = false; // this can be TRUE even if VRR is not active in the case that this display does not support it.
+        bool                        m_enabled10bit         = false; // as above, this can be TRUE even if 10 bit failed.
+        NCMType::eCMType            m_cmType               = NCMType::CM_SRGB;
+        NTransferFunction::eTF      m_sdrEotf              = NTransferFunction::TF_DEFAULT;
+        float                       m_sdrSaturation        = 1.0f;
+        float                       m_sdrBrightness        = 1.0f;
+        float                       m_sdrMinLuminance      = 0.2f;
+        int                         m_referenceLuminance   = -1;
+        bool                        m_createdByUser        = false;
+        bool                        m_isUnsafeFallback     = false;
 
         SP<CEventLoopTimer>         m_dpmsRetryTimer;
 
@@ -327,6 +330,8 @@ namespace Monitor {
 
         //
         bool applyMonitorRule(Config::CMonitorRule&& pMonitorRule);
+        void refreshColorConfig();
+        bool stageContentType(uint16_t desired);
         bool applyMonitorRuleSoft(Config::CMonitorRule&& pMonitorRule);
 
         //
@@ -422,7 +427,8 @@ namespace Monitor {
         bool                                       trySetFormat(std::span<const uint32_t> formats);
 
         bool                                       m_doneScheduled = false;
-        bool                                       m_vcgtRampsSet  = false;
+        void                                       reloadICC();
+        bool                                       m_vcgtRampsSet = false;
 
         bool                                       stageScanoutCM(const NColorManagement::SImageDescription& source, bool& changed);
         bool                                       scanoutCMNeedsUpdate(SP<CWLSurfaceResource> surface);
