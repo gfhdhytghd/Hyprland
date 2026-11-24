@@ -287,3 +287,13 @@ TEST(HardwareCM, BudgetDeniesUniqueDescriptionChurnWithoutRetainingIt) {
     }
     EXPECT_EQ(cache.get(source, target, AMD_LIKE, now), initial);
 }
+
+TEST(HardwareCM, NarrowBT1886RangeGeneratesFiniteWhiteLight) {
+    auto source       = sdrSource(CM_TRANSFER_FUNCTION_BT1886)->value();
+    source.luminances = {.min = 4095.9999, .max = 4096, .reference = 4096};
+    const auto hw     = buildHardwareCM(source, DEFAULT_SRGB_IMAGE_DESCRIPTION->value(), AMD_LIKE);
+    ASSERT_TRUE(hw);
+    // The full decoded interval lies within half a LUT step of white.
+    for (const auto entry : hw->degamma)
+        ASSERT_EQ(entry, UINT16_MAX);
+}

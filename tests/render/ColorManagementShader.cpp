@@ -8,6 +8,7 @@
 #include <render/CMSettings.hpp>
 #include <helpers/cm/ICC.hpp>
 #include <render/ShaderLoader.hpp>
+#include <hyprutils/utils/ScopeGuard.hpp>
 #include "ShaderCompiler.hpp"
 #include <gtest/gtest.h>
 
@@ -97,6 +98,58 @@ TEST(ColorManagementShader, ExternalSurfaceCompilesWithMotionBlurAndColorManagem
     defines["SOURCE_TF"]       = std::to_string(sc<int>(CM_TRANSFER_FUNCTION_ST2084_PQ));
     defines["TARGET_TF"]       = std::to_string(sc<int>(CM_TRANSFER_FUNCTION_BT1886));
     EXPECT_TRUE(compiler.compile(loader.process(FRAG_SHADERS[SH_FRAG_SURFACE], defines), GL_FRAGMENT_SHADER));
+}
+
+TEST(ColorManagementShader, NarrowBT1886TransferRetainsSignal) {
+    CShaderCompiler compiler;
+    if (!compiler.initialize(3))
+        GTEST_SKIP() << "Surfaceless EGL is unavailable";
+    GLint major = 0, minor = 0;
+    glGetIntegerv(GL_MAJOR_VERSION, &major);
+    glGetIntegerv(GL_MINOR_VERSION, &minor);
+    if (major < 3 || (major == 3 && minor == 0))
+        GTEST_SKIP() << "This numerical shader check requires OpenGL ES 3.1";
+    CShaderLoader loader(SHADER_INCLUDES, FRAG_SHADERS);
+    const auto    source  = std::string("#version 310 es\n#define ALLOW_INCLUDES\nprecision highp float;\n") + loader.process("cm_helpers.glsl", surfaceDefines()) + R"(
+        layout(local_size_x=1) in;
+        layout(std430,binding=0) buffer Result { vec4 values; };
+        uniform vec2 srcTFRange;
+        void main() {
+            vec2 range = vec2(srcTFRange.x, tfRangeSpans.x);
+            float linear = tfInvBT1886(vec3(0.5), range).r;
+            vec4 nits = doColorManagement(vec4(0.5, 0.5, 0.5, 1.0), 1.0, CM_TRANSFER_FUNCTION_BT1886,
+                CM_TRANSFER_FUNCTION_LINEAR, mat3(1.0), srcTFRange, vec2(0.0, 80.0), 0.0);
+            values = vec4(linear, tfBT1886(vec3(linear), range).r, nits.r, range.y);
+        })";
+    const auto    code    = source.c_str();
+    const GLuint  program = glCreateShaderProgramv(GL_COMPUTE_SHADER, 1, &code);
+    const Hyprutils::Utils::CScopeGuard cleanupProgram([program] { glDeleteProgram(program); });
+    GLint                               linked = GL_FALSE;
+    glGetProgramiv(program, GL_LINK_STATUS, &linked);
+    ASSERT_EQ(linked, GL_TRUE) << compiler.compile(source, GL_COMPUTE_SHADER).message();
+    glUseProgram(program);
+    GLuint buffer = 0;
+    glGenBuffers(1, &buffer);
+    const Hyprutils::Utils::CScopeGuard cleanupBuffer([buffer] { glDeleteBuffers(1, &buffer); });
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, buffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, 4 * sizeof(float), nullptr, GL_DYNAMIC_READ);
+    auto description             = DEFAULT_SRGB_IMAGE_DESCRIPTION->value();
+    description.transferFunction = CM_TRANSFER_FUNCTION_BT1886;
+    description.luminances       = {.min = 4095.9999, .max = 4096, .reference = 4096};
+    CCMSettingsCache cache;
+    const auto       range     = cache.get(CImageDescription::from(description), DEFAULT_SRGB_IMAGE_DESCRIPTION, {.sourceTF = description.transferFunction}).srcTFRange;
+    const auto [minimum, span] = range.shaderMinAndSpan();
+    glUniform2f(glGetUniformLocation(program, "srcTFRange"), minimum, range.max);
+    glUniform2f(glGetUniformLocation(program, "tfRangeSpans"), span, 80.F);
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+    const auto values = sc<const float*>(glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, 4 * sizeof(float), GL_MAP_READ_BIT));
+    ASSERT_NE(values, nullptr);
+    EXPECT_NEAR(values[0], 0.5, 1e-6);
+    EXPECT_NEAR(values[1], 0.5, 1e-6);
+    EXPECT_FLOAT_EQ(values[2], 80);
+    EXPECT_FLOAT_EQ(values[3], 1.953125e-6f);
+    glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
 }
 
 namespace Render::GL {

@@ -53,9 +53,9 @@ TEST(ColorManagement, BT1886DisplayCharacteristic) {
 
 TEST(ColorManagement, PQPrimaryRangeDoesNotAdvertiseDisplayPeak) {
     SImageDescription description{
-        .transferFunction = CM_TRANSFER_FUNCTION_ST2084_PQ, .luminances = {.min = 0, .max = 630, .reference = 203}, .masteringLuminances = {.min = 0, .max = 630}};
+        .transferFunction = CM_TRANSFER_FUNCTION_ST2084_PQ, .luminances = {.min = 0.75, .max = 630, .reference = 203}, .masteringLuminances = {.min = 0, .max = 630}};
     const auto pq = CImageDescription::from(description);
-    EXPECT_EQ(pq->value().luminances.max, 10000U);
+    EXPECT_EQ(pq->value().luminances.max, 10000.75);
     EXPECT_EQ(pq->value().masteringLuminances.max, 630U);
     description.luminances.max = 4000;
     EXPECT_EQ(CImageDescription::from(description), pq);
@@ -588,4 +588,19 @@ TEST(ColorManagement, ContentMaxLuminancePrefersMetadata) {
     // Metadata can't push the peak past what the encoding can carry.
     description.maxCLL = 4000;
     EXPECT_FLOAT_EQ(description.getContentMaxLuminance(1000.F), 1000.F);
+}
+
+TEST(ColorManagement, DefaultMonitorUsesInternedSDRDescription) {
+    auto description       = DEFAULT_SRGB_IMAGE_DESCRIPTION->value();
+    description.luminances = {};
+    const auto monitor     = CImageDescription::from(description);
+    EXPECT_EQ(monitor, DEFAULT_SRGB_IMAGE_DESCRIPTION);
+    EXPECT_FALSE(monitor->needsCM(DEFAULT_SRGB_IMAGE_DESCRIPTION));
+    description.luminances.min = 0.2001;
+    EXPECT_NE(CImageDescription::from(description), monitor);
+}
+
+TEST(ColorManagement, FloatPrimaryMatrixMustRemainInvertible) {
+    const double n = 1024;
+    EXPECT_FALSE(rgbToXYZFromPrimaries({.red = {n, n}, .green = {n + .000003, n}, .blue = {n, n + .000003}, .white = {n + .000001, n + .000001}}));
 }

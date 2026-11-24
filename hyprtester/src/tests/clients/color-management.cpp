@@ -15,8 +15,8 @@ using namespace Hyprutils::OS;
 using namespace Hyprutils::Utils;
 
 TEST_CASE(colorManagementRejectsInvalidRequests) {
-    for (const auto mode : {"surface-inert", "failed-info", "failed-set", "empty", "missing-tf", "missing-primaries", "master-zero", "master-inverted", "repeat-master",
-                            "repeat-cll", "repeat-fall", "repeat-tf", "fall-exceeds-cll", "cll-exceeds-master", "tf-power", "valid-copy", "pq-ignored-max"}) {
+    for (const auto mode : {"surface-inert", "released-output", "empty", "missing-tf", "missing-primaries", "master-zero", "master-inverted", "repeat-master", "repeat-cll",
+                            "repeat-fall", "repeat-tf", "fall-exceeds-cll", "cll-exceeds-master", "tf-power", "valid-copy", "pq-ignored-max"}) {
         CProcess process(std::format("{}/color-management", binaryDir), std::vector<std::string>{mode});
         process.addEnv("WAYLAND_DISPLAY", WLDISPLAY);
         ASSERT(process.runSync(), true);

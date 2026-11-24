@@ -342,7 +342,7 @@ namespace Monitor {
 
         bool          supportsWideColor();
         bool          supportsHDR();
-        float         minLuminance(float defaultValue = 0);
+        double        minLuminance(double defaultValue = 0);
         int           referenceLuminance() const;
         int           maxLuminance(int defaultValue = 80);
         int           maxAvgLuminance(int defaultValue = 80);

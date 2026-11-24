@@ -32,7 +32,7 @@ vec4 blurFinish(vec4 pixColor, vec2 v_texcoord, float noise, float brightness
 #if USE_CM
     // Preserve the configured SDR strength while adding noise in source-linear light.
     float sdrNoise    = noiseAmount * noise * brightnessMultiplier;
-    float linearNoise = sign(sdrNoise) * toLinearRGB(vec3(abs(sdrNoise)), sourceTF).r * (SDR_MAX_LUMINANCE - SDR_MIN_LUMINANCE) / max(srcTFRange.y - srcTFRange.x, 0.001);
+    float linearNoise = sign(sdrNoise) * toLinearRGB(vec3(abs(sdrNoise)), sourceTF).r * (SDR_MAX_LUMINANCE - SDR_MIN_LUMINANCE) / max(tfRangeSpans.x, 0.001);
 #else
     pixColor.rgb += noiseAmount * noise * pixColor.a;
 #endif

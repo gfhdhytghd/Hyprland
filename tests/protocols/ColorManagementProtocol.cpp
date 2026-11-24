@@ -10,6 +10,8 @@
 #include <protocols/ColorManagement.hpp>
 #include <protocols/PresentationTime.hpp>
 #include <protocols/core/Compositor.hpp>
+#include <protocols/core/Output.hpp>
+#include <render/CMSettings.hpp>
 #include <protocols/core/Subcompositor.hpp>
 #include <gtest/gtest.h>
 #include <hyprutils/os/FileDescriptor.hpp>
@@ -28,7 +30,8 @@ class CColorManagementProtocolTest : public ::testing::Test {
     void                                                       TearDown() override;
     void                                                       request(uint32_t object, uint16_t opcode, std::initializer_list<uint32_t> arguments);
     void                                                       expectError(uint32_t object, uint32_t code);
-    void                                                       expectEvent(uint32_t object, uint16_t opcode);
+    void                                                       expectEvent(uint32_t object, uint16_t opcode, std::optional<uint32_t> argument = {});
+    void                                                       expectEventArguments(uint32_t object, uint16_t opcode, std::initializer_list<uint32_t> arguments);
     void                                                       createSurface();
     void                                                       createParams(uint32_t version = 1);
 
@@ -123,7 +126,14 @@ void CColorManagementProtocolTest::expectError(uint32_t object, uint32_t code) {
     FAIL() << "No wl_display.error event received";
 }
 
-void CColorManagementProtocolTest::expectEvent(uint32_t object, uint16_t opcode) {
+void CColorManagementProtocolTest::expectEvent(uint32_t object, uint16_t opcode, std::optional<uint32_t> argument) {
+    if (argument)
+        expectEventArguments(object, opcode, {*argument});
+    else
+        expectEventArguments(object, opcode, {});
+}
+
+void CColorManagementProtocolTest::expectEventArguments(uint32_t object, uint16_t opcode, std::initializer_list<uint32_t> arguments) {
     std::array<uint32_t, 4096> events{};
     const auto                 bytes = recv(m_socket.get(), events.data(), sizeof(events), MSG_DONTWAIT);
     ASSERT_GT(bytes, 0);
@@ -132,8 +142,12 @@ void CColorManagementProtocolTest::expectEvent(uint32_t object, uint16_t opcode)
         const auto size = events[offset + 1] >> 16;
         ASSERT_GE(size, 8U);
         EXPECT_FALSE(events[offset] == 1 && (events[offset + 1] & 0xFFFF) == 0) << "Unexpected wl_display.error";
-        if (events[offset] == object && (events[offset + 1] & 0xFFFF) == opcode)
+        if (events[offset] == object && (events[offset + 1] & 0xFFFF) == opcode) {
+            ASSERT_GE(size, (arguments.size() + 2) * sizeof(uint32_t));
+            ASSERT_LE(offset + 2 + arguments.size(), sc<size_t>(bytes) / sizeof(uint32_t));
+            EXPECT_TRUE(std::ranges::equal(arguments, std::span(events).subspan(offset + 2, arguments.size())));
             return;
+        }
         offset += size / sizeof(uint32_t);
     }
     FAIL() << "Event " << opcode << " was not sent to object " << object;
@@ -195,6 +209,7 @@ class CColorManagementMonitorFeedbackTest : public CColorManagementProtocolTest 
     void SetUp() override;
     void TearDown() override;
     void checkUnavailableMonitor(bool detached);
+    void checkRemovedOutput(bool requestInfo);
 
   private:
     UP<Animation::CHyprAnimationManager> m_previousAnimations;
@@ -250,7 +265,7 @@ TEST_F(CColorManagementMonitorFeedbackTest, DisabledMonitorUsesGlobalPreferredDe
     checkUnavailableMonitor(false);
 }
 
-TEST_F(CColorManagementProtocolTest, InertFeedbackSurvivesDescriptionChange) {
+TEST_F(CColorManagementMonitorFeedbackTest, InertFeedbackSurvivesDescriptionChange) {
     createSurface();
     request(2, 3, {5, 4});
     request(4, 0, {});
@@ -271,40 +286,135 @@ TEST_F(CColorManagementProtocolTest, InertSurfaceRejectsUnset) {
 TEST_F(CColorManagementProtocolTest, DescriptionAndDestructionAreDoubleBuffered) {
     createSurface();
     request(2, 2, {5, 4});
-    request(2, 6, {6});
+    request(2, 5, {6});
+    request(6, 1, {WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_GAMMA22});
+    request(6, 3, {WP_COLOR_MANAGER_V1_PRIMARIES_SRGB});
+    request(6, 0, {7});
     const auto surface = CWLSurfaceResource::fromResource(wl_client_get_object(m_client, 4));
     ASSERT_TRUE(surface);
     ASSERT_TRUE(surface->m_colorManagement);
-    request(5, 1, {6, WP_COLOR_MANAGER_V1_RENDER_INTENT_PERCEPTUAL});
+    request(5, 1, {7, WP_COLOR_MANAGER_V1_RENDER_INTENT_PERCEPTUAL});
     EXPECT_FALSE(surface->m_current.imageDescription);
-    request(6, 0, {});
+    request(7, 0, {});
     EXPECT_TRUE(surface->m_pending.imageDescription);
     request(4, 6, {});
     ASSERT_TRUE(surface->m_current.imageDescription);
-    EXPECT_TRUE(isWindowsScRGB(surface->m_current.imageDescription->value()));
+    EXPECT_EQ(surface->m_current.imageDescription->value().transferFunction, CM_TRANSFER_FUNCTION_GAMMA22);
     // Destroying the extension object unsets the description only on the next commit.
     request(5, 0, {});
     EXPECT_FALSE(surface->m_colorManagement);
     EXPECT_TRUE(surface->m_current.imageDescription);
+    EXPECT_EQ(Render::surfaceSourceTF(surface->m_current, CM_TRANSFER_FUNCTION_GAMMA22, NTransferFunction::TF_SRGB), CM_TRANSFER_FUNCTION_GAMMA22);
     request(4, 6, {});
     EXPECT_FALSE(surface->m_current.imageDescription);
+    EXPECT_EQ(Render::surfaceSourceTF(surface->m_current, CM_TRANSFER_FUNCTION_GAMMA22, NTransferFunction::TF_SRGB), CM_TRANSFER_FUNCTION_SRGB);
 }
 
-TEST_F(CColorManagementProtocolTest, FailedDescriptionRejectsInformation) {
-    PROTO::colorManagement->bindManager(m_client, nullptr, 1, 2);
-    auto output = makeShared<CColorManagementOutput>(makeShared<CWpColorManagementOutputV1>(m_client, 1, 3), WP<CWLOutputResource>{});
-    request(3, 1, {4});
-    request(4, 1, {5});
-    expectError(4, WP_IMAGE_DESCRIPTION_V1_ERROR_NOT_READY);
-}
-
-TEST_F(CColorManagementProtocolTest, FailedDescriptionRejectsSurfaceUse) {
+void CColorManagementMonitorFeedbackTest::checkRemovedOutput(bool requestInfo) {
     createSurface();
     request(2, 2, {5, 4});
-    auto output = makeShared<CColorManagementOutput>(makeShared<CWpColorManagementOutputV1>(m_client, 1, 6), WP<CWLOutputResource>{});
-    request(6, 1, {7});
-    request(5, 1, {7, WP_COLOR_MANAGER_V1_RENDER_INTENT_PERCEPTUAL});
-    expectError(5, WP_COLOR_MANAGEMENT_SURFACE_V1_ERROR_IMAGE_DESCRIPTION);
+    auto monitor                = makeShared<CFeedbackTestMonitor>(makeShared<CFeedbackTestOutput>(), true);
+    monitor->m_self             = monitor;
+    monitor->m_imageDescription = getDefaultImageDescription();
+    auto output                 = makeShared<CWLOutputProtocol>(&wl_output_interface, 4, "cm-output-test", monitor);
+    output->m_self              = output;
+    output->bindManager(m_client, nullptr, 4, 6);
+    request(2, 1, {7, 6});
+    request(6, 0, {}); // wl_output.release
+    request(7, 1, {8});
+    expectEvent(8, 1);
+    output->remove();
+    request(7, 1, {9});
+    expectEvent(9, 0, WP_IMAGE_DESCRIPTION_V1_CAUSE_NO_OUTPUT);
+    if (requestInfo) {
+        request(9, 1, {10});
+        expectError(9, WP_IMAGE_DESCRIPTION_V1_ERROR_NOT_READY);
+    } else {
+        request(5, 1, {9, WP_COLOR_MANAGER_V1_RENDER_INTENT_PERCEPTUAL});
+        expectError(5, WP_COLOR_MANAGEMENT_SURFACE_V1_ERROR_IMAGE_DESCRIPTION);
+    }
+}
+
+TEST_F(CColorManagementMonitorFeedbackTest, RemovedOutputDescriptionRejectsInformation) {
+    checkRemovedOutput(true);
+}
+
+TEST_F(CColorManagementMonitorFeedbackTest, RemovedOutputDescriptionRejectsSurfaceUse) {
+    checkRemovedOutput(false);
+}
+
+TEST_F(CColorManagementProtocolTest, ManagerDestructionPreservesCreator) {
+    createParams();
+    request(2, 0, {});
+    EXPECT_EQ(wl_client_get_object(m_client, 2), nullptr);
+    request(3, 1, {WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_EXT_LINEAR});
+    request(3, 3, {WP_COLOR_MANAGER_V1_PRIMARIES_SRGB});
+    request(3, 0, {4});
+    expectEvent(4, 1);
+}
+
+TEST_F(CColorManagementMonitorFeedbackTest, UnchangedFeedbackIsSilentBeforeAndAfterQuery) {
+    createSurface();
+    request(2, 3, {5, 4});
+    expectEvent(2, 4); // drain manager advertisement
+    const auto recheck = [&] {
+        PROTO::colorManagement->onImagePreferredChanged();
+        wl_display_flush_clients(m_display.get());
+        char byte = 0;
+        EXPECT_EQ(recv(m_socket.get(), &byte, 1, MSG_DONTWAIT), -1);
+        EXPECT_EQ(errno, EAGAIN);
+    };
+    recheck();
+    request(5, 1, {6});
+    expectEvent(6, 1);
+    recheck();
+}
+
+TEST_F(CColorManagementProtocolTest, NarrowWireLuminanceRangesAreValid) {
+    createParams();
+    request(3, 5, {20479999, 2048, 2048});
+    request(3, 7, {20479999, 2048});
+    request(3, 1, {WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_EXT_LINEAR});
+    request(3, 3, {WP_COLOR_MANAGER_V1_PRIMARIES_SRGB});
+    request(3, 0, {4});
+    expectEvent(4, 1);
+}
+
+TEST_F(CColorManagementProtocolTest, V1RejectsLightLevelAboveFractionalPQMaximum) {
+    createParams();
+    request(3, 5, {7500, 0, 203});
+    request(3, 1, {WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_ST2084_PQ});
+    request(3, 3, {WP_COLOR_MANAGER_V1_PRIMARIES_BT2020});
+    request(3, 8, {10001});
+    request(3, 0, {4});
+    expectError(3, WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_INVALID_LUMINANCE);
+}
+
+TEST_F(CColorManagementProtocolTest, V2PermitsLightLevelAboveFractionalPQMaximum) {
+    createParams(2);
+    request(3, 1, {WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_ST2084_PQ});
+    request(3, 5, {7500, 0, 203});
+    request(3, 3, {WP_COLOR_MANAGER_V1_PRIMARIES_BT2020});
+    request(3, 8, {10001});
+    request(3, 0, {4});
+    expectEvent(4, 2);
+}
+
+TEST_F(CColorManagementProtocolTest, PALMMasteringPrimariesOnTriangleBoundaryAreValid) {
+    createParams();
+    request(3, 1, {WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_ST2084_PQ});
+    request(3, 3, {WP_COLOR_MANAGER_V1_PRIMARIES_BT2020});
+    request(3, 6, {670000, 330000, 210000, 710000, 140000, 80000, 310000, 316000});
+    request(3, 0, {4});
+    expectEvent(4, 1);
+}
+
+TEST_F(CColorManagementProtocolTest, WhiteAtNTSCPrimaryFails) {
+    createParams();
+    request(3, 1, {WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_EXT_LINEAR});
+    request(3, 4, {630000, 340000, 310000, 595000, 155000, 70000, 630000, 340000});
+    request(3, 0, {4});
+    expectEvent(4, 0, WP_IMAGE_DESCRIPTION_V1_CAUSE_UNSUPPORTED);
 }
 
 TEST_F(CColorManagementProtocolTest, IncompleteCreatorIsRejected) {
@@ -353,7 +463,7 @@ TEST_F(CColorManagementProtocolTest, ExplicitZeroPrimariesFail) {
     request(3, 1, {WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_GAMMA22});
     request(3, 4, {0, 0, 0, 0, 0, 0, 0, 0});
     request(3, 0, {4});
-    expectEvent(4, 0); // wp_image_description_v1.failed
+    expectEvent(4, 0, WP_IMAGE_DESCRIPTION_V1_CAUSE_UNSUPPORTED); // wp_image_description_v1.failed
 }
 
 TEST_F(CColorManagementProtocolTest, NonPhysicalMasteringPrimariesFail) {
@@ -363,7 +473,7 @@ TEST_F(CColorManagementProtocolTest, NonPhysicalMasteringPrimariesFail) {
     // Mastering display chromaticities outside the xy unit triangle can't describe a display, nor be sent as HDR metadata.
     request(3, 6, {INT32_MAX, INT32_MAX, 265000, 690000, 150000, 60000, 312700, 329000});
     request(3, 0, {4});
-    expectEvent(4, 0); // wp_image_description_v1.failed
+    expectEvent(4, 0, WP_IMAGE_DESCRIPTION_V1_CAUSE_UNSUPPORTED); // wp_image_description_v1.failed
 }
 
 TEST_F(CColorManagementProtocolTest, PreferredDescriptionOfAnOrphanedSubsurface) {
@@ -484,4 +594,80 @@ TEST_F(CColorManagementProtocolTest, MinimumLuminanceUsesTheSameUnitsInBothWireE
     }
     EXPECT_TRUE(primary);
     EXPECT_TRUE(target);
+}
+
+TEST_F(CColorManagementProtocolTest, UnrepresentableBT1886RangeFailsWithoutDisconnect) {
+    createParams();
+    request(3, 5, {40959999, 4096, 4096});
+    request(3, 1, {WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_BT1886});
+    request(3, 3, {WP_COLOR_MANAGER_V1_PRIMARIES_SRGB});
+    request(3, 0, {4});
+    expectEvent(4, 0, WP_IMAGE_DESCRIPTION_V1_CAUSE_UNSUPPORTED);
+    request(2, 5, {5});
+    ASSERT_NE(wl_client_get_object(m_client, 5), nullptr);
+}
+
+TEST_F(CColorManagementProtocolTest, UnsupportedHLGBlackLiftFails) {
+    createParams();
+    request(3, 5, {9900000, 1000, 1000});
+    request(3, 1, {WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_HLG});
+    request(3, 3, {WP_COLOR_MANAGER_V1_PRIMARIES_SRGB});
+    request(3, 0, {4});
+    expectEvent(4, 0, WP_IMAGE_DESCRIPTION_V1_CAUSE_UNSUPPORTED);
+}
+
+TEST_F(CColorManagementProtocolTest, PrimariesSingularAfterFloatConversionFail) {
+    createParams();
+    request(3, 1, {WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_EXT_LINEAR});
+    request(3, 4, {1024000000, 1024000000, 1024000003, 1024000000, 1024000000, 1024000003, 1024000001, 1024000001});
+    request(3, 0, {4});
+    expectEvent(4, 0, WP_IMAGE_DESCRIPTION_V1_CAUSE_UNSUPPORTED);
+}
+
+TEST_F(CColorManagementMonitorFeedbackTest, BothPreferredQueriesPreservePendingNotification) {
+    createSurface();
+    request(2, 3, {5, 4});
+    expectEvent(2, 4);
+    auto monitor                = makeShared<CFeedbackTestMonitor>(makeShared<CFeedbackTestOutput>(), true);
+    monitor->m_self             = monitor;
+    monitor->m_imageDescription = DEFAULT_HDR_IMAGE_DESCRIPTION;
+    auto& monitors              = const_cast<std::vector<PHLMONITOR>&>(State::monitorState()->monitors());
+    monitors.emplace_back(monitor);
+    request(5, 1, {6});
+    expectEvent(6, 1);
+    request(5, 2, {7});
+    expectEvent(7, 1);
+    const auto recheck = [&] {
+        PROTO::colorManagement->onImagePreferredChanged();
+        wl_display_flush_clients(m_display.get());
+    };
+    recheck();
+    expectEvent(5, 0, DEFAULT_HDR_IMAGE_DESCRIPTION->id());
+    monitors.clear();
+    recheck();
+    expectEvent(5, 0, getDefaultImageDescription()->id());
+    recheck();
+    char byte = 0;
+    EXPECT_EQ(recv(m_socket.get(), &byte, 1, MSG_DONTWAIT), -1);
+    EXPECT_EQ(errno, EAGAIN);
+}
+
+TEST_F(CColorManagementMonitorFeedbackTest, OutputInfoPreservesLuminanceWireUnits) {
+    createSurface();
+    auto monitor                = makeShared<CFeedbackTestMonitor>(makeShared<CFeedbackTestOutput>(), true);
+    monitor->m_self             = monitor;
+    auto description            = DEFAULT_SRGB_IMAGE_DESCRIPTION->value();
+    description.luminances      = {.min = 4095.9999, .max = 16777217, .reference = 16777219};
+    monitor->m_imageDescription = CImageDescription::from(description);
+    auto output                 = makeShared<CWLOutputProtocol>(&wl_output_interface, 4, "cm-output-test", monitor);
+    output->m_self              = output;
+    output->bindManager(m_client, nullptr, 4, 5);
+    request(2, 1, {6, 5});
+    request(5, 0, {});
+    request(6, 1, {7});
+    expectEvent(7, 1);
+    request(7, 1, {8});
+    expectEventArguments(8, 6, {40959999, 16777217, 16777219});
+    request(7, 1, {9});
+    expectEventArguments(9, 8, {40959999, 16777217});
 }

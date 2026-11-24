@@ -13,10 +13,10 @@
 #include <vector>
 #include <expected>
 
-#define SDR_MIN_LUMINANCE 0.2f
+#define SDR_MIN_LUMINANCE 0.2
 #define SDR_MAX_LUMINANCE 80.0f
 #define SDR_REF_LUMINANCE 80.0f
-#define HDR_MIN_LUMINANCE 0.005f
+#define HDR_MIN_LUMINANCE 0.005
 #define HDR_MAX_LUMINANCE 10000.0f
 #define HDR_REF_LUMINANCE 203.0f
 #define HLG_MAX_LUMINANCE 1000.0f
@@ -253,15 +253,15 @@ namespace NColorManagement {
         // luminances in cd/m²
         // protos and drm expect min * 10000
         struct SPCLuminances {
-            float    min       = 0.2; // 0.2 cd/m²
-            uint32_t max       = 80;  // 80 cd/m²
-            uint32_t reference = 80;  // 80 cd/m²
+            double   min       = SDR_MIN_LUMINANCE; // 0.2 cd/m²
+            double   max       = 80;                // 80 cd/m²
+            uint32_t reference = 80;                // 80 cd/m²
             bool     operator==(const SPCLuminances& l2) const {
                 return min == l2.min && max == l2.max && reference == l2.reference;
             }
         } luminances;
         struct SPCMasteringLuminances {
-            float    min = 0;
+            double   min = 0;
             uint32_t max = 0;
             bool     operator==(const SPCMasteringLuminances& l2) const {
                 return min == l2.min && max == l2.max;
@@ -288,11 +288,12 @@ namespace NColorManagement {
             return primaries;
         }
 
-        float encodingMinLuminance() const;
-        float encodingMaxLuminance() const;
-        float getContentMaxLuminance(float fallback) const;
+        bool   hasRenderableLuminances() const;
+        double encodingMinLuminance() const;
+        double encodingMaxLuminance() const;
+        float  getContentMaxLuminance(float fallback) const;
 
-        float getTFMinLuminance(float sdrMinLuminance = -1.0f) const {
+        double getTFMinLuminance(float sdrMinLuminance = -1.0f) const {
             switch (transferFunction) {
                 case CM_TRANSFER_FUNCTION_EXT_LINEAR: return isWindows || isInternal ? 0.0f : SDR_MIN_LUMINANCE;
                 case CM_TRANSFER_FUNCTION_ST2084_PQ:
@@ -405,7 +406,7 @@ namespace NColorManagement {
     // Chromaticities a real (mastering) display can have, which CTA-861.3 metadata can carry.
     bool      isPhysicalDisplayChromaticities(const SPCPRimaries& primaries);
 
-    float     referenceLuminanceScale(const SImageDescription& source, const SImageDescription& target);
+    double    referenceLuminanceScale(const SImageDescription& source, const SImageDescription& target);
 
     bool      isHDR(const SImageDescription& description);
     bool      isWindowsScRGB(const SImageDescription& description);

@@ -168,6 +168,7 @@ enum eShaderUniform : uint8_t {
     SHADER_HAZE_IRIDESCENCE,
     SHADER_HAZE_TRANSFER_FUNCTION,
 
+    SHADER_TF_RANGE_SPANS,
     SHADER_LAST,
 };
 

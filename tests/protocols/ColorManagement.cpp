@@ -27,7 +27,7 @@ class CColorManagementTest : public ::testing::Test {
     void readDescription(uint32_t id, PImageDescription& description);
     void createParametric(wpColorManagerV1TransferFunction tf, PImageDescription& description, std::optional<std::array<uint32_t, 3>> luminances = std::nullopt,
                           bool luminancesFirst = false);
-    void expectLuminances(PImageDescription description, float min, uint32_t max, uint32_t reference);
+    void expectLuminances(PImageDescription description, double min, double max, uint32_t reference);
 
   private:
     std::unique_ptr<wl_display, decltype(&wl_display_destroy)> m_display{nullptr, wl_display_destroy};
@@ -179,21 +179,21 @@ void CColorManagementTest::createParametric(wpColorManagerV1TransferFunction tf,
     EXPECT_FALSE(description->value().isWindows);
 }
 
-void CColorManagementTest::expectLuminances(PImageDescription description, float min, uint32_t max, uint32_t reference) {
+void CColorManagementTest::expectLuminances(PImageDescription description, double min, double max, uint32_t reference) {
     ASSERT_TRUE(description);
     const auto& settings = description->value();
-    EXPECT_FLOAT_EQ(settings.luminances.min, min);
+    EXPECT_DOUBLE_EQ(settings.luminances.min, min);
     EXPECT_EQ(settings.luminances.max, max);
     EXPECT_EQ(settings.luminances.reference, reference);
     // Pixels are decoded through the encoding range; the reference white anchors through luminances.reference.
-    EXPECT_FLOAT_EQ(settings.encodingMinLuminance(), min);
-    EXPECT_FLOAT_EQ(settings.encodingMaxLuminance(), settings.transferFunction == CM_TRANSFER_FUNCTION_ST2084_PQ ? min + HDR_MAX_LUMINANCE : max);
+    EXPECT_DOUBLE_EQ(settings.encodingMinLuminance(), min);
+    EXPECT_DOUBLE_EQ(settings.encodingMaxLuminance(), max);
 }
 
 TEST_F(CColorManagementTest, OmittedLinearLuminancesUseSDRDefaults) {
     PImageDescription description;
     ASSERT_NO_FATAL_FAILURE(createParametric(WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_EXT_LINEAR, description));
-    ASSERT_NO_FATAL_FAILURE(expectLuminances(description, 0.2F, 80, 80));
+    ASSERT_NO_FATAL_FAILURE(expectLuminances(description, 0.2, 80, 80));
 }
 
 class CColorManagementOrderTest : public CColorManagementTest, public ::testing::WithParamInterface<bool> {};
@@ -220,6 +220,13 @@ TEST_P(CColorManagementOrderTest, ExplicitLinearNonzeroMinimum) {
     ASSERT_NO_FATAL_FAILURE(expectLuminances(description, 0.25F, 400, 120));
 }
 
+TEST_P(CColorManagementOrderTest, NarrowLinearRangeRetainsWirePrecision) {
+    PImageDescription             description;
+    const std::array<uint32_t, 3> luminances = {20479999, 2048, 2048};
+    ASSERT_NO_FATAL_FAILURE(createParametric(WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_EXT_LINEAR, description, luminances, GetParam()));
+    ASSERT_NO_FATAL_FAILURE(expectLuminances(description, 2047.9999, 2048, 2048));
+}
+
 TEST_P(CColorManagementOrderTest, ExplicitLinearDefaultsMatchOmittedDescription) {
     PImageDescription             omitted, explicitDefaults;
     const std::array<uint32_t, 3> luminances = {
@@ -229,7 +236,7 @@ TEST_P(CColorManagementOrderTest, ExplicitLinearDefaultsMatchOmittedDescription)
     };
     ASSERT_NO_FATAL_FAILURE(createParametric(WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_EXT_LINEAR, omitted));
     ASSERT_NO_FATAL_FAILURE(createParametric(WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_EXT_LINEAR, explicitDefaults, luminances, GetParam()));
-    ASSERT_NO_FATAL_FAILURE(expectLuminances(explicitDefaults, 0.2F, 80, 80));
+    ASSERT_NO_FATAL_FAILURE(expectLuminances(explicitDefaults, 0.2, 80, 80));
     EXPECT_EQ(omitted->id(), explicitDefaults->id());
 }
 
@@ -260,11 +267,11 @@ TEST_F(CColorManagementTest, WindowsScRGBKeepsFixedEncoding) {
 TEST_F(CColorManagementTest, OmittedPQLuminancesKeepHDRDefaults) {
     PImageDescription description;
     ASSERT_NO_FATAL_FAILURE(createParametric(WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_ST2084_PQ, description));
-    ASSERT_NO_FATAL_FAILURE(expectLuminances(description, 0.005F, 10000, 203));
+    ASSERT_NO_FATAL_FAILURE(expectLuminances(description, 0.005, 10000.005, 203));
 }
 
 TEST_F(CColorManagementTest, OmittedHLGLuminancesKeepHDRDefaults) {
     PImageDescription description;
     ASSERT_NO_FATAL_FAILURE(createParametric(WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_HLG, description));
-    ASSERT_NO_FATAL_FAILURE(expectLuminances(description, 0.005F, 1000, 203));
+    ASSERT_NO_FATAL_FAILURE(expectLuminances(description, 0.005, 1000, 203));
 }

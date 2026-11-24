@@ -140,8 +140,12 @@ class CColorManagementParametricCreator {
     };
 
     SP<CWpImageDescriptionCreatorParamsV1> m_resource;
-    wl_client*                             m_client    = nullptr;
-    uint32_t                               m_valuesSet = 0; // enum eValuesSet
+    wl_client*                             m_client                  = nullptr;
+    uint32_t                               m_valuesSet               = 0; // enum eValuesSet
+    uint32_t                               m_primaryMinWire          = 0;
+    uint32_t                               m_masteringMinWire        = 0;
+    bool                                   m_whiteInsidePrimaries    = true;
+    bool                                   m_physicalMasteringPoints = true;
 };
 
 class CColorManagementImageDescription {

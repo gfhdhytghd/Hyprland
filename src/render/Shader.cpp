@@ -137,6 +137,8 @@ void CShader::getUniformLocations() {
     m_uniformLocations[SHADER_SOURCE_LUMINANCE_COEFFICIENTS] = getUniform("sourceLuminanceCoefficients");
     m_uniformLocations[SHADER_TARGET_LUMINANCE_COEFFICIENTS] = getUniform("targetLuminanceCoefficients");
 
+    m_uniformLocations[SHADER_TF_RANGE_SPANS] = getUniform("tfRangeSpans");
+
     // shader has #include "CM.glsl"
     m_uniformLocations[SHADER_SRC_TF_RANGE]                = getUniform("srcTFRange");
     m_uniformLocations[SHADER_DST_TF_RANGE]                = getUniform("dstTFRange");
@@ -377,7 +379,7 @@ void CShader::setUniformFloat(eShaderUniform location, GLfloat v0) {
 
     if (cached.index() != 0) {
         auto val = std::get<GLfloat>(cached);
-        if (EPSILON(val, v0))
+        if (location == SHADER_SOURCE_REFERENCE_SCALE || location == SHADER_SRC_MIN_LUMINANCE ? val == v0 : EPSILON(val, v0))
             return;
     }
 
@@ -393,7 +395,9 @@ void CShader::setUniformFloat2(eShaderUniform location, GLfloat v0, GLfloat v1) 
 
     if (cached.index() != 0) {
         auto val = std::get<std::array<GLfloat, 2>>(cached);
-        if (EPSILON(val[0], v0) && EPSILON(val[1], v1))
+        // A valid TF span can be smaller than the general uniform cache tolerance.
+        const bool exact = location == SHADER_TF_RANGE_SPANS || location == SHADER_SRC_TF_RANGE || location == SHADER_DST_TF_RANGE;
+        if (exact ? val[0] == v0 && val[1] == v1 : EPSILON(val[0], v0) && EPSILON(val[1], v1))
             return;
     }
 

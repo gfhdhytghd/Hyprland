@@ -19,7 +19,7 @@ bool                             NColorManagement::isPhysicalDisplayChromaticiti
     return rgbToXYZFromPrimaries(primaries).has_value();
 }
 
-double NColorManagement::encodeMinimumLuminance(float nits) {
+double NColorManagement::encodeMinimumLuminance(double nits) {
     return std::round(nits * 10000.0);
 }
 

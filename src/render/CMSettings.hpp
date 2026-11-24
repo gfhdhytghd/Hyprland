@@ -3,7 +3,13 @@
 #include "types.hpp"
 #include <vector>
 
+#include "../helpers/TransferFunction.hpp"
+
+struct SSurfaceState;
+
 namespace Render {
+    NColorManagement::eTransferFunction surfaceSourceTF(const SSurfaceState& current, NColorManagement::eTransferFunction source, NTransferFunction::eTF policy);
+
     // Resolved policy inputs, rather than the identity/address of a surface or
     // monitor. Equal inputs must produce equal settings across nested draws.
     struct SCMSettingsInputs {

@@ -121,8 +121,10 @@ namespace Render {
     };
 
     struct STFRange {
-        float min = 0;
-        float max = 80;
+        double               min = 0;
+        double               max = 80;
+
+        std::array<float, 2> shaderMinAndSpan() const;
     };
 
     struct SCMSettings {
@@ -130,8 +132,8 @@ namespace Render {
         NColorManagement::eTransferFunction  targetTF = NColorManagement::CM_TRANSFER_FUNCTION_GAMMA22;
         STFRange                             srcTFRange;
         STFRange                             dstTFRange;
-        float                                srcReferenceScale = 1; // target / source reference white, already applied to srcTFRange
-        float                                dstRefLuminance   = 80;
+        double                               srcReferenceScale = 1; // target / source reference white, already applied to srcTFRange
+        double                               dstRefLuminance   = 80;
         std::array<std::array<double, 3>, 3> convertMatrix;
 
         bool                                 needsTonemap    = false;

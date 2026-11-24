@@ -135,7 +135,7 @@ static int run(wl_display* display, const std::string& mode) {
     std::string                                         expectedInterface;
     uint32_t                                            expectedError  = 0;
     uint32_t                                            expectedObject = 0;
-    bool                                                ready = false, failed = false;
+    bool                                                ready          = false;
 
     if (mode == "feedback-live")
         return liveFeedback(display, surface, feedback, shm, shell);
@@ -176,23 +176,12 @@ static int run(wl_display* display, const std::string& mode) {
             expectedInterface = "wp_color_management_surface_v1";
             expectedError     = WP_COLOR_MANAGEMENT_SURFACE_V1_ERROR_INERT;
         }
-    } else if (mode == "failed-info" || mode == "failed-set") {
+    } else if (mode == "released-output") {
         output->sendRelease();
         output.reset();
         outputs.clear();
         description = makeShared<CCWpImageDescriptionV1>(cmOutput->sendGetImageDescription());
-        description->setFailed([&](CCWpImageDescriptionV1*, wpImageDescriptionV1Cause cause, const char*) { failed = cause == WP_IMAGE_DESCRIPTION_V1_CAUSE_NO_OUTPUT; });
-        if (wl_display_roundtrip(display) < 0 || !failed)
-            return 5;
-        if (mode == "failed-info") {
-            information       = makeShared<CCWpImageDescriptionInfoV1>(description->sendGetInformation());
-            expectedInterface = "wp_image_description_v1";
-            expectedError     = WP_IMAGE_DESCRIPTION_V1_ERROR_NOT_READY;
-        } else {
-            cmSurface->sendSetImageDescription(description.get(), WP_COLOR_MANAGER_V1_RENDER_INTENT_PERCEPTUAL);
-            expectedInterface = "wp_color_management_surface_v1";
-            expectedError     = WP_COLOR_MANAGEMENT_SURFACE_V1_ERROR_IMAGE_DESCRIPTION;
-        }
+        description->setReady([&](CCWpImageDescriptionV1*, uint32_t) { ready = true; });
     } else {
         creator           = makeShared<CCWpImageDescriptionCreatorParamsV1>(manager->sendCreateParametricCreator());
         expectedInterface = "wp_image_description_creator_params_v1";

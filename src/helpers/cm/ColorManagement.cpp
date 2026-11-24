@@ -8,6 +8,7 @@
 #include <numeric>
 #include <algorithm>
 #include <numbers>
+#include <limits>
 
 using namespace NColorManagement;
 using namespace NTransferFunction;
@@ -179,7 +180,7 @@ PImageDescription CImageDescription::from(const SImageDescription& imageDescript
     auto description = imageDescription;
     // PQ's primary volume is its encoding range, not the mastering display peak.
     if (description.transferFunction == CM_TRANSFER_FUNCTION_ST2084_PQ)
-        description.luminances.max = std::round(description.luminances.min + HDR_MAX_LUMINANCE);
+        description.luminances.max = description.luminances.min + HDR_MAX_LUMINANCE;
     auto&      table        = descriptionsTable();
     const auto hash         = descriptionHash(description);
     const auto [begin, end] = table->values.equal_range(hash);
@@ -267,7 +268,10 @@ static std::optional<Mat3x3> invertMat3(const Mat3x3& m) {
     const double I = (a * e - b * d);
 
     const double det = a * A + b * B + c * C;
-    if (std::abs(det) < 1e-18)
+    // Reject matrices whose inversion loses float precision to cancellation.
+    const double scale    = std::max({std::abs(a) + std::abs(b) + std::abs(c), std::abs(d) + std::abs(e) + std::abs(f), std::abs(g) + std::abs(h) + std::abs(i)});
+    const double adjScale = std::max({std::abs(A) + std::abs(D) + std::abs(G), std::abs(B) + std::abs(E) + std::abs(H), std::abs(C) + std::abs(F) + std::abs(I)});
+    if (!std::isfinite(det) || std::abs(det) <= std::numeric_limits<float>::epsilon() * scale * adjScale)
         return std::nullopt;
 
     const double invDet = 1.0 / det;
@@ -306,22 +310,22 @@ std::optional<Mat3x3> NColorManagement::rgbToXYZFromPrimaries(SPCPRimaries pr) {
     const auto B       = primary(pr.blue);
     if (pr.white.y <= 0)
         return std::nullopt;
-    const auto W = Hyprgraphics::xy2xyz(pr.white);
-
-    // P has columns R,G,B
-    Mat3x3 P{std::array<float, 9>{R.x, G.x, B.x, R.y, G.y, B.y, R.z, G.z, B.z}};
-
-    auto   invP = invertMat3(P);
-    if (!invP)
+    // Barycentric weights express the white point as a mixture in the xy plane.
+    const auto area  = [](auto a, auto b, auto p) { return (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x); };
+    const auto total = area(pr.red, pr.green, pr.blue);
+    if (!std::isfinite(total) || std::abs(total) < 1e-18)
         return std::nullopt;
-
-    const auto S = matByVec(*invP, {W.x, W.y, W.z});
-    // White must be a positive mix of the primaries, otherwise a channel collapses and the matrix is singular.
+    const auto                 divisor = total * pr.white.y;
+    const std::array<float, 3> S       = {sc<float>(area(pr.green, pr.blue, pr.white) / divisor), sc<float>(area(pr.blue, pr.red, pr.white) / divisor),
+                                          sc<float>(area(pr.red, pr.green, pr.white) / divisor)};
     if (std::ranges::any_of(S, [](float scale) { return !std::isfinite(scale) || scale <= 0; }))
         return std::nullopt;
 
+    Mat3x3 P{std::array<float, 9>{R.x, G.x, B.x, R.y, G.y, B.y, R.z, G.z, B.z}};
     P.multiply(diag3(S)); // RGB->XYZ
 
+    if (!invertMat3(P))
+        return std::nullopt;
     return P;
 }
 
@@ -343,11 +347,11 @@ Mat3x3 NColorManagement::adaptBradford(Hyprgraphics::CColor::xy srcW, Hyprgraphi
     return result;
 }
 
-float SImageDescription::encodingMinLuminance() const {
+double SImageDescription::encodingMinLuminance() const {
     return transferFunction == CM_TRANSFER_FUNCTION_LINEAR || (transferFunction == CM_TRANSFER_FUNCTION_EXT_LINEAR && (isWindows || isInternal)) ? 0.0f : luminances.min;
 }
 
-float SImageDescription::encodingMaxLuminance() const {
+double SImageDescription::encodingMaxLuminance() const {
     if (transferFunction == CM_TRANSFER_FUNCTION_ST2084_PQ)
         return luminances.min + HDR_MAX_LUMINANCE;
     if (transferFunction == CM_TRANSFER_FUNCTION_EXT_LINEAR && (isWindows || isInternal))
@@ -415,7 +419,16 @@ static double hlgGamma(double peak) {
 
 // BT.2100 HLG black level lift for a display with black luminance range.min and nominal peak range.max.
 static double hlgBeta(Render::STFRange range, double nominalPeak) {
-    return std::sqrt(3.0 * std::pow(std::max(range.min, 0.0f) / range.max, 1.0 / hlgGamma(nominalPeak)));
+    return std::sqrt(3.0 * std::pow(std::max(range.min, 0.0) / range.max, 1.0 / hlgGamma(nominalPeak)));
+}
+
+bool SImageDescription::hasRenderableLuminances() const {
+    const Render::STFRange range{.min = encodingMinLuminance(), .max = encodingMaxLuminance()};
+    // Absolute nits must remain distinguishable in the float rendering pipeline.
+    if (sc<float>(range.min) >= sc<float>(range.max))
+        return false;
+    // HLG's square-root black lift assumes black is on the low OETF branch.
+    return transferFunction != CM_TRANSFER_FUNCTION_HLG || hlgBeta(range, range.max) <= HLG_E_CUT;
 }
 
 // BT.2100 HLG EOTF: signal -> display light, normalized to range like the other transfer functions.
@@ -462,8 +475,20 @@ static RGBAColor tfInvExtSRGB(RGBAColor color) {
     }};
 }
 
+// Evaluate max(1+x, 0)^p - 1 without subtracting almost equal powers.
+static double pow1pm1(double x, double p) {
+    return x <= -1.0 ? -1.0 : std::expm1(p * std::log1p(x));
+}
+
 static RGBAColor tfInvBT1886(RGBAColor color, Render::STFRange range = {.min = 0.01f, .max = 100.0f}) {
-    const double black = std::pow(std::max(range.min, 0.0f), 1.0 / 2.4);
+    if (range.max - range.min < 0.01 * range.min) {
+        const double ratio    = (range.max - range.min) / range.min;
+        const double rootSpan = pow1pm1(ratio, 1.0 / 2.4);
+        for (uint i = 0; i < 3; ++i)
+            color.v[i] = pow1pm1(color.v[i] * rootSpan, 2.4) / ratio;
+        return color;
+    }
+    const double black = std::pow(std::max(range.min, 0.0), 1.0 / 2.4);
     const double white = std::pow(range.max, 1.0 / 2.4);
     for (uint i = 0; i < 3; ++i)
         color.v[i] = (std::pow(std::max(color.v[i] * (white - black) + black, 0.0), 2.4) - range.min) / (range.max - range.min);
@@ -536,7 +561,14 @@ static RGBAColor tfExtSRGB(RGBAColor color) {
 }
 
 static RGBAColor tfBT1886(RGBAColor color, Render::STFRange range = {.min = 0.01f, .max = 100.0f}) {
-    const double black = std::pow(std::max(range.min, 0.0f), 1.0 / 2.4);
+    if (range.max - range.min < 0.01 * range.min) {
+        const double ratio    = (range.max - range.min) / range.min;
+        const double rootSpan = pow1pm1(ratio, 1.0 / 2.4);
+        for (uint i = 0; i < 3; ++i)
+            color.v[i] = pow1pm1(color.v[i] * ratio, 1.0 / 2.4) / rootSpan;
+        return color;
+    }
+    const double black = std::pow(std::max(range.min, 0.0), 1.0 / 2.4);
     const double white = std::pow(range.max, 1.0 / 2.4);
     for (uint i = 0; i < 3; ++i)
         color.v[i] = (std::pow(std::max(color.v[i] * (range.max - range.min) + range.min, 0.0), 1.0 / 2.4) - black) / (white - black);
@@ -791,10 +823,10 @@ bool NColorManagement::isHDR(const SImageDescription& description) {
         (description.transferFunction == CM_TRANSFER_FUNCTION_EXT_LINEAR && description.luminances.max > description.luminances.reference);
 }
 
-float NColorManagement::referenceLuminanceScale(const SImageDescription& source, const SImageDescription& target) {
+double NColorManagement::referenceLuminanceScale(const SImageDescription& source, const SImageDescription& target) {
     if (source.isWindows || source.luminances.reference == 0 || target.luminances.reference == 0)
         return 1.0f;
-    return sc<float>(target.luminances.reference) / source.luminances.reference;
+    return sc<double>(target.luminances.reference) / source.luminances.reference;
 }
 
 // CPU counterpart of doColorManagement in cm_helpers.glsl, keep both in sync.
