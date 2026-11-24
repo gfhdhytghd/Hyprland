@@ -142,7 +142,7 @@ TEST_F(CHDRImageDescriptionTest, BothHDRPresetsEncodeBT2020WithEDIDMasteringVolu
         EXPECT_EQ(description.masteringPrimaries, monitor->getMasteringPrimaries());
 
         EXPECT_FLOAT_EQ(description.luminances.min, 0.05F);
-        EXPECT_EQ(description.luminances.max, sc<uint32_t>(HDR_MAX_LUMINANCE));
+        EXPECT_EQ(description.luminances.max, description.luminances.min + HDR_MAX_LUMINANCE);
         EXPECT_EQ(description.luminances.reference, sc<uint32_t>(HDR_REF_LUMINANCE));
         EXPECT_FLOAT_EQ(description.masteringLuminances.min, 0.05F);
         EXPECT_EQ(description.masteringLuminances.max, 1000U);
@@ -159,9 +159,9 @@ TEST_F(CHDRImageDescriptionTest, HDRPresetFallsBackWithoutEDIDAndHonoursReferenc
 
     const auto description = monitor->getHDRImageDescription(NCMType::CM_HDR)->value();
     EXPECT_EQ(description.primaries, getPrimaries(CM_PRIMARIES_BT2020));
-    EXPECT_FLOAT_EQ(description.luminances.min, HDR_MIN_LUMINANCE);
+    EXPECT_DOUBLE_EQ(description.luminances.min, HDR_MIN_LUMINANCE);
     EXPECT_EQ(description.luminances.reference, 250U);
-    EXPECT_FLOAT_EQ(description.masteringLuminances.min, HDR_MIN_LUMINANCE);
+    EXPECT_DOUBLE_EQ(description.masteringLuminances.min, HDR_MIN_LUMINANCE);
     EXPECT_EQ(description.masteringLuminances.max, sc<uint32_t>(HDR_MAX_LUMINANCE));
     EXPECT_EQ(description.maxCLL, 0U);
     EXPECT_EQ(description.maxFALL, 0U);
@@ -192,7 +192,7 @@ TEST_F(CHDRImageDescriptionTest, DetachedMonitorUsesLuminanceDefaults) {
     EXPECT_EQ(monitor->getMasteringLuminances().max, 0U);
 
     const auto description = monitor->getHDRImageDescription(NCMType::CM_HDR)->value();
-    EXPECT_FLOAT_EQ(description.luminances.min, HDR_MIN_LUMINANCE);
+    EXPECT_DOUBLE_EQ(description.luminances.min, HDR_MIN_LUMINANCE);
     EXPECT_EQ(description.masteringLuminances.max, sc<uint32_t>(HDR_MAX_LUMINANCE));
     EXPECT_EQ(description.maxCLL, 0U);
     EXPECT_EQ(description.maxFALL, 0U);

@@ -83,7 +83,7 @@ std::optional<SHardwareCM> NColorManagement::buildHardwareCM(const SImageDescrip
     // Same anchoring as IHyprRenderer::getCMSettings.
     const bool sdrToHDR = (source.transferFunction == CM_TRANSFER_FUNCTION_SRGB || source.transferFunction == CM_TRANSFER_FUNCTION_GAMMA22) &&
         target.transferFunction == CM_TRANSFER_FUNCTION_ST2084_PQ;
-    const float      referenceScale = referenceLuminanceScale(source, target);
+    const double     referenceScale = referenceLuminanceScale(source, target);
     const float      sdrBrightness  = sdrToHDR && params.sdrBrightness > 0 ? params.sdrBrightness : 1.F;
     const float      sdrSaturation  = sdrToHDR && params.sdrSaturation > 0 ? params.sdrSaturation : 1.F;
 

@@ -37,7 +37,7 @@ static float auroraLuminanceScale(CRenderContext& ctx) {
     const auto MINIMUM = INTERMEDIATE->value().getTFMinLuminance();
     const auto MAXIMUM = INTERMEDIATE->value().getTFMaxLuminance();
     const auto RANGE   = std::max(MAXIMUM, sc<float>(WORKBUFFER->value().luminances.max)) - MINIMUM;
-    return (MAXIMUM - MINIMUM) / std::max(RANGE, 0.001F);
+    return (MAXIMUM - MINIMUM) / std::max(RANGE, 0.001);
 }
 
 CAuroraBlurMaterial::CAuroraBlurMaterial() : CGlassBlurMaterial(eBlurType::BLUR_AURORA, SH_FRAG_AURORAFINISH) {

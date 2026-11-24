@@ -13,7 +13,33 @@
 
 using namespace NColorManagement;
 
-const auto  PRIMARIES_SCALE = 1000000.0f;
+static constexpr double   PRIMARIES_SCALE = 1000000.0;
+static constexpr uint64_t LUMINANCE_SCALE = 10000;
+static bool               physicalWirePoint(int32_t x, int32_t y) {
+    return x >= 0 && y >= 0 && sc<int64_t>(x) + y <= 1000000;
+}
+
+// Compare the signed products of 32-bit coordinate differences without overflowing a signed determinant.
+struct SWirePoint {
+    int32_t x = 0, y = 0;
+};
+
+static int orientation(SWirePoint a, SWirePoint b, SWirePoint p) {
+    const auto product = [](int64_t x, int64_t y) -> std::pair<int, uint64_t> {
+        const auto magnitude = sc<uint64_t>(std::abs(x)) * sc<uint64_t>(std::abs(y));
+        return {magnitude == 0 ? 0 : ((x < 0) == (y < 0) ? 1 : -1), magnitude};
+    };
+    const auto [leftSign, left]   = product(sc<int64_t>(b.x) - a.x, sc<int64_t>(p.y) - a.y);
+    const auto [rightSign, right] = product(sc<int64_t>(b.y) - a.y, sc<int64_t>(p.x) - a.x);
+    if (leftSign != rightSign)
+        return leftSign > rightSign ? 1 : -1;
+    return leftSign * ((left > right) - (left < right));
+}
+
+static bool whiteInsidePrimaries(SWirePoint red, SWirePoint green, SWirePoint blue, SWirePoint white) {
+    const auto side = orientation(red, green, white);
+    return side != 0 && orientation(green, blue, white) == side && orientation(blue, red, white) == side;
+}
 
 static void setPendingImageDescription(SP<CWLSurfaceResource> surface, PImageDescription description) {
     surface->m_pending.imageDescription             = description;
@@ -67,7 +93,7 @@ CColorManager::CColorManager(SP<CWpColorManagerV1> resource) : m_resource(resour
 
     m_resource->sendSupportedIntent(WP_COLOR_MANAGER_V1_RENDER_INTENT_PERCEPTUAL);
 
-    m_resource->setDestroy([](CWpColorManagerV1* r) { LOG(Log::TRACE, "Destroy WP_color_manager at {:x} (generated default)", (uintptr_t)r); });
+    m_resource->setDestroy([](CWpColorManagerV1* r) { wl_resource_destroy(r->resource()); });
     m_resource->setGetOutput([](CWpColorManagerV1* r, uint32_t id, wl_resource* output) {
         LOG(Log::TRACE, "Get output for id={}, output={}", id, (uintptr_t)output);
 
@@ -349,6 +375,7 @@ CColorManagementFeedbackSurface::CColorManagementFeedbackSurface(SP<CWpColorMana
 
     m_client = m_resource->client();
 
+    m_currentPreferred = preferredForSurfaces(m_surface->getPreferredImageDescription());
     m_resource->setDestroy([this](CWpColorManagementSurfaceFeedbackV1* r) {
         LOG(Log::TRACE, "Destroy wp cm feedback surface {}", (uintptr_t)m_surface.get());
         PROTO::colorManagement->destroyResource(this);
@@ -377,7 +404,6 @@ CColorManagementFeedbackSurface::CColorManagementFeedbackSurface(SP<CWpColorMana
 
         RESOURCE->m_self     = RESOURCE;
         RESOURCE->m_settings = preferredForSurfaces(m_surface->getPreferredImageDescription());
-        m_currentPreferred   = RESOURCE->m_settings;
 
         RESOURCE->sendMaybeReady();
     });
@@ -403,7 +429,6 @@ CColorManagementFeedbackSurface::CColorManagementFeedbackSurface(SP<CWpColorMana
 
         RESOURCE->m_self     = RESOURCE;
         RESOURCE->m_settings = preferred;
-        m_currentPreferred   = preferred;
 
         RESOURCE->sendMaybeReady();
     });
@@ -532,21 +557,25 @@ CColorManagementParametricCreator::CColorManagementParametricCreator(SP<CWpImage
             };
         }
         // "With transfer_function.st2084_pq the given 'max_lum' value is ignored, and 'max_lum' is taken as 'min_lum' + 10000 cd/m²."
-        if ((m_valuesSet & PC_LUMINANCES) && m_settings.transferFunction == CM_TRANSFER_FUNCTION_ST2084_PQ)
-            m_settings.luminances.max = sc<uint32_t>(m_settings.luminances.min + HDR_MAX_LUMINANCE);
+        const uint64_t primaryMin = (m_valuesSet & PC_LUMINANCES) ? m_primaryMinWire : sc<uint64_t>(std::llround(m_settings.luminances.min * LUMINANCE_SCALE));
+        m_settings.luminances.min = primaryMin / sc<double>(LUMINANCE_SCALE);
+        uint64_t primaryMax       = sc<uint64_t>(m_settings.luminances.max) * LUMINANCE_SCALE;
+        if (m_settings.transferFunction == CM_TRANSFER_FUNCTION_ST2084_PQ) {
+            primaryMax                = primaryMin + sc<uint64_t>(HDR_MAX_LUMINANCE) * LUMINANCE_SCALE;
+            m_settings.luminances.max = primaryMax / sc<double>(LUMINANCE_SCALE);
+        }
 
-        if (m_settings.transferFunction == CM_TRANSFER_FUNCTION_ST2084_PQ)
-            m_settings.luminances.max = std::round(m_settings.luminances.min + HDR_MAX_LUMINANCE);
-
-        if (m_settings.luminances.max <= m_settings.luminances.min) {
+        if (primaryMax <= primaryMin) {
             r->error(WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_INVALID_LUMINANCE, "Invalid primary luminance range");
             return;
         }
 
-        const auto mastering        = m_valuesSet & PC_MASTERING_LUMINANCES ?
-            m_settings.masteringLuminances :
-            SImageDescription::SPCMasteringLuminances{.min = m_settings.luminances.min, .max = m_settings.luminances.max};
-        const auto outsideMastering = [&](uint32_t value) { return value <= mastering.min || value > mastering.max; };
+        const uint64_t masteringMin     = m_valuesSet & PC_MASTERING_LUMINANCES ? m_masteringMinWire : primaryMin;
+        const uint64_t masteringMax     = m_valuesSet & PC_MASTERING_LUMINANCES ? m_settings.masteringLuminances.max * LUMINANCE_SCALE : primaryMax;
+        const auto     outsideMastering = [&](uint32_t value) {
+            const uint64_t wire = value * LUMINANCE_SCALE;
+            return wire <= masteringMin || wire > masteringMax;
+        };
         if (((m_valuesSet & PC_CLL) && (m_valuesSet & PC_FALL) && m_settings.maxFALL > m_settings.maxCLL) ||
             (r->version() == 1 && (((m_valuesSet & PC_CLL) && outsideMastering(m_settings.maxCLL)) || ((m_valuesSet & PC_FALL) && outsideMastering(m_settings.maxFALL))))) {
             r->error(WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_INVALID_LUMINANCE, "Content light levels are outside the permitted range");
@@ -554,14 +583,19 @@ CColorManagementParametricCreator::CColorManagementParametricCreator(SP<CWpImage
         }
 
         RESOURCE->m_self = RESOURCE;
+        if (!m_settings.hasRenderableLuminances()) {
+            RESOURCE->resource()->sendFailed(WP_IMAGE_DESCRIPTION_V1_CAUSE_UNSUPPORTED, "Luminance range cannot be rendered");
+            PROTO::colorManagement->destroyResource(this);
+            return;
+        }
         // Validate explicit primaries as sent; getPrimaries() would substitute named primaries for all-zero values.
-        if (!rgbToXYZFromPrimaries(m_settings.primariesNameSet ? m_settings.getPrimaries() : m_settings.primaries)) {
+        if (!m_whiteInsidePrimaries || !rgbToXYZFromPrimaries(m_settings.primariesNameSet ? m_settings.getPrimaries() : m_settings.primaries)) {
             RESOURCE->resource()->sendFailed(WP_IMAGE_DESCRIPTION_V1_CAUSE_UNSUPPORTED, "Primaries do not define an invertible color space");
             PROTO::colorManagement->destroyResource(this);
             return;
         }
         // The mastering display is a real display, unlike the primary volume which may use imaginary primaries.
-        if ((m_valuesSet & PC_MASTERING_PRIMARIES) && !isPhysicalDisplayChromaticities(m_settings.masteringPrimaries)) {
+        if ((m_valuesSet & PC_MASTERING_PRIMARIES) && (!m_physicalMasteringPoints || !isPhysicalDisplayChromaticities(m_settings.masteringPrimaries))) {
             RESOURCE->resource()->sendFailed(WP_IMAGE_DESCRIPTION_V1_CAUSE_UNSUPPORTED, "Mastering display primaries are not physical chromaticities");
             PROTO::colorManagement->destroyResource(this);
             return;
@@ -641,6 +675,7 @@ CColorManagementParametricCreator::CColorManagementParametricCreator(SP<CWpImage
                 r->error(WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_ALREADY_SET, "Primaries already set");
                 return;
             }
+            m_whiteInsidePrimaries      = whiteInsidePrimaries({r_x, r_y}, {g_x, g_y}, {b_x, b_y}, {w_x, w_y});
             m_settings.primariesNameSet = false;
             m_settings.primaries        = SPCPRimaries{.red   = {.x = r_x / PRIMARIES_SCALE, .y = r_y / PRIMARIES_SCALE},
                                                        .green = {.x = g_x / PRIMARIES_SCALE, .y = g_y / PRIMARIES_SCALE},
@@ -649,17 +684,19 @@ CColorManagementParametricCreator::CColorManagementParametricCreator(SP<CWpImage
             m_valuesSet |= PC_PRIMARIES;
         });
     m_resource->setSetLuminances([this](CWpImageDescriptionCreatorParamsV1* r, uint32_t min_lum, uint32_t max_lum, uint32_t reference_lum) {
-        auto min = min_lum / 10000.0f;
+        const double min = min_lum / sc<double>(LUMINANCE_SCALE);
         LOG(Log::TRACE, "Set image description luminances to {} - {} ({})", min, max_lum, reference_lum);
         if (m_valuesSet & PC_LUMINANCES) {
             r->error(WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_ALREADY_SET, "Luminances already set");
             return;
         }
-        if (reference_lum <= min || ((m_valuesSet & PC_TF) && m_settings.transferFunction != CM_TRANSFER_FUNCTION_ST2084_PQ && max_lum <= min)) {
+        if (reference_lum * LUMINANCE_SCALE <= min_lum ||
+            ((m_valuesSet & PC_TF) && m_settings.transferFunction != CM_TRANSFER_FUNCTION_ST2084_PQ && max_lum * LUMINANCE_SCALE <= min_lum)) {
             r->error(WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_INVALID_LUMINANCE, "Invalid luminances");
             return;
         }
-        m_settings.luminances = SImageDescription::SPCLuminances{.min = min, .max = max_lum, .reference = reference_lum};
+        m_primaryMinWire      = min_lum;
+        m_settings.luminances = SImageDescription::SPCLuminances{.min = min, .max = sc<double>(max_lum), .reference = reference_lum};
         m_valuesSet |= PC_LUMINANCES;
     });
     m_resource->setSetMasteringDisplayPrimaries(
@@ -670,6 +707,8 @@ CColorManagementParametricCreator::CColorManagementParametricCreator(SP<CWpImage
                 return;
             }
 
+            m_physicalMasteringPoints = physicalWirePoint(r_x, r_y) && physicalWirePoint(g_x, g_y) && physicalWirePoint(b_x, b_y) && physicalWirePoint(w_x, w_y) &&
+                whiteInsidePrimaries({r_x, r_y}, {g_x, g_y}, {b_x, b_y}, {w_x, w_y});
             m_settings.masteringPrimaries = SPCPRimaries{.red   = {.x = r_x / PRIMARIES_SCALE, .y = r_y / PRIMARIES_SCALE},
                                                          .green = {.x = g_x / PRIMARIES_SCALE, .y = g_y / PRIMARIES_SCALE},
                                                          .blue  = {.x = b_x / PRIMARIES_SCALE, .y = b_y / PRIMARIES_SCALE},
@@ -682,17 +721,18 @@ CColorManagementParametricCreator::CColorManagementParametricCreator(SP<CWpImage
             // Compositors are recommended to detect this case and fail the image description gracefully, but it may as well result in color artifacts.
         });
     m_resource->setSetMasteringLuminance([this](CWpImageDescriptionCreatorParamsV1* r, uint32_t min_lum, uint32_t max_lum) {
-        auto min = min_lum / 10000.0f;
+        const double min = min_lum / sc<double>(LUMINANCE_SCALE);
         LOG(Log::TRACE, "Set image description mastering luminances to {} - {}", min, max_lum);
         if (m_valuesSet & PC_MASTERING_LUMINANCES) {
             r->error(WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_ALREADY_SET, "Mastering luminances already set");
             return;
         }
-        if (max_lum <= min) {
+        if (max_lum * LUMINANCE_SCALE <= min_lum) {
             r->error(WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_INVALID_LUMINANCE, "Invalid luminances");
             return;
         }
 
+        m_masteringMinWire             = min_lum;
         m_settings.masteringLuminances = SImageDescription::SPCMasteringLuminances{.min = min, .max = max_lum};
         m_valuesSet |= PC_MASTERING_LUMINANCES;
     });
@@ -804,7 +844,7 @@ CColorManagementImageDescriptionInfo::CColorManagementImageDescriptionInfo(SP<CW
 
     m_client = m_resource->client();
 
-    const auto toProto = [](float value) { return sc<int32_t>(std::round(value * PRIMARIES_SCALE)); };
+    const auto toProto = [](double value) { return sc<int32_t>(std::round(value * PRIMARIES_SCALE)); };
 
     if (m_settings.icc.present) {
         Hyprutils::OS::CFileDescriptor writable, readonly;
@@ -841,7 +881,7 @@ CColorManagementImageDescriptionInfo::CColorManagementImageDescriptionInfo(SP<CW
     if (m_settings.transferFunctionPower != 1.0f)
         m_resource->sendTfPower(std::round(m_settings.transferFunctionPower * 10000));
 
-    m_resource->sendLuminances(std::round(m_settings.luminances.min * 10000), m_settings.luminances.max, m_settings.luminances.reference);
+    m_resource->sendLuminances(std::round(m_settings.luminances.min * 10000), std::round(m_settings.luminances.max), m_settings.luminances.reference);
 
     const auto& targetPrimaries = (                                                                                               //
                                       m_settings.masteringPrimaries.red.x != 0 || m_settings.masteringPrimaries.red.y != 0 ||     //
@@ -859,7 +899,7 @@ CColorManagementImageDescriptionInfo::CColorManagementImageDescriptionInfo(SP<CW
     if (m_settings.masteringLuminances.max > 0)
         m_resource->sendTargetLuminance(std::round(m_settings.masteringLuminances.min * 10000), m_settings.masteringLuminances.max);
     else
-        m_resource->sendTargetLuminance(std::round(m_settings.luminances.min * 10000), m_settings.luminances.max);
+        m_resource->sendTargetLuminance(std::round(m_settings.luminances.min * 10000), std::round(m_settings.luminances.max));
 
     if (m_settings.maxCLL > 0)
         m_resource->sendTargetMaxCll(m_settings.maxCLL);

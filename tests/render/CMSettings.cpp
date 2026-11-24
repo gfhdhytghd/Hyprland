@@ -83,3 +83,26 @@ TEST(CMSettings, DescriptionChangesAndEvictionPreserveComputedResults) {
     source.reset();
     EXPECT_FALSE(CImageDescription::from(id)); // settings cache never retains descriptions
 }
+
+TEST(CMSettings, NarrowBT1886SurvivesReferenceScaling) {
+    auto description             = DEFAULT_SRGB_IMAGE_DESCRIPTION->value();
+    description.transferFunction = CM_TRANSFER_FUNCTION_BT1886;
+    description.luminances       = {.min = 4095.9999, .max = 4096, .reference = 4096};
+    CCMSettingsCache cache;
+    const auto       settings = cache.get(CImageDescription::from(description), DEFAULT_SRGB_IMAGE_DESCRIPTION, {.sourceTF = CM_TRANSFER_FUNCTION_BT1886});
+    const auto       range    = settings.srcTFRange;
+    EXPECT_DOUBLE_EQ(range.min, 79.999998046875);
+    EXPECT_DOUBLE_EQ(range.max, 80);
+    for (double signal : {0.0, 0.25, 0.5, 0.75, 1.0}) {
+        const double light = decodeChannel(signal, settings.sourceTF, range);
+        EXPECT_NEAR(light, std::lerp(range.min, range.max, signal), 1e-13);
+        EXPECT_NEAR(encodeChannel(light, settings.sourceTF, range), signal, 1e-8);
+    }
+}
+
+TEST(CMSettings, BlackOverrideCannotCollapseSourceRange) {
+    CCMSettingsCache cache;
+    const auto       source   = DEFAULT_SRGB_IMAGE_DESCRIPTION;
+    const auto       settings = cache.get(source, source, {.needsSDRmod = true, .sdrMinLuminance = 80});
+    EXPECT_DOUBLE_EQ(settings.srcTFRange.min, source->value().encodingMinLuminance());
+}

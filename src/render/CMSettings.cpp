@@ -1,9 +1,28 @@
 #include "CMSettings.hpp"
 
+#include "../protocols/types/SurfaceState.hpp"
 #include <algorithm>
 
 using namespace Render;
 using namespace NColorManagement;
+
+std::array<float, 2> STFRange::shaderMinAndSpan() const {
+    return {sc<float>(min), sc<float>(max - min)};
+}
+
+eTransferFunction Render::surfaceSourceTF(const SSurfaceState& current, eTransferFunction source, NTransferFunction::eTF policy) {
+    if (source != CM_TRANSFER_FUNCTION_SRGB && source != CM_TRANSFER_FUNCTION_GAMMA22)
+        return source;
+    if (policy == NTransferFunction::TF_FORCED_GAMMA22)
+        return CM_TRANSFER_FUNCTION_GAMMA22;
+    if (current.imageDescription)
+        return source;
+    if (policy == NTransferFunction::TF_SRGB)
+        return CM_TRANSFER_FUNCTION_SRGB;
+    if (policy == NTransferFunction::TF_GAMMA22)
+        return CM_TRANSFER_FUNCTION_GAMMA22;
+    return source;
+}
 
 SCMSettings CCMSettingsCache::get(PImageDescription imageDescription, PImageDescription targetImageDescription, const SCMSettingsInputs& inputs) {
     const auto srcId = imageDescription->id();
@@ -16,20 +35,20 @@ SCMSettings CCMSettingsCache::get(PImageDescription imageDescription, PImageDesc
     const auto& source = imageDescription->value();
     const auto& target = targetImageDescription->value();
     // Reference whites are anchored for every conversion, including SDR content on HDR outputs.
-    const float referenceScale  = referenceLuminanceScale(source, target);
-    const float sdrBrightness   = inputs.needsSDRmod && inputs.sdrBrightness > 0 ? inputs.sdrBrightness : 1.0f;
-    const float sourcePeak      = source.maxCLL > 0 ? source.maxCLL : (source.masteringLuminances.max > 0 ? source.masteringLuminances.max : source.luminances.max);
-    const float maxLuminance    = referenceScale * sourcePeak * sdrBrightness;
-    const auto  dstMaxLuminance = target.masteringLuminances.max > 0 ? target.masteringLuminances.max : (target.luminances.max > 0 ? target.luminances.max : 10000);
+    const double referenceScale  = referenceLuminanceScale(source, target);
+    const float  sdrBrightness   = inputs.needsSDRmod && inputs.sdrBrightness > 0 ? inputs.sdrBrightness : 1.0f;
+    const float  sourcePeak      = source.maxCLL > 0 ? source.maxCLL : (source.masteringLuminances.max > 0 ? source.masteringLuminances.max : source.luminances.max);
+    const float  maxLuminance    = referenceScale * sourcePeak * sdrBrightness;
+    const auto   dstMaxLuminance = target.masteringLuminances.max > 0 ? target.masteringLuminances.max : (target.luminances.max > 0 ? target.luminances.max : 10000);
 
-    auto        matrix = imageDescription->getPrimaries()->convertMatrix(targetImageDescription->getPrimaries());
-    auto        toXYZ  = targetImageDescription->getPrimaries()->toXYZ();
+    auto         matrix = imageDescription->getPrimaries()->convertMatrix(targetImageDescription->getPrimaries());
+    auto         toXYZ  = targetImageDescription->getPrimaries()->toXYZ();
 
-    const bool  needsMod = inputs.needsSDRmod && ((inputs.sdrSaturation > 0 && inputs.sdrSaturation != 1.0f) || (inputs.sdrBrightness > 0 && inputs.sdrBrightness != 1.0f));
+    const bool   needsMod = inputs.needsSDRmod && ((inputs.sdrSaturation > 0 && inputs.sdrSaturation != 1.0f) || (inputs.sdrBrightness > 0 && inputs.sdrBrightness != 1.0f));
 
-    const bool  needsTonemap = maxLuminance >= dstMaxLuminance * 1.01;
+    const bool   needsTonemap = maxLuminance >= dstMaxLuminance * 1.01;
 
-    auto        result = SCMSettings{
+    auto         result = SCMSettings{
         .sourceTF          = inputs.sourceTF,
         .targetTF          = targetImageDescription->value().transferFunction,
         .srcTFRange        = {.min = source.encodingMinLuminance() * referenceScale, .max = source.encodingMaxLuminance() * referenceScale},
@@ -51,7 +70,7 @@ SCMSettings CCMSettingsCache::get(PImageDescription imageDescription, PImageDesc
     };
 
     // sdr_min_luminance sets the absolute SDR black level on HDR outputs.
-    if (inputs.needsSDRmod && inputs.sdrMinLuminance >= 0) {
+    if (inputs.needsSDRmod && inputs.sdrMinLuminance >= 0 && inputs.sdrMinLuminance < result.srcTFRange.max) {
         result.srcTFRange.min  = inputs.sdrMinLuminance;
         result.srcMinLuminance = inputs.sdrMinLuminance;
     }

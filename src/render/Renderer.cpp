@@ -2165,21 +2165,8 @@ SCMSettings IHyprRenderer::getCMSettings(CRenderContext& ctx, const NColorManage
 
     const int                           tonemapMode = shouldUseSurface && ctx.m_data.currentWindow ? ctx.m_data.currentWindow->m_ruleApplicator->tonemap().valueOr(1) : 1;
 
-    if (shouldUseSurface && ctx.m_data.surface.valid() &&
-        (imageDescription->value().transferFunction == CM_TRANSFER_FUNCTION_GAMMA22 || imageDescription->value().transferFunction == CM_TRANSFER_FUNCTION_SRGB)) {
-        if (ctx.m_data.surface->m_colorManagement.valid()) {
-            if (sdrEOTF == NTransferFunction::TF_FORCED_GAMMA22 && imageDescription->value().transferFunction == NColorManagement::eTransferFunction::CM_TRANSFER_FUNCTION_SRGB)
-                srcTF = NColorManagement::eTransferFunction::CM_TRANSFER_FUNCTION_GAMMA22;
-            else
-                srcTF = imageDescription->value().transferFunction;
-        } else if (sdrEOTF == NTransferFunction::TF_SRGB)
-            srcTF = NColorManagement::eTransferFunction::CM_TRANSFER_FUNCTION_SRGB;
-        else if (sdrEOTF == NTransferFunction::TF_GAMMA22 || sdrEOTF == NTransferFunction::TF_FORCED_GAMMA22)
-            srcTF = NColorManagement::eTransferFunction::CM_TRANSFER_FUNCTION_GAMMA22;
-        else
-            srcTF = imageDescription->value().transferFunction;
-    } else
-        srcTF = imageDescription->value().transferFunction;
+    if (shouldUseSurface && surface)
+        srcTF = surfaceSourceTF(surface->m_current, srcTF, sdrEOTF);
 
     const bool needsSDRmod = modifySDR && isSDR2HDR(ctx, imageDescription->value(), targetImageDescription->value());
     return ctx.m_cmSettingsCache.get(imageDescription, targetImageDescription,

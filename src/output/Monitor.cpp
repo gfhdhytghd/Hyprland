@@ -2482,7 +2482,7 @@ bool CMonitor::supportsHDR() {
     }
 }
 
-float CMonitor::minLuminance(float defaultValue) {
+double CMonitor::minLuminance(double defaultValue) {
     return m_minLuminance >= 0 ? m_minLuminance :
                                  (m_output && m_output->parsedEDID.hdrMetadata.has_value() ? m_output->parsedEDID.hdrMetadata->desiredContentMinLuminance : defaultValue);
 }
@@ -2958,7 +2958,7 @@ bool CMonitor::needsUnmodifiedCopy() {
     if (*PKEEP == 1)
         return true;
 
-    const bool HAS_MODS = m_sdrMinLuminance != SDR_MIN_LUMINANCE || (m_sdrBrightness > 0 && m_sdrBrightness != 1.0) || (m_sdrSaturation > 0 && m_sdrSaturation != 1.0);
+    const bool HAS_MODS = m_sdrMinLuminance != sc<float>(SDR_MIN_LUMINANCE) || (m_sdrBrightness > 0 && m_sdrBrightness != 1.0) || (m_sdrSaturation > 0 && m_sdrSaturation != 1.0);
 
     if (!HAS_MODS)
         return false;

@@ -1369,8 +1369,11 @@ void CHyprOpenGLImpl::passCMUniforms(WP<CShader> shader, const NColorManagement:
     const auto targetXYZ = Hyprgraphics::CMatrix3{targetImageDescription->getPrimaries()->toXYZ()}.mat();
     shader->setUniformFloat3(SHADER_SOURCE_LUMINANCE_COEFFICIENTS, sourceXYZ[1][0], sourceXYZ[1][1], sourceXYZ[1][2]);
     shader->setUniformFloat3(SHADER_TARGET_LUMINANCE_COEFFICIENTS, targetXYZ[1][0], targetXYZ[1][1], targetXYZ[1][2]);
-    shader->setUniformFloat2(SHADER_SRC_TF_RANGE, settings.srcTFRange.min, settings.srcTFRange.max);
-    shader->setUniformFloat2(SHADER_DST_TF_RANGE, settings.dstTFRange.min, settings.dstTFRange.max);
+    const auto [srcMin, srcSpan] = settings.srcTFRange.shaderMinAndSpan();
+    const auto [dstMin, dstSpan] = settings.dstTFRange.shaderMinAndSpan();
+    shader->setUniformFloat2(SHADER_SRC_TF_RANGE, srcMin, settings.srcTFRange.max);
+    shader->setUniformFloat2(SHADER_DST_TF_RANGE, dstMin, settings.dstTFRange.max);
+    shader->setUniformFloat2(SHADER_TF_RANGE_SPANS, srcSpan, dstSpan);
     shader->setUniformFloat(SHADER_DST_REF_LUMINANCE, settings.dstRefLuminance);
     shader->setUniformFloat(SHADER_SOURCE_REFERENCE_SCALE, settings.srcReferenceScale);
     shader->setUniformFloat(SHADER_SRC_MIN_LUMINANCE, settings.srcMinLuminance);
