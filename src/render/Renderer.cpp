@@ -59,6 +59,7 @@
 #include "SceneResources.hpp"
 #include "../debug/log/Logger.hpp"
 #include "../protocols/ColorManagement.hpp"
+#include "../helpers/cm/OutputEncoding.hpp"
 #include "../protocols/types/ContentType.hpp"
 #include "AsyncResourceGatherer.hpp"
 #include "ElementRenderer.hpp"
@@ -2244,7 +2245,7 @@ void IHyprRenderer::renderMonitor(PHLMONITOR pMonitor, bool commit) {
 
     auto&                                        damageBlinkCleanup = pMonitor->m_damageBlinkCleanup; // because double-buffered
 
-    const float                                  ZOOMFACTOR = pMonitor->m_cursorZoom->value();
+    const float                                  ZOOMFACTOR = pMonitor->m_frameCursorZoom = pMonitor->m_cursorZoom->value();
 
     if (pMonitor->m_pixelSize.x < 1 || pMonitor->m_pixelSize.y < 1) {
         LOG(Log::ERR, "Refusing to render a monitor because of an invalid pixel size: {}", pMonitor->m_pixelSize);
@@ -2522,110 +2523,58 @@ static void applySurfaceHDRMetadata(const SImageDescription& description, PHLMON
     pMonitor->m_output->state->setHDRMetadata(WANTED);
 }
 
-static void applyAutoHDR(PHLMONITOR pMonitor, bool wantHDR, bool configuredHDR) {
-    static auto PAUTOHDR = CConfigValue<Config::INTEGER>("render:cm_auto_hdr");
-
-    const bool  DESC_IS_HDR = isHDR(pMonitor->m_imageDescription->value());
-    if (!*PAUTOHDR || DESC_IS_HDR == wantHDR || (DESC_IS_HDR && configuredHDR))
-        return;
-
-    const auto targetCM = wantHDR ? (*PAUTOHDR == 2 ? NCMType::CM_HDR_EDID : NCMType::CM_HDR) : pMonitor->m_cmType;
-    LOG(Log::INFO, "[CM] Auto HDR: changing monitor cm to {}", sc<uint8_t>(targetCM));
-    pMonitor->applyCMType(targetCM, pMonitor->m_sdrEotf);
-    pMonitor->m_previousFSWindow.reset(); // trigger CTM update
-}
-
 void IHyprRenderer::handleFullscreenSettings(PHLMONITOR pMonitor) {
     const auto  oldMetadata = pMonitor->m_output->state->state().hdrMetadata;
     static auto PCT         = CConfigValue<Config::INTEGER>("render:send_content_type");
-    static auto PAUTOHDR    = CConfigValue<Config::INTEGER>("render:cm_auto_hdr");
-    static auto PNONSHADER  = CConfigValue<Config::INTEGER>("render:non_shader_cm");
-    static auto PNSINTEROP  = CConfigValue<Config::INTEGER>("render:non_shader_cm_interop");
 
-    const bool  configuredHDR = NCMType::isHDR(pMonitor->m_cmType);
-    bool        wantHDR       = configuredHDR;
+    // One snapshot of the presented fullscreen window, one capability snapshot and one decision set the encoded pixels, the connector
+    // signalling, the auto HDR offer and the CTM below: they must never disagree.
+    const auto FULLSCREEN_WINDOW = pMonitor->updateFullscreenColorSource();
+    const auto CAPS              = pMonitor->colorCapabilities();
+    const auto ENCODING          = resolveOutputEncoding(pMonitor->outputEncodingInputs(CAPS));
+    const bool wantHDR           = ENCODING.hdr();
+    pMonitor->applyOutputEncoding(ENCODING);
 
-    const auto  FULLSCREEN_WORKSPACE = pMonitor->getCurrentWorkspace();
-    const auto  FULLSCREEN_WINDOW    = Fullscreen::controller()->getPresentedFullscreenModes(FULLSCREEN_WORKSPACE).internal == Fullscreen::FSMODE_FULLSCREEN ?
-        Fullscreen::controller()->getPresentedFullscreenWindow(FULLSCREEN_WORKSPACE) :
-        nullptr;
+    // Surface metadata belongs to the buffer that reaches the display: the solitary resource scanout submits, or that a composited frame
+    // shows alone. The output's own metadata is built only when the decision compares with it.
+    const auto&                        OUTPUT = pMonitor->m_imageDescription->value();
+    std::optional<hdr_output_metadata> outputMetadata;
+    const auto                         OUTPUT_METADATA = [&]() -> const hdr_output_metadata& {
+        if (!outputMetadata)
+            outputMetadata = selectHDRMetadata(OUTPUT, CAPS.hdr && wantHDR);
+        return *outputMetadata;
+    };
+    const bool SCANOUT  = !pMonitor->m_lastScanout.expired();
+    const auto SURFACE  = CAPS.hdr && wantHDR && (SCANOUT || pMonitor->m_hdrMetadataFromSurface) ? pMonitor->solitaryColorDescription() : PImageDescription{};
+    const auto METADATA = decideHDRMetadata(
+        {
+            .hdrSupported      = CAPS.hdr,
+            .wantHDR           = wantHDR,
+            .stagedHDR         = pMonitor->inHDR(),
+            .initialized       = pMonitor->m_needsHDRupdate,
+            .scanoutCandidate  = SCANOUT && SURFACE && isHDR(SURFACE->value()) && !isWindowsScRGB(SURFACE->value()),
+            .fromSurface       = pMonitor->m_hdrMetadataFromSurface,
+            .surfaceWindow     = FULLSCREEN_WINDOW && pMonitor->m_hdrMetadataWindow == FULLSCREEN_WINDOW,
+            .surfaceComposites = SURFACE && compositeReproducesSurface(SURFACE->value(), OUTPUT) && pMonitor->fullscreenCoversFrame(),
+        },
+        [&] { return hdrMetadataEqual(OUTPUT_METADATA(), pMonitor->m_output->state->state().hdrMetadata); });
 
-    if (pMonitor->supportsHDR()) {
-        bool       hdrIsHandled = false;
-        const auto SURF         = FULLSCREEN_WINDOW ? FULLSCREEN_WINDOW->wlSurface()->resource()->findWithCM() : nullptr;
-        const auto DESCRIPTION  = SURF ? SURF->m_current.imageDescription : PImageDescription{};
-        // Only PQ buffers can be scanned out without conversion to the output encoding.
-        const bool SURF_HDR_PASSTHROUGH = DESCRIPTION && DESCRIPTION->value().transferFunction == CM_TRANSFER_FUNCTION_ST2084_PQ;
-
-        if (DESCRIPTION) {
-            const auto& surfaceDescription = DESCRIPTION->value();
-            const bool  surfaceIsHDR       = isHDR(surfaceDescription);
-            wantHDR                        = *PAUTOHDR && surfaceIsHDR;
-            if (FULLSCREEN_WINDOW->m_ruleApplicator->noAutoHDR().valueOrDefault())
-                wantHDR = configuredHDR;
-
-            if (surfaceIsHDR && !isWindowsScRGB(surfaceDescription) && !pMonitor->m_lastScanout.expired()) {
-                // Switch the monitor description now for the first composited frame after scanout.
-                applyAutoHDR(pMonitor, wantHDR, configuredHDR);
-                // isDSBlocked checks the staged EOTF before attemptDirectScanout can update it.
-                if (SURF_HDR_PASSTHROUGH && isHDR(pMonitor->m_imageDescription->value())) {
-                    const auto metadata = selectHDRMetadata(pMonitor->m_imageDescription->value(), true, DESCRIPTION);
-                    if (!hdrMetadataEqual(metadata, pMonitor->m_output->state->state().hdrMetadata))
-                        pMonitor->m_output->state->setHDRMetadata(metadata);
-                    pMonitor->m_hdrMetadataFromSurface = true;
-                    pMonitor->m_hdrMetadataWindow      = FULLSCREEN_WINDOW;
-                }
-
-                hdrIsHandled               = true;
-                pMonitor->m_needsHDRupdate = false;
+    switch (METADATA.source) {
+        case HDR_METADATA_KEEP: break;
+        case HDR_METADATA_OUTPUT:
+            if (METADATA.force || !hdrMetadataEqual(OUTPUT_METADATA(), pMonitor->m_output->state->state().hdrMetadata)) {
+                LOG(Log::INFO, !CAPS.hdr ? "[CM] HDR not supported, restoring SDR mode" : (wantHDR ? "[CM] Updating HDR metadata from monitor" : "[CM] Restoring SDR mode"));
+                pMonitor->m_output->state->setHDRMetadata(OUTPUT_METADATA());
             }
-        }
+            break;
+        case HDR_METADATA_SURFACE: applySurfaceHDRMetadata(SURFACE->value(), pMonitor); break;
+    }
 
-        // Do it here instead of disabling the block above to allow hdr -> hdr metadata changes in fullscreen
-        if (!*PAUTOHDR && !pMonitor->m_lastScanout)
-            wantHDR = configuredHDR;
-
-        if (!hdrIsHandled) {
-            const bool HDR_CHANGED = pMonitor->inHDR() != wantHDR;
-
-            applyAutoHDR(pMonitor, wantHDR, configuredHDR);
-
-            const bool KEEP_SURFACE_METADATA = pMonitor->m_hdrMetadataFromSurface && wantHDR && pMonitor->inHDR() && FULLSCREEN_WINDOW &&
-                pMonitor->m_hdrMetadataWindow == FULLSCREEN_WINDOW && SURF_HDR_PASSTHROUGH;
-
-            if (KEEP_SURFACE_METADATA)
-                applySurfaceHDRMetadata(DESCRIPTION->value(), pMonitor);
-            else {
-                // Composited frames have no known content light levels (CTA-861.3: 0 = unknown).
-                const auto WANTED  = selectHDRMetadata(pMonitor->m_imageDescription->value(), wantHDR);
-                const auto CURRENT = pMonitor->m_output->state->state().hdrMetadata;
-
-                const bool INITIAL_SDR          = !pMonitor->m_needsHDRupdate && !wantHDR;
-                const bool HDR_METADATA_CHANGED = wantHDR && !hdrMetadataEqual(WANTED, CURRENT);
-
-                if (HDR_CHANGED || INITIAL_SDR || pMonitor->m_hdrMetadataFromSurface || HDR_METADATA_CHANGED) {
-                    LOG(Log::INFO, wantHDR ? "[CM] Updating HDR metadata from monitor" : "[CM] Restoring SDR mode");
-                    // The first frame always stages SDR: a previous DRM master (e.g. a compositor that crashed in HDR) may have
-                    // left HDR metadata on the connector that the zero-initialized output state can't know about.
-                    if (INITIAL_SDR || !hdrMetadataEqual(WANTED, CURRENT))
-                        pMonitor->m_output->state->setHDRMetadata(WANTED);
-                    pMonitor->m_hdrMetadataFromSurface = false;
-                    pMonitor->m_hdrMetadataWindow.reset();
-                }
-            }
-
-            pMonitor->m_needsHDRupdate = true;
-        }
-    } else if (const auto SDR = selectHDRMetadata(pMonitor->m_imageDescription->value(), false);
-               !pMonitor->m_needsHDRupdate || !hdrMetadataEqual(pMonitor->m_output->state->state().hdrMetadata, SDR)) {
-        // HDR support was withdrawn while HDR was signalled (e.g. supports_hdr = -1), or a previous DRM master left HDR
-        // metadata behind: the PQ metadata takes precedence over Colorspace in KMS, so it has to be cleared.
-        LOG(Log::INFO, "[CM] HDR not supported, restoring SDR mode");
-        pMonitor->m_output->state->setHDRMetadata(SDR);
+    if (!METADATA.keepSurface) {
         pMonitor->m_hdrMetadataFromSurface = false;
         pMonitor->m_hdrMetadataWindow.reset();
-        pMonitor->m_needsHDRupdate = true;
     }
+    pMonitor->m_needsHDRupdate = METADATA.initialized;
 
     const bool needsWCG = pMonitor->wantsWideColor();
     if (pMonitor->m_output->state->state().wideColorGamut != needsWCG) {
@@ -2647,53 +2596,60 @@ void IHyprRenderer::handleFullscreenSettings(PHLMONITOR pMonitor) {
     if (*PCT)
         pMonitor->m_output->state->setContentType(NContentType::toDRM(FULLSCREEN_WINDOW ? FULLSCREEN_WINDOW->getContentType() : CONTENT_TYPE_NONE));
 
+    const auto CTM_INPUTS = pMonitor->fullscreenCTMInputs();
+    const auto OLD_CTM    = pMonitor->m_output->state->state().ctm;
+    const bool OLD_BYPASS = pMonitor->m_noShaderCM;
+    // user CTM changes schedule their own frame, see CMonitor::setCTM
+    const bool USER_CTM_UPDATE = pMonitor->m_ctmUpdated;
+
     // A direct scanout converted by the display hardware owns the CTM, see CMonitor::attemptDirectScanout.
-    if (!pMonitor->usesHardwareCM() && (FULLSCREEN_WINDOW != pMonitor->m_previousFSWindow || (!FULLSCREEN_WINDOW && pMonitor->m_noShaderCTM) || pMonitor->m_ctmUpdated)) {
-        const bool INTEROP  = (*PNSINTEROP == 1 || (*PNSINTEROP == 2 && FULLSCREEN_WINDOW && FULLSCREEN_WINDOW->getContentType() == CONTENT_TYPE_NONE));
-        bool       resetCTM = !FULLSCREEN_WINDOW;
-        if (FULLSCREEN_WINDOW) {
-            if (*PNONSHADER == CM_NS_IGNORE)
-                resetCTM = true;
-            else if (const auto FS_DESC = pMonitor->getFSImageDescription(); pMonitor->needsCM() && pMonitor->canNoShaderCM(!pMonitor->m_lastScanout.expired()) &&
-                     FS_DESC.has_value() && (*PNONSHADER != CM_NS_ONDEMAND || !pMonitor->m_lastScanout.expired())) {
+    if (!pMonitor->usesHardwareCM() &&
+        (FULLSCREEN_WINDOW != pMonitor->m_previousFSWindow || CTM_INPUTS != pMonitor->m_fullscreenCTMInputs || (!FULLSCREEN_WINDOW && pMonitor->m_noShaderCTM) ||
+         pMonitor->m_ctmUpdated)) {
+        pMonitor->m_fullscreenCTMInputs = CTM_INPUTS;
+        auto decision                   = decideFullscreenCTM(CTM_INPUTS);
+
+        if (decision == FS_CTM_CONVERT) {
+            auto conversion = pMonitor->solitaryColorDescription()->getPrimaries()->convertMatrix(pMonitor->m_imageDescription->getPrimaries());
+            if (pMonitor->m_ctm != Mat3x3::identity() && CTM_INPUTS.interop) {
+                const auto&                          ctm    = pMonitor->m_ctm.getMatrix();
+                std::array<std::array<double, 3>, 3> values = {
+                    {
+                        {ctm[0], ctm[1], ctm[2]},
+                        {ctm[3], ctm[4], ctm[5]},
+                        {ctm[6], ctm[7], ctm[8]},
+                    },
+                };
+                conversion = conversion * Hyprgraphics::CMatrix3(values);
+            }
+            const auto mat = conversion.mat();
+            // clang-format off
+            const std::array<float, 9> CTM = {
+                mat[0][0], mat[0][1], mat[0][2], //
+                mat[1][0], mat[1][1], mat[1][2], //
+                mat[2][0], mat[2][1], mat[2][2], //
+            };
+            // clang-format on
+
+            // The shaders may only skip their conversion once the CTM that replaces it is staged.
+            if (pMonitor->stageCTM(CTM)) {
                 LOG(Log::INFO, "[CM] Updating fullscreen CTM");
                 pMonitor->m_noShaderCTM = true;
                 pMonitor->m_noShaderCM  = true;
                 pMonitor->m_ctmUpdated  = false;
-                auto conversion         = FS_DESC.value()->getPrimaries()->convertMatrix(pMonitor->m_imageDescription->getPrimaries());
-                if (pMonitor->m_ctm != Mat3x3::identity() && INTEROP) {
-                    const auto&                          ctm    = pMonitor->m_ctm.getMatrix();
-                    std::array<std::array<double, 3>, 3> values = {
-                        {
-                            {ctm[0], ctm[1], ctm[2]},
-                            {ctm[3], ctm[4], ctm[5]},
-                            {ctm[6], ctm[7], ctm[8]},
-                        },
-                    };
-                    conversion = conversion * Hyprgraphics::CMatrix3(values);
-                }
-                const auto mat = conversion.mat();
-                // clang-format off
-                const std::array<float, 9> CTM = {
-                    mat[0][0], mat[0][1], mat[0][2], //
-                    mat[1][0], mat[1][1], mat[1][2], //
-                    mat[2][0], mat[2][1], mat[2][2], //
-                };
-                // clang-format on
-                pMonitor->stageCTM(CTM);
-            } else if (!INTEROP && pMonitor->m_ctm != Mat3x3::identity()) {
-                LOG(Log::INFO, "[CM] Setting identity CTM");
-                // only suppresses the composited CTM (hyprsunset), the content still needs shader CM
-                pMonitor->m_noShaderCTM = true;
-                pMonitor->m_noShaderCM  = false;
-                pMonitor->m_ctmUpdated  = false;
-
-                pMonitor->stageCTM(Mat3x3::identity());
             } else
-                resetCTM = true;
+                decision = fullscreenCTMWithoutConversion(CTM_INPUTS);
         }
 
-        if (resetCTM && pMonitor->m_noShaderCTM) {
+        if (decision == FS_CTM_IDENTITY) {
+            LOG(Log::INFO, "[CM] Setting identity CTM");
+            // only suppresses the composited CTM (hyprsunset), the content still needs shader CM
+            pMonitor->m_noShaderCTM = true;
+            pMonitor->m_noShaderCM  = false;
+            pMonitor->m_ctmUpdated  = false;
+
+            pMonitor->stageCTM(Mat3x3::identity());
+        } else if (decision == FS_CTM_RESTORE && pMonitor->m_noShaderCTM) {
             LOG(Log::INFO, "[CM] No fullscreen CTM, restoring previous one");
             pMonitor->m_noShaderCTM = false;
             pMonitor->m_noShaderCM  = false;
@@ -2706,14 +2662,14 @@ void IHyprRenderer::handleFullscreenSettings(PHLMONITOR pMonitor) {
         pMonitor->stageCTM(pMonitor->m_ctm);
     }
 
-    // the fullscreen surface's preferred description depends on the fullscreen window, see getPreferredImageDescription()
-    if (*PAUTOHDR && PROTO::colorManagement && pMonitor->supportsHDR() && FULLSCREEN_WINDOW != pMonitor->m_autoHDRWindow) {
-        pMonitor->m_autoHDRWindow = FULLSCREEN_WINDOW;
+    if (pMonitor->updateAutoHDROffer() && PROTO::colorManagement)
         PROTO::colorManagement->recheckFeedbacks();
-    }
 
     pMonitor->m_previousFSWindow = FULLSCREEN_WINDOW;
-    if (!hdrMetadataEqual(oldMetadata, pMonitor->m_output->state->state().hdrMetadata))
+
+    // Staged signalling, a fullscreen CTM decision or a shader bypass change needs a frame that commits it, even without other damage.
+    if (!hdrMetadataEqual(oldMetadata, pMonitor->m_output->state->state().hdrMetadata) || OLD_BYPASS != pMonitor->m_noShaderCM ||
+        (!USER_CTM_UPDATE && OLD_CTM != pMonitor->m_output->state->state().ctm))
         damageMonitor(pMonitor);
 }
 

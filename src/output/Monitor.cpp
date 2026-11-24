@@ -1,5 +1,6 @@
 #include "Monitor.hpp"
 #include "../helpers/cm/Luminance.hpp"
+#include "../helpers/cm/OutputEncoding.hpp"
 #include "../desktop/view/window/WindowEffectsController.hpp"
 #include "../desktop/view/window/WindowPresentation.hpp"
 #include "../helpers/MiscFunctions.hpp"
@@ -29,6 +30,7 @@
 #include "../protocols/core/Compositor.hpp"
 #include "../protocols/core/DataDevice.hpp"
 #include "../render/Renderer.hpp"
+#include "../render/OpenGL.hpp"
 #include "../ipc/s2/S2.hpp"
 #include "../managers/screenshare/ScreenshareManager.hpp"
 #include "../animation/AnimationManager.hpp"
@@ -117,6 +119,10 @@ CMonitor::CMonitor(SP<Aquamarine::IOutput> output_) : m_name(output_->name), m_s
     m_dpmsBlackOpacity->setUpdateCallback([this](auto) { g_pHyprRenderer->damageMonitor(m_self.lock()); });
 
     m_commitCoordinator = makeUnique<COutputCommitCoordinator>(this);
+
+    // The reload's feedback recheck publishes the offer the reloaded settings give (see getAutoHDRImageDescription). Record it, so the next
+    // frame compares against what the clients got.
+    m_listeners.configReloaded = Event::bus()->m_events.config.reloaded.listen([this] { updateAutoHDROffer(); });
 }
 
 CMonitor::~CMonitor() {
@@ -126,6 +132,7 @@ CMonitor::~CMonitor() {
 }
 
 void CMonitor::onConnect(bool noRule) {
+    m_bt2020Signal.reset();
     Event::bus()->m_events.monitor.preAdded.emit(m_self.lock());
     CScopeGuard x = {[]() { State::monitorLayoutController()->arrange(); }};
 
@@ -603,36 +610,46 @@ void CMonitor::applyCMType(NCMType::eCMType cmType, NTransferFunction::eTF cmSdr
         default: UNREACHABLE();
     }
 
+    m_appliedCMType = cmType;
+
     if (oldImageDescription != m_imageDescription) {
-        if (PROTO::colorManagement)
-            PROTO::colorManagement->onMonitorImageDescriptionChanged(m_self);
-        m_blurFBDirty = true;
-        // the output's colour transform changed, so everything already composited is stale
-        g_pHyprRenderer->damageMonitor(m_self.lock());
+        onImageDescriptionChanged();
         Pointer::mgr()->onMonitorImageDescriptionChanged();
     }
 }
 
-void CMonitor::reloadICC() {
+void CMonitor::onImageDescriptionChanged() {
+    // The auto HDR offer depends on the installed description. Publish both together, before the feedback recheck answers
+    // preferred-description requests.
+    updateAutoHDROffer();
+    if (PROTO::colorManagement)
+        PROTO::colorManagement->onMonitorImageDescriptionChanged(m_self);
+    m_blurFBDirty = true;
+    // the output's colour transform changed, so everything already composited is stale
+    g_pHyprRenderer->damageMonitor(m_self.lock());
+}
+
+bool CMonitor::reloadICC() {
+    // A profile that fails to load leaves the last applied colour state (description, cm and signalling) in place.
     const auto oldDescription = m_imageDescription;
     auto       image          = NColorManagement::SImageDescription::fromICC(m_activeMonitorRule.m_iccFile, m_imageDescription);
     if (!image) {
         LOG(Log::ERR, "icc for {} ({}) failed: {}", m_name, m_activeMonitorRule.m_iccFile, image.error());
         ErrorOverlay::overlay()->queueError(std::format("failed to apply icc {} to {}: {}", m_activeMonitorRule.m_iccFile, m_name, image.error()));
+    } else if (const auto PROFILE = CImageDescription::from(*image); PROFILE) {
+        m_imageDescription = PROFILE;
+        // an installed profile ends a fallback episode, see applyOutputEncoding
+        reportCMFallback(CM_FALLBACK_NONE, m_configuredCMType);
     } else {
-        m_imageDescription = CImageDescription::from(*image);
-        if (!m_imageDescription) {
-            LOG(Log::ERR, "icc for {} ({}) failed 2: {}", m_name, m_activeMonitorRule.m_iccFile, image.error());
-            ErrorOverlay::overlay()->queueError(std::format("failed to apply icc {} to {}: {}", m_activeMonitorRule.m_iccFile, m_name, image.error()));
-            m_imageDescription = CImageDescription::from(SImageDescription{});
-        }
+        LOG(Log::ERR, "icc for {} ({}) failed 2", m_name, m_activeMonitorRule.m_iccFile);
+        ErrorOverlay::overlay()->queueError(std::format("failed to apply icc {} to {}", m_activeMonitorRule.m_iccFile, m_name));
     }
-    if (oldDescription != m_imageDescription) {
-        if (PROTO::colorManagement)
-            PROTO::colorManagement->onMonitorImageDescriptionChanged(m_self);
-        m_blurFBDirty = true;
-        g_pHyprRenderer->damageMonitor(m_self.lock());
-    }
+
+    if (oldDescription == m_imageDescription)
+        return false;
+
+    onImageDescriptionChanged();
+    return true;
 }
 
 bool CMonitor::stageContentType(uint16_t desired) {
@@ -683,21 +700,12 @@ bool CMonitor::applyMonitorRuleSoft(Config::CMonitorRule&& pMonitorRule) {
     if (m_activeMonitorRule.m_iccFile.empty()) {
         // only apply explicit cm settings if we have no icc file
 
-        m_cmType = m_activeMonitorRule.m_cmType;
-        switch (m_cmType) {
-            case NCMType::CM_AUTO: m_cmType = m_enabled10bit && supportsWideColor() ? NCMType::CM_WIDE : NCMType::CM_SRGB; break;
-            case NCMType::CM_EDID: m_cmType = getMasteringPrimaries() != SPCPRimaries{} ? NCMType::CM_EDID : NCMType::CM_SRGB; break;
-            case NCMType::CM_WIDE:
-                // BT.2020 pixels the connector can't signal would be shown with the display's default colorimetry.
-                if (!canSignalBT2020()) {
-                    LOG(Log::WARN, "Output {} can't signal BT2020_RGB colorimetry, using sRGB instead of the wide color gamut", m_name);
-                    m_cmType = NCMType::CM_SRGB;
-                }
-                break;
-            case NCMType::CM_HDR:
-            case NCMType::CM_HDR_EDID: m_cmType = supportsHDR() ? m_cmType : NCMType::CM_SRGB; break;
-            default: break;
-        }
+        m_configuredCMType    = m_activeMonitorRule.m_cmType;
+        const auto CONFIGURED = resolveConfiguredCMType(m_configuredCMType, colorCapabilities());
+        m_cmType              = CONFIGURED.cmType;
+        // the next frame clears a reported fallback, together with one auto HDR may report
+        if (CONFIGURED.fallback != CM_FALLBACK_NONE)
+            reportCMFallback(CONFIGURED.fallback, m_configuredCMType);
 
         m_sdrEotf = m_activeMonitorRule.m_sdrEotf;
 
@@ -712,9 +720,11 @@ bool CMonitor::applyMonitorRuleSoft(Config::CMonitorRule&& pMonitorRule) {
 
         m_sdrSaturation = m_activeMonitorRule.m_sdrSaturation;
         m_sdrBrightness = m_activeMonitorRule.m_sdrBrightness;
-    } else {
-        reloadICC();
     }
+
+    const bool ICC_PUBLISHED = !m_activeMonitorRule.m_iccFile.empty() && reloadICC();
+    if (!ICC_PUBLISHED && updateAutoHDROffer() && PROTO::colorManagement)
+        PROTO::colorManagement->recheckFeedbacks(); // e.g. a configured HDR preset whose description auto HDR already installed
 
     // the VCGT belongs to the active profile, so replacing or removing the ICC must replace or drop it
     if (m_output)
@@ -2110,32 +2120,25 @@ uint16_t CMonitor::isDSBlocked(bool full) {
             return reasons;
     }
 
-    const auto& surfaceDescription = (PSURFACE->m_current.imageDescription ? PSURFACE->m_current.imageDescription : getDefaultImageDescription())->value();
-    const bool  surfaceIsHDR       = NColorManagement::isHDR(surfaceDescription);
-    const bool  surfaceIsScRGB     = surfaceDescription.transferFunction == CM_TRANSFER_FUNCTION_EXT_LINEAR;
-    const bool  surfaceIsHLG       = surfaceDescription.transferFunction == CM_TRANSFER_FUNCTION_HLG;
-    const auto  sourceTF           = surfaceDescription.transferFunction;
-    const auto& output             = m_imageDescription->value();
+    // Every colour check uses the buffer this candidate submits, not the description the window's content is classified by.
+    const auto  SURFACE_DESCRIPTION = scanoutDescription(PSURFACE);
+    const auto& surfaceDescription  = SURFACE_DESCRIPTION->value();
+    const bool  surfaceIsHDR        = NColorManagement::isHDR(surfaceDescription);
+    const auto& output              = m_imageDescription->value();
+    const auto  POLICY              = sc<eNoShader>(*PNONSHADER);
+    const bool  CHECKS_CM           = POLICY != CM_NS_IGNORE && isCompatibleTF(surfaceDescription.transferFunction, output.transferFunction);
 
     // SDR buffers can be converted exactly by the display hardware, see buildHardwareCM.
-    const bool hardwareCM = !surfaceIsHDR && hardwareCMFor(surfaceDescription);
-
-    if (surfaceIsScRGB || surfaceIsHLG)
-        reasons |= DS_BLOCK_CM; // These encodings require conversion to the output's PQ signalling.
-    else if (!isCompatibleTF(sourceTF, output.transferFunction) || surfaceIsHDR != inHDR()) {
-        if (!hardwareCM)
-            reasons |= DS_BLOCK_CM; // The buffer must already use the encoding that is signalled to the display, even with non_shader_cm = ignore.
-    } else if (*PNONSHADER != CM_NS_IGNORE) {
-        if (!surfaceIsHDR && needsCM() && !canNoShaderCM(true) && !hardwareCM)
-            reasons |= DS_BLOCK_CM; // block SDR that needs CM while non-shader CM isn't available
-        else if (surfaceIsHDR) {
-            const auto& source = surfaceDescription;
-            const auto& target = m_imageDescription->value();
-            if (!inHDR() || source.transferFunction != target.transferFunction || source.luminances != target.luminances ||
-                (source.getPrimaries() != target.getPrimaries() && !canNoShaderCM(true)))
-                reasons |= DS_BLOCK_CM;
-        }
-    }
+    const SScanoutCMState SCANOUT_CM = {
+        .policy           = POLICY,
+        .outputSignalsHDR = inHDR(),
+        .compatibleTF     = isCompatibleTF(surfaceDescription.transferFunction, output.transferFunction),
+        .hardwareCM       = !surfaceIsHDR && hardwareCMFor(surfaceDescription),
+        .needsCM          = CHECKS_CM && SURFACE_DESCRIPTION != m_imageDescription,
+        .ctmConverts      = CHECKS_CM && ctmConvertsTo(SURFACE_DESCRIPTION, m_imageDescription),
+    };
+    if (scanoutBlockedByCM(surfaceDescription, output, SCANOUT_CM))
+        reasons |= DS_BLOCK_CM;
 
     return reasons;
 }
@@ -2170,9 +2173,11 @@ bool CMonitor::attemptDirectScanout() {
     }};
     if (metadataChanged)
         m_output->state->setHDRMetadata(metadata);
-    m_hdrMetadataFromSurface     = fromSurface;
-    m_hdrMetadataWindow          = fromSurface ? PCANDIDATE : PHLWINDOW{};
-    const bool signallingChanged = m_output->state->state().committed & (Aquamarine::COutputState::AQ_OUTPUT_STATE_HDR | Aquamarine::COutputState::AQ_OUTPUT_STATE_WCG);
+    m_hdrMetadataFromSurface = fromSurface;
+    m_hdrMetadataWindow      = fromSurface ? PCANDIDATE : PHLWINDOW{};
+    // A CTM the renderer staged for this buffer (non_shader_cm) has to be submitted and tested with it, like the signalling.
+    const bool signallingChanged = m_output->state->state().committed &
+        (Aquamarine::COutputState::AQ_OUTPUT_STATE_HDR | Aquamarine::COutputState::AQ_OUTPUT_STATE_WCG | Aquamarine::COutputState::AQ_OUTPUT_STATE_CTM);
 
     // #TODO this entire bit needs figuring out, vrr goes down the drain without it
     // The same buffer is only resubmitted for cursor updates, so a hardware conversion that needs restaging takes the full path.
@@ -2233,7 +2238,7 @@ bool CMonitor::attemptDirectScanout() {
     const auto SURFACE_DESCRIPTION = scanoutDescription(PSURFACE);
     const bool HAD_HARDWARE_CM     = usesHardwareCM();
     bool       hardwareCMChanged   = false;
-    if (needsCM() && !canNoShaderCM(true) && stageScanoutCM(SURFACE_DESCRIPTION->value(), hardwareCMChanged)) {
+    if (scanoutNeedsHardwareCM(SURFACE_DESCRIPTION) && stageScanoutCM(SURFACE_DESCRIPTION->value(), hardwareCMChanged)) {
         if (hardwareCMChanged)
             LOG(Log::DEBUG, "attemptDirectScanout: converting the buffer with the display hardware");
     } else {
@@ -2577,30 +2582,174 @@ bool CMonitor::inHDR() {
     return m_output && m_output->state->state().hdrMetadata.hdmi_metadata_type1.eotf == 2;
 }
 
+// Monitor considers only FSMODE_FULLSCREEN as FS. The presented window is the one whose pixels the frame draws, also while a fullscreen
+// transaction holds the previous presentation.
+static PHLWINDOW presentedFullscreenWindow(const PHLWORKSPACE& workspace) {
+    const auto WINDOW = Fullscreen::controller()->getPresentedFullscreenModes(workspace).internal == Fullscreen::FSMODE_FULLSCREEN ?
+        Fullscreen::controller()->getPresentedFullscreenWindow(workspace) :
+        nullptr;
+    return WINDOW && WINDOW->wlSurface() && WINDOW->wlSurface()->resource() ? WINDOW : nullptr;
+}
+
+PHLWINDOW CMonitor::updateFullscreenColorSource() {
+    m_fullscreenColorSource = {.window = presentedFullscreenWindow(getCurrentWorkspace())};
+    return m_fullscreenColorSource.window.lock();
+}
+
+NColorManagement::PImageDescription CMonitor::fullscreenContentDescription() {
+    auto& source = m_fullscreenColorSource;
+    if (!source.contentResolved) {
+        const auto WINDOW      = source.window.lock();
+        const auto SURF        = WINDOW && WINDOW->wlSurface() && WINDOW->wlSurface()->resource() ? WINDOW->wlSurface()->resource()->findWithCM() : nullptr;
+        source.content         = SURF ? SURF->m_current.imageDescription : PImageDescription{};
+        source.contentResolved = true;
+    }
+
+    return source.content;
+}
+
+SP<CWLSurfaceResource> CMonitor::solitaryColorSurface() {
+    auto& source = m_fullscreenColorSource;
+    if (!source.solitaryResolved) {
+        const auto WINDOW          = source.window.lock();
+        const auto SURF            = WINDOW && m_solitaryClient.lock() == WINDOW ? WINDOW->getSolitaryResource() : nullptr;
+        source.solitary            = SURF;
+        source.solitaryDescription = SURF ? scanoutDescription(SURF) : PImageDescription{};
+        source.solitaryResolved    = true;
+    }
+
+    return source.solitary.lock();
+}
+
+NColorManagement::PImageDescription CMonitor::solitaryColorDescription() {
+    return solitaryColorSurface() ? m_fullscreenColorSource.solitaryDescription : PImageDescription{};
+}
+
+bool CMonitor::fullscreenCoversFrame() {
+    // The renderer acquires the cursor zoom's software cursor lock later in the frame, from the same sampled zoom, see IHyprRenderer::renderMonitor.
+    const bool SOFTWARE_CURSOR = Pointer::mgr()->softwareLockedFor(m_self.lock()) || m_frameCursorZoom != 1.F;
+    return solitaryColorSurface() && !SOFTWARE_CURSOR && m_dpmsBlackOpacity->value() == 0.F;
+}
+
 std::optional<NColorManagement::PImageDescription> CMonitor::getFSImageDescription() {
-
-    const auto FS_WINDOW = Fullscreen::controller()->getFullscreenWindow(m_self.lock());
-
-    if (!FS_WINDOW)
+    // Resolved on every call: callers outside the frame must see the current presentation, not the last frame's snapshot.
+    const auto WINDOW = presentedFullscreenWindow(getCurrentWorkspace());
+    if (!WINDOW)
         return {};
 
-    const auto ROOT_SURF = FS_WINDOW->wlSurface()->resource();
-    const auto SURF      = ROOT_SURF->findWithCM();
+    const auto SURF = WINDOW->wlSurface()->resource()->findWithCM();
     return SURF ? SURF->m_current.imageDescription : getDefaultImageDescription();
 }
 
 // the HDR description auto HDR would switch to, offered to the fullscreen surface so it can trigger the switch
 std::optional<NColorManagement::PImageDescription> CMonitor::getAutoHDRImageDescription(const SP<CWLSurfaceResource>& surface) {
-    static const auto PAUTOHDR = CConfigValue<Config::INTEGER>("render:cm_auto_hdr");
-
-    if (!*PAUTOHDR || !supportsHDR() || !m_activeMonitorRule.m_iccFile.empty() || m_cmType == NCMType::CM_HDR || m_cmType == NCMType::CM_HDR_EDID)
+    // Decided with the switch's window and eligibility, evaluated now: settings can change between frames, e.g. on a config reload whose
+    // feedback recheck runs before the next frame. Frames and rule changes publish offer changes, see updateAutoHDROffer.
+    const auto WINDOW = m_fullscreenColorSource.window.lock();
+    if (!WINDOW || !WINDOW->wlSurface() || WINDOW->wlSurface()->resource() != surface)
         return {};
 
-    const auto FS_WINDOW = Fullscreen::controller()->getFullscreenWindow(m_self.lock());
-    if (!FS_WINDOW || FS_WINDOW->wlSurface()->resource() != surface || FS_WINDOW->m_ruleApplicator->noAutoHDR().valueOrDefault())
+    const auto OFFER = autoHDRCMType(outputEncodingInputs(colorCapabilities()));
+    if (!OFFER)
         return {};
 
-    return getHDRImageDescription(*PAUTOHDR == 2 ? NCMType::CM_HDR_EDID : NCMType::CM_HDR);
+    return getHDRImageDescription(*OFFER);
+}
+
+static bool shaderCMAvailable() {
+    static const auto PENABLECM = CConfigValue<Config::INTEGER>("render:cm_enabled");
+    // The GL backend reports whether its shaders can do CM at all (GLES2 can't).
+    const auto GL = g_pHyprRenderer ? g_pHyprRenderer->glBackend() : WP<Render::GL::CHyprOpenGLImpl>{};
+    return *PENABLECM && (!GL || GL->cmSupported());
+}
+
+NColorManagement::SOutputColorCapabilities CMonitor::colorCapabilities() {
+    return {
+        .shaderCM           = shaderCMAvailable(),
+        .enabled10bit       = m_enabled10bit,
+        .bt2020Signal       = canSignalBT2020(),
+        .wideColor          = supportsWideColor(),
+        .hdr                = supportsHDR(),
+        .edidChromaticities = m_output && m_output->parsedEDID.chromaticityCoords.has_value(),
+    };
+}
+
+NColorManagement::SOutputEncodingInputs CMonitor::outputEncodingInputs(const NColorManagement::SOutputColorCapabilities& caps) {
+    static const auto     PAUTOHDR = CConfigValue<Config::INTEGER>("render:cm_auto_hdr");
+
+    const auto            WINDOW = m_fullscreenColorSource.window.lock();
+    SOutputEncodingInputs inputs = {
+        .rule = m_configuredCMType,
+        // the installed profile, not the configured file: a profile that failed to load left the previous state installed
+        .iccProfile = m_imageDescription->value().icc.present,
+        .caps       = caps,
+        .autoHDR    = *PAUTOHDR,
+        .fullscreen = WINDOW != nullptr,
+    };
+
+    // The window rule and the content matter only where auto HDR could act, which spares the surface tree search everywhere else.
+    if (!autoHDRApplicable(inputs))
+        return inputs;
+
+    inputs.noAutoHDR = WINDOW->m_ruleApplicator->noAutoHDR().valueOrDefault();
+    if (!inputs.noAutoHDR)
+        inputs.content = classifyFullscreenContent(fullscreenContentDescription());
+    return inputs;
+}
+
+bool CMonitor::updateAutoHDROffer() {
+    // The fullscreen surface's preferred description depends on the window auto HDR offers it to, see getAutoHDRImageDescription().
+    const auto OFFER        = autoHDRCMType(outputEncodingInputs(colorCapabilities()));
+    const auto OFFER_WINDOW = OFFER ? m_fullscreenColorSource.window.lock() : nullptr;
+    if (OFFER_WINDOW == m_autoHDRWindow && OFFER == m_autoHDROffer)
+        return false;
+
+    m_autoHDRWindow = OFFER_WINDOW;
+    m_autoHDROffer  = OFFER;
+    return true;
+}
+
+bool CMonitor::applyOutputEncoding(const NColorManagement::SOutputEncoding& encoding) {
+    // Capabilities and render:cm_enabled can change without a monitor rule application.
+    if (!encoding.icc)
+        m_cmType = encoding.baseline;
+    // An installed profile ends a fallback episode: a fallback after its removal is a new one.
+    reportCMFallback(encoding.icc ? CM_FALLBACK_NONE : encoding.fallback, m_configuredCMType);
+
+    if (!outputEncodingNeedsApply(encoding, m_appliedCMType, m_imageDescription->value().icc.present))
+        return false;
+
+    LOG(Log::INFO, "[CM] Output {} encoding: cm {}{}", m_name, NCMType::toString(encoding.cmType), encoding.autoHDR ? " (auto HDR)" : "");
+    const auto OLD = m_imageDescription;
+    applyCMType(encoding.cmType, m_sdrEotf);
+    return OLD != m_imageDescription;
+}
+
+void CMonitor::reportCMFallback(NColorManagement::eCMFallback fallback, NCMType::eCMType configured) {
+    if (fallback == m_reportedCMFallback)
+        return;
+
+    m_reportedCMFallback = fallback;
+
+    switch (fallback) {
+        case CM_FALLBACK_NONE: return;
+        case CM_FALLBACK_CAPABILITY:
+            LOG(Log::WARN, "Output {} can't signal cm {} (no BT2020_RGB colorimetry or no HDR support), using sRGB instead", m_name, NCMType::toString(configured));
+            return;
+        case CM_FALLBACK_NO_SHADER_CM:
+            LOG(Log::WARN, "Output {}: cm = {} needs render:cm_enabled = true, using sRGB instead", m_name, NCMType::toString(configured));
+            if (Notification::overlay())
+                Notification::overlay()->addNotification(
+                    I18n::i18nEngine()->localize(I18n::TXT_KEY_NOTIF_CM_NEEDS_SHADER_CM, {{"name", m_name}, {"cm", NCMType::toString(configured)}}), CHyprColor{}, 15000,
+                    ICON_WARNING);
+            return;
+        case CM_FALLBACK_AUTO_HDR_NO_SHADER_CM:
+            LOG(Log::WARN, "Output {}: render:cm_auto_hdr needs render:cm_enabled = true, showing the fullscreen HDR content in SDR", m_name);
+            if (Notification::overlay())
+                Notification::overlay()->addNotification(I18n::i18nEngine()->localize(I18n::TXT_KEY_NOTIF_CM_AUTO_HDR_NEEDS_SHADER_CM, {{"name", m_name}}), CHyprColor{}, 15000,
+                                                         ICON_WARNING);
+            return;
+    }
 }
 
 NColorManagement::SPCPRimaries CMonitor::getMasteringPrimaries() {
@@ -2700,37 +2849,66 @@ bool CMonitor::canNoShaderCM(bool forDSmode) {
     if (*PNONSHADER == CM_NS_DISABLE)
         return false;
 
-    const auto SRC_DESC = getFSImageDescription();
-    if (!SRC_DESC.has_value())
+    // the work buffer's description is the one resources() installs
+    const auto SOURCE = getFSImageDescription();
+    return SOURCE.has_value() && ctmConvertsTo(SOURCE.value(), forDSmode ? m_imageDescription : workBufferImageDescription());
+}
+
+bool CMonitor::ctmConvertsTo(const PImageDescription& source, const PImageDescription& target) {
+    static auto PNONSHADER = CConfigValue<Config::INTEGER>("render:non_shader_cm");
+    if (!m_output || !source || !target || *PNONSHADER == CM_NS_DISABLE)
         return false;
 
-    const auto& DST_DESC = forDSmode ? m_imageDescription : resources()->m_imageDescription;
-    if (SRC_DESC.value() == DST_DESC)
+    if (source == target)
         return true; // no CM needed
 
-    const auto& SRC_DESC_VALUE = SRC_DESC.value()->value();
-
-    if (m_imageDescription->value().icc.present)
+    if (m_imageDescription->value().icc.present || target->value().icc.present)
         return false;
 
-    LOG(Log::TRACE, "CM: can no shder compares src={} to output={}", SRC_DESC_VALUE, m_imageDescription->value());
+    const auto& SRC_DESC_VALUE = source->value();
+    const auto& DST_DESC_VALUE = target->value();
+    LOG(Log::TRACE, "CM: can no shader compares src={} to {}", SRC_DESC_VALUE, DST_DESC_VALUE);
 
-    const auto& DST_DESC_VALUE = DST_DESC->value();
-    const auto  linear         = [](eTransferFunction tf) { return tf == CM_TRANSFER_FUNCTION_LINEAR || tf == CM_TRANSFER_FUNCTION_EXT_LINEAR; };
-    // The KMS CTM runs between the (unset) degamma and gamma LUTs, so a primaries conversion is only correct on linear values.
-    const bool primariesOk = SRC_DESC_VALUE.getPrimaries() == DST_DESC_VALUE.getPrimaries() || (linear(SRC_DESC_VALUE.transferFunction) && linear(DST_DESC_VALUE.transferFunction));
-    // Content brighter than the target needs tone mapping, which a CTM can't do.
-    const auto sourcePeak =
-        SRC_DESC_VALUE.maxCLL > 0 ? SRC_DESC_VALUE.maxCLL : (SRC_DESC_VALUE.masteringLuminances.max > 0 ? SRC_DESC_VALUE.masteringLuminances.max : SRC_DESC_VALUE.luminances.max);
-    const auto destinationPeak = DST_DESC_VALUE.masteringLuminances.max > 0 ? DST_DESC_VALUE.masteringLuminances.max : DST_DESC_VALUE.luminances.max;
+    return ctmConvertsExactly(SRC_DESC_VALUE, DST_DESC_VALUE, isCompatibleTF(SRC_DESC_VALUE.transferFunction, DST_DESC_VALUE.transferFunction), m_output->supportsCTM());
+}
 
-    return isCompatibleTF(SRC_DESC_VALUE.transferFunction, DST_DESC_VALUE.transferFunction) //
-        && SRC_DESC_VALUE.transferFunctionPower == DST_DESC_VALUE.transferFunctionPower     //
-        && SRC_DESC_VALUE.luminances == DST_DESC_VALUE.luminances                           //
-        && SRC_DESC_VALUE.encodingMinLuminance() == DST_DESC_VALUE.encodingMinLuminance()   //
-        && SRC_DESC_VALUE.encodingMaxLuminance() == DST_DESC_VALUE.encodingMaxLuminance()   //
-        && sourcePeak <= destinationPeak * 1.01f && primariesOk                             //
-        && (SRC_DESC_VALUE.getPrimaries() == DST_DESC_VALUE.getPrimaries() || m_output->supportsCTM());
+NColorManagement::SFullscreenCTMInputs CMonitor::fullscreenCTMInputs() {
+    static auto          PNONSHADER = CConfigValue<Config::INTEGER>("render:non_shader_cm");
+    static auto          PNSINTEROP = CConfigValue<Config::INTEGER>("render:non_shader_cm_interop");
+
+    SFullscreenCTMInputs inputs = {.policy = sc<eNoShader>(*PNONSHADER)};
+    const auto           WINDOW = m_fullscreenColorSource.window.lock();
+    if (!WINDOW || inputs.policy == CM_NS_IGNORE)
+        return inputs;
+
+    // The CTM converts the pixels that reach the display: the solitary resource, which direct scanout submits and which is all a
+    // solitary frame shows. Without one, the window's content stands in for the user CTM decision, the CTM converts nothing.
+    const auto SOLITARY   = solitaryColorDescription();
+    const auto CONTENT    = SOLITARY ? PImageDescription{} : fullscreenContentDescription();
+    const auto SOURCE     = SOLITARY ? SOLITARY : CONTENT ? CONTENT : getDefaultImageDescription();
+    inputs.fullscreen     = true;
+    inputs.source         = SOURCE->id();
+    inputs.solitarySource = SOLITARY != nullptr;
+    inputs.target         = m_imageDescription->id();
+    inputs.interop        = *PNSINTEROP == 1 || (*PNSINTEROP == 2 && WINDOW->getContentType() == CONTENT_TYPE_NONE);
+    inputs.userCTM        = m_ctm != Mat3x3::identity();
+    inputs.needsCM        = SOURCE != m_imageDescription;
+    if (!inputs.needsCM || inputs.policy == CM_NS_DISABLE || !inputs.solitarySource)
+        return inputs;
+
+    // The CTM acts on the output signal, after the work buffer. Composited frames bypass every shader conversion including the final one
+    // into the output: the CTM must take the source all the way to the output encoding.
+    inputs.convertsToOutput = ctmConvertsTo(SOURCE, m_imageDescription);
+    inputs.scanout          = !m_lastScanout.expired();
+    if (!inputs.convertsToOutput || !fullscreenCTMAllowed(inputs.policy, inputs.scanout, false))
+        return inputs;
+
+    if (!inputs.scanout) {
+        inputs.convertsToWork = ctmConvertsTo(SOURCE, workBufferImageDescription());
+        inputs.coversFrame    = fullscreenCoversFrame();
+    }
+    inputs.frameCopied = needsACopyFB() || needsUnmodifiedCopy();
+    return inputs;
 }
 
 bool CMonitor::doesNoShaderCM() {
@@ -2849,7 +3027,7 @@ WP<SHardwareCM> CMonitor::hardwareCMFor(const SImageDescription& source) {
     // The user CTM acts on the encoded output of composited frames. Kept with non_shader_cm_interop, its diagonal folds into the encoding,
     // anything else has no hardware form after the GAMMA LUT.
     static auto PNSINTEROP = CConfigValue<Config::INTEGER>("render:non_shader_cm_interop");
-    const auto  FSWINDOW   = Fullscreen::controller()->getFullscreenWindow(m_self.lock());
+    const auto  FSWINDOW   = m_fullscreenColorSource.window.lock();
     const bool  INTEROP    = *PNSINTEROP == 1 || (*PNSINTEROP == 2 && FSWINDOW && FSWINDOW->getContentType() == CONTENT_TYPE_NONE);
     const auto& USER_CTM   = INTEROP ? m_ctm : Mat3x3::identity();
     const auto& USER       = USER_CTM.getMatrix();
@@ -2877,10 +3055,14 @@ bool CMonitor::canSignalBT2020() const {
     if (!m_output)
         return false;
 
-    // Other backends have no colorimetry signalling of their own.
-    if (m_output->getBackend()->type() != Aquamarine::AQ_BACKEND_DRM)
-        return true;
-    return supportsColorspace("BT2020_RGB");
+    // The connector's colorspace list is fixed per connector, and querying it copies the list: read it once per connect.
+    if (!m_bt2020Signal) {
+        const auto BACKEND = m_output->getBackend();
+        // Other backends have no colorimetry signalling of their own.
+        m_bt2020Signal = BACKEND && (BACKEND->type() != Aquamarine::AQ_BACKEND_DRM || supportsColorspace("BT2020_RGB"));
+    }
+
+    return *m_bt2020Signal;
 }
 
 bool CMonitor::supportsColorspace(const std::string& name) const {
@@ -2908,8 +3090,13 @@ PImageDescription CMonitor::scanoutDescription(SP<CWLSurfaceResource> surface) {
     return surface->m_current.imageDescription ? surface->m_current.imageDescription : getDefaultImageDescription();
 }
 
+bool CMonitor::scanoutNeedsHardwareCM(const PImageDescription& surfaceDescription) {
+    return surfaceDescription != m_imageDescription && !ctmConvertsTo(surfaceDescription, m_imageDescription);
+}
+
 bool CMonitor::scanoutCMNeedsUpdate(SP<CWLSurfaceResource> surface) {
-    const auto WANTED = needsCM() && !canNoShaderCM(true) ? hardwareCMFor(scanoutDescription(surface)->value()) : WP<SHardwareCM>{};
+    const auto DESCRIPTION = scanoutDescription(surface);
+    const auto WANTED      = scanoutNeedsHardwareCM(DESCRIPTION) ? hardwareCMFor(DESCRIPTION->value()) : WP<SHardwareCM>{};
     if (!WANTED)
         return usesHardwareCM();
     return !m_hardwareCM || m_ctmUpdated || m_hardwareCM->degamma != WANTED->degamma || m_hardwareCM->gamma != WANTED->gamma || m_hardwareCM->ctm != WANTED->ctm;

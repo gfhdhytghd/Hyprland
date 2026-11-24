@@ -1,5 +1,6 @@
 #include "CMSettings.hpp"
 #include "../helpers/TransferFunction.hpp"
+#include "../helpers/cm/OutputEncoding.hpp"
 
 #include "../protocols/types/SurfaceState.hpp"
 #include <algorithm>
@@ -61,7 +62,7 @@ SCMSettings CCMSettingsCache::get(PImageDescription imageDescription, PImageDesc
 
     const bool   needsMod = inputs.needsSDRmod && ((inputs.sdrSaturation > 0 && inputs.sdrSaturation != 1.0f) || (inputs.sdrBrightness > 0 && inputs.sdrBrightness != 1.0f));
 
-    const bool   needsTonemap = maxLuminance >= dstMaxLuminance * 1.01;
+    const bool   needsTonemap = peakNeedsToneMapping(maxLuminance, dstMaxLuminance);
 
     auto         result = SCMSettings{
         .sourceTF          = inputs.sourceTF,

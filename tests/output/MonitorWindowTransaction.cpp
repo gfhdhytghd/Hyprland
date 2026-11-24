@@ -35,6 +35,14 @@
 #include <protocols/PresentationTime.hpp>
 #include <protocols/XDGShell.hpp>
 #include <protocols/core/Compositor.hpp>
+#include <protocols/core/Subcompositor.hpp>
+#include <protocols/ColorManagement.hpp>
+#include <config/shared/monitor/MonitorRule.hpp>
+#include <errorOverlay/Overlay.hpp>
+#include <notification/NotificationOverlay.hpp>
+#include <pointer/PointerManager.hpp>
+#include <managers/screenshare/ScreenshareManager.hpp>
+#include <helpers/cm/OutputEncoding.hpp>
 #include <render/ElementRenderer.hpp>
 #include <render/Framebuffer.hpp>
 #include <render/Renderer.hpp>
@@ -50,9 +58,12 @@
 
 #include <gtest/gtest.h>
 #include <hyprutils/utils/ScopeGuard.hpp>
+#include <lcms2.h>
 
 #include <algorithm>
+#include <filesystem>
 #include <array>
+#include <cstdlib>
 #include <memory>
 #include <sys/socket.h>
 #include <utility>
@@ -98,6 +109,9 @@ class CTransactionTestOutput : public Aquamarine::IOutput {
 // Geometry application uses the real damage/decorations paths, but never draws.
 class CTransactionTestRenderer : public Render::IHyprRenderer {
   public:
+    // the colour state driver of renderMonitor, see COutputColorStateTest
+    using Render::IHyprRenderer::handleFullscreenSettings;
+
     eType type() override {
         return RT_GL;
     }
@@ -353,6 +367,7 @@ class CMonitorWindowTransactionTest : public ::testing::Test {
         m_monitor.reset();
         if (m_display)
             wl_display_destroy_clients(m_display.get());
+        m_subsurfaces.clear();
         m_clients.clear();
         IPC::Socket2::sock()    = std::move(m_previousSocket2);
         PROTO::xdgShell         = std::move(m_previousXDG);
@@ -511,9 +526,60 @@ class CMonitorWindowTransactionTest : public ::testing::Test {
         g_pEventLoopManager->onTimerFire();
     }
 
+    // A wl_subsurface of parent, the way wl_subcompositor.get_subsurface creates it.
+    SP<CWLSurfaceResource> makeSubsurface(const SP<CWLSurfaceResource>& parent) {
+        auto surface       = makeShared<CWLSurfaceResource>(makeShared<CWlSurface>(m_client, 6, m_nextID++));
+        surface->m_self    = surface;
+        auto subsurface    = makeShared<CWLSubsurfaceResource>(makeShared<CWlSubsurface>(m_client, 1, m_nextID++), surface, parent);
+        subsurface->m_self = subsurface;
+        surface->m_role    = makeShared<CSubsurfaceRole>(subsurface);
+        parent->m_subsurfaces.emplace_back(subsurface);
+        m_subsurfaces.push_back({surface, subsurface});
+        return surface;
+    }
+
+    wl_client* client() const {
+        return m_client;
+    }
+
+    // the next client object ID, which the server only accepts in sequence
+    uint32_t nextID() {
+        return m_nextID++;
+    }
+
+    // A raw request from the test client, dispatched by the server.
+    void request(const std::vector<uint32_t>& words) {
+        ASSERT_EQ(send(m_socket.get(), words.data(), words.size() * sizeof(uint32_t), MSG_NOSIGNAL), sc<ssize_t>(words.size() * sizeof(uint32_t)));
+        ASSERT_EQ(wl_event_loop_dispatch(wl_display_get_event_loop(m_display.get()), 0), 0);
+    }
+
+    // The events the test client has received since the last call, each as its raw words.
+    std::vector<std::vector<uint32_t>> receiveEvents() {
+        wl_display_flush_clients(m_display.get());
+        std::vector<std::vector<uint32_t>> events;
+        for (;;) {
+            std::array<uint32_t, 2> header = {};
+            const auto              bytes  = recv(m_socket.get(), header.data(), sizeof(header), MSG_DONTWAIT);
+            if (bytes != sc<ssize_t>(sizeof(header)))
+                return events;
+            const auto            size = header[1] >> 16;
+            std::vector<uint32_t> event(std::max<size_t>(size / sizeof(uint32_t), 2));
+            event[0] = header[0];
+            event[1] = header[1];
+            if (size > sizeof(header))
+                recv(m_socket.get(), event.data() + 2, size - sizeof(header), MSG_DONTWAIT);
+            events.push_back(std::move(event));
+        }
+    }
+
     PHLMONITOR m_monitor;
 
   private:
+    struct SSubsurface {
+        SP<CWLSurfaceResource>    surface;
+        SP<CWLSubsurfaceResource> subsurface;
+    };
+    std::vector<SSubsurface> m_subsurfaces;
     struct SClient {
         SP<CWLSurfaceResource>  surface;
         SP<CXDGSurfaceResource> xdg;
@@ -2687,4 +2753,680 @@ TEST_F(CMonitorWindowTransactionTest, ClosingTheLastReplacementRetiresSnapshotsW
     EXPECT_TRUE(fadeout->done());
     EXPECT_FALSE(timer(m_monitor)->armed());
     EXPECT_FALSE(transaction.hasPendingPresentation());
+}
+
+// Finding 5: a held fullscreen transaction keeps presenting window A while the configured fullscreen window is already B. The output
+// encoding, the CTM source, scanout CM and the auto HDR offer all use the presented window A until the transaction releases.
+TEST_F(CMonitorWindowTransactionTest, HeldFullscreenTransactionKeepsOneColorSource) {
+    using namespace Fullscreen;
+    *CConfigValue<Config::BOOL>("animations:enabled").ptr()          = false;
+    *CConfigValue<Config::INTEGER>("misc:transaction_timeout").ptr() = 50;
+    const auto workspace                                             = Workspace::CRegularWorkspace::create(Workspace::SWorkspaceNumberedID{9}, m_monitor, "color source");
+    workspace->setVisible(true);
+    m_monitor->m_enabled         = true;
+    m_monitor->m_activeWorkspace = workspace;
+
+    auto presented = makeWindow({0, 0, 400, 300}, true);
+    auto next      = makeWindow({0, 0, 400, 300}, true);
+    for (const auto& window : {presented, next}) {
+        window->m_workspace = workspace;
+        window->windowTarget()->setSpaceGhost(workspace->space());
+    }
+
+    const auto PRESENTED_DESCRIPTION                               = NColorManagement::CImageDescription::from(NColorManagement::SImageDescription{
+        .transferFunction = NColorManagement::CM_TRANSFER_FUNCTION_ST2084_PQ,
+        .primariesNameSet = true,
+        .primariesNamed   = NColorManagement::CM_PRIMARIES_BT2020,
+    });
+    presented->wlSurface()->resource()->m_current.imageDescription = PRESENTED_DESCRIPTION;
+    next->wlSurface()->resource()->m_current.imageDescription      = NColorManagement::DEFAULT_SRGB_IMAGE_DESCRIPTION;
+
+    const auto handler = workspace->space()->algorithm()->tiledAlgo()->getFSHandler();
+    handler->setTargetFullscreenModeInternal(presented->windowTarget(), FSMODE_FULLSCREEN);
+    ASSERT_EQ(m_monitor->updateFullscreenColorSource(), presented);
+
+    // B becomes the fullscreen window while the transaction holds A's presentation
+    presented->presentation().stageFullscreen();
+    handler->setTargetFullscreenModeInternal(presented->windowTarget(), FSMODE_NONE);
+    handler->setTargetFullscreenModeInternal(next->windowTarget(), FSMODE_FULLSCREEN);
+    auto& transaction = *m_monitor->m_windowTransaction;
+    transaction.queue(presented, {0, 0, 200, 160});
+    ASSERT_TRUE(workspace->m_fullscreenPresentation);
+    ASSERT_EQ(controller()->getPresentedFullscreenWindow(workspace), presented);
+    ASSERT_EQ(controller()->getFullscreenWindow(m_monitor), next);
+
+    EXPECT_EQ(m_monitor->updateFullscreenColorSource(), presented);
+    EXPECT_EQ(m_monitor->fullscreenContentDescription(), PRESENTED_DESCRIPTION);
+    ASSERT_TRUE(m_monitor->getFSImageDescription().has_value());
+    EXPECT_EQ(m_monitor->getFSImageDescription().value(), PRESENTED_DESCRIPTION);
+    EXPECT_EQ(m_monitor->fullscreenCTMInputs().source, 0U); // non_shader_cm = ignore queries nothing
+    // the transaction blocks solitary rendering, so no surface stands in for the presented pixels
+    EXPECT_FALSE(m_monitor->solitaryColorSurface());
+
+    // releasing the transaction moves every consumer to B at once
+    *CConfigValue<Config::INTEGER>("misc:transaction_timeout").ptr() = 0;
+    transaction.onPreRender();
+    transaction.onPostRender();
+    EXPECT_FALSE(workspace->m_fullscreenPresentation);
+    EXPECT_EQ(m_monitor->updateFullscreenColorSource(), next);
+    EXPECT_EQ(m_monitor->getFSImageDescription().value(), NColorManagement::DEFAULT_SRGB_IMAGE_DESCRIPTION);
+    Desktop::windowState()->clear();
+}
+
+// The colour state of an output driven through the renderer's own transition, IHyprRenderer::handleFullscreenSettings, monitor rule
+// application and the preferred-description request, on an output that can signal HDR. Direct scanout admission is the real
+// CMonitor::isDSBlocked. What needs KMS (the test and commit of a scanout buffer, its rollback) is not reachable without a DRM backend.
+class CColorTestBackend : public Aquamarine::IBackendImplementation {
+  public:
+    Aquamarine::eBackendType type() override {
+        return Aquamarine::AQ_BACKEND_HEADLESS;
+    }
+    bool start() override {
+        return true;
+    }
+    std::vector<SP<Aquamarine::SPollFD>> pollFDs() override {
+        return {};
+    }
+    int drmFD() override {
+        return -1;
+    }
+    bool dispatchEvents() override {
+        return true;
+    }
+    uint32_t capabilities() override {
+        return 0;
+    }
+    void onReady() override {
+        ;
+    }
+    std::vector<SDRMFormat> getRenderFormats() override {
+        return {};
+    }
+    std::vector<SDRMFormat> getCursorFormats() override {
+        return {};
+    }
+    bool createOutput(const std::string&) override {
+        return false;
+    }
+    SP<Aquamarine::IAllocator> preferredAllocator() override {
+        return nullptr;
+    }
+    std::vector<SP<Aquamarine::IAllocator>> getAllocators() override {
+        return {};
+    }
+    WP<Aquamarine::IBackendImplementation> getPrimary() override {
+        return {};
+    }
+    int drmRenderNodeFD() override {
+        return -1;
+    }
+};
+
+// A non-DRM backend has no colorimetry property of its own, so the output can signal BT.2020 and, with supports_hdr = 1, PQ.
+class CColorTestOutput : public CTransactionTestOutput {
+  public:
+    SP<Aquamarine::IBackendImplementation> getBackend() override {
+        return m_backend;
+    }
+    bool supportsCTM() const override {
+        return true;
+    }
+
+  private:
+    SP<Aquamarine::IBackendImplementation> m_backend = makeShared<CColorTestBackend>();
+};
+
+class COutputColorStateTest : public CMonitorWindowTransactionTest {
+  protected:
+    void SetUp() override {
+        CMonitorWindowTransactionTest::SetUp();
+        if (HasFatalFailure())
+            return;
+
+        m_previousPointer       = std::move(Pointer::mgr());
+        m_previousScreenshare   = std::move(Screenshare::mgr());
+        m_previousNotification  = std::move(Notification::overlay());
+        m_previousErrorOverlay  = std::move(ErrorOverlay::overlay());
+        m_previousSubcompositor = std::move(PROTO::subcompositor);
+        m_previousColorProtocol = std::move(PROTO::colorManagement);
+        PROTO::subcompositor    = makeUnique<CWLSubcompositorProtocol>(&wl_subcompositor_interface, 1, "color-state-subcompositor-test");
+        PROTO::colorManagement  = makeUnique<CColorManagementProtocol>(&wp_color_manager_v1_interface, 1, "color-state-color-management-test");
+        Pointer::mgr()          = makeUnique<Pointer::CPointerManager>();
+        Screenshare::mgr()      = makeUnique<Screenshare::CScreenshareManager>();
+        Notification::overlay() = makeUnique<Notification::CNotificationOverlay>();
+        ErrorOverlay::overlay() = makeUnique<ErrorOverlay::COverlay>();
+        m_installed             = true;
+
+        *CConfigValue<Config::BOOL>("animations:enabled").ptr() = false;
+        auto output                                             = makeShared<CColorTestOutput>();
+        output->name                                            = "color-state-test";
+        m_monitor                                               = makeShared<Monitor::CMonitor>(output);
+        m_monitor->m_self                                       = m_monitor;
+        m_monitor->m_windowTransaction                          = makeUnique<Monitor::CMonitorWindowTransaction>(m_monitor);
+        m_monitor->m_enabled                                    = true;
+        m_monitor->m_pixelSize                                  = SIZE;
+        applyRule(NCMType::CM_SRGB, 1);
+        ASSERT_TRUE(m_monitor->supportsHDR());
+
+        m_workspace = Workspace::CRegularWorkspace::create(Workspace::SWorkspaceNumberedID{9}, m_monitor, "color state");
+        m_workspace->setVisible(true);
+        m_monitor->m_activeWorkspace = m_workspace;
+    }
+
+    void TearDown() override {
+        Desktop::windowState()->clear();
+        m_window.reset();
+        m_workspace.reset();
+        if (m_installed) {
+            Pointer::mgr()          = std::move(m_previousPointer);
+            Screenshare::mgr()      = std::move(m_previousScreenshare);
+            Notification::overlay() = std::move(m_previousNotification);
+            ErrorOverlay::overlay() = std::move(m_previousErrorOverlay);
+        }
+        // subsurfaces are destroyed with the client
+        CMonitorWindowTransactionTest::TearDown();
+        if (m_installed) {
+            PROTO::subcompositor   = std::move(m_previousSubcompositor);
+            PROTO::colorManagement = std::move(m_previousColorProtocol);
+        }
+    }
+
+    void applyRule(NCMType::eCMType cmType, int supportsHDR, const std::string& iccFile = "") {
+        Config::CMonitorRule rule;
+        rule.m_name              = m_monitor->m_name;
+        rule.m_cmType            = cmType;
+        rule.m_supportsWideColor = 1;
+        rule.m_supportsHDR       = supportsHDR;
+        rule.m_iccFile           = iccFile;
+        rule.m_maxLuminance      = 600; // the display peak scanout and composition check content against
+        m_monitor->applyMonitorRuleSoft(std::move(rule));
+    }
+
+    // One pass of the renderer's colour state transition, as renderMonitor runs it before admission and again after leaving a scanout,
+    // with the cursor zoom renderMonitor samples first.
+    void frame() {
+        m_monitor->m_frameCursorZoom = m_monitor->m_cursorZoom->value();
+        sc<CTransactionTestRenderer&>(*g_pHyprRenderer).handleFullscreenSettings(m_monitor);
+    }
+
+    // What IHyprRenderer::renderMonitor does with the colour state when admission rejects the candidate after a scanout.
+    void rejectCandidate() {
+        m_monitor->m_lastScanout.reset();
+        m_monitor->m_previousFSWindow.reset();
+        frame();
+    }
+
+    // A solitary fullscreen window whose root surface fills the output.
+    SP<CWLSurfaceResource> makeFullscreenWindow(const NColorManagement::PImageDescription& description) {
+        m_window              = makeWindow({0, 0, SIZE.x, SIZE.y}, true);
+        m_window->m_workspace = m_workspace;
+        m_window->windowTarget()->setSpaceGhost(m_workspace->space());
+        m_workspace->space()->algorithm()->tiledAlgo()->getFSHandler()->setTargetFullscreenModeInternal(m_window->windowTarget(), Fullscreen::FSMODE_FULLSCREEN);
+        m_monitor->m_solitaryClient = m_window;
+        const auto ROOT             = m_window->wlSurface()->resource();
+        ROOT->m_enteredOutputs      = {m_monitor};
+        present(ROOT, description);
+        return ROOT;
+    }
+
+    static void present(const SP<CWLSurfaceResource>& surface, const NColorManagement::PImageDescription& description) {
+        auto buffer                         = makeShared<CTransactionTestBuffer>();
+        buffer->size                        = SIZE;
+        buffer->m_texture                   = makeShared<CTransactionTestTexture>(SIZE);
+        buffer->m_texture->m_opaque         = true;
+        surface->m_current.buffer           = CHLBufferReference(buffer);
+        surface->m_current.texture          = buffer->m_texture;
+        surface->m_current.size             = SIZE;
+        surface->m_current.bufferSize       = SIZE;
+        surface->m_current.imageDescription = description;
+    }
+
+    // PQ with the encoding of the output's HDR preset, so only the mastering volume and the primaries tell them apart
+    NColorManagement::PImageDescription pqContent(uint32_t masteringMax, NColorManagement::ePrimaries primaries = NColorManagement::CM_PRIMARIES_BT2020) {
+        auto value                    = m_monitor->getHDRImageDescription(NCMType::CM_HDR)->value();
+        value.primariesNameSet        = true;
+        value.primariesNamed          = primaries;
+        value.primaries               = NColorManagement::getPrimaries(primaries);
+        value.masteringLuminances.max = masteringMax;
+        value.maxCLL                  = 0;
+        value.maxFALL                 = 0;
+        return NColorManagement::CImageDescription::from(value);
+    }
+
+    bool cmBlocked() {
+        return m_monitor->isDSBlocked(true) & Monitor::CMonitor::DS_BLOCK_CM;
+    }
+
+    hdr_output_metadata staged() {
+        return m_monitor->m_output->state->state().hdrMetadata;
+    }
+
+    static constexpr Vector2D SIZE = {400, 300};
+    PHLWORKSPACE              m_workspace;
+    PHLWINDOW                 m_window;
+
+  private:
+    bool                                   m_installed = false;
+    UP<Pointer::CPointerManager>           m_previousPointer;
+    UP<Screenshare::CScreenshareManager>   m_previousScreenshare;
+    UP<Notification::CNotificationOverlay> m_previousNotification;
+    UP<ErrorOverlay::COverlay>             m_previousErrorOverlay;
+    UP<CWLSubcompositorProtocol>           m_previousSubcompositor;
+    UP<CColorManagementProtocol>           m_previousColorProtocol;
+};
+
+// Second review, finding 1: the window code submits an opaque, covering child as the solitary buffer. Admission, the CTM and its key
+// must describe that buffer, not the differently tagged root that findWithCM picks.
+TEST_F(COutputColorStateTest, CoveredRootDoesNotDescribeTheSubmittedChild) {
+    *CConfigValue<Config::INTEGER>("render:non_shader_cm").ptr() = NColorManagement::CM_NS_ALWAYS;
+    const auto OUTPUT                                            = m_monitor->m_imageDescription;
+    auto       p3                                                = OUTPUT->value();
+    p3.primariesNamed                                            = NColorManagement::CM_PRIMARIES_DISPLAY_P3;
+    p3.primaries                                                 = NColorManagement::getPrimaries(NColorManagement::CM_PRIMARIES_DISPLAY_P3);
+    const auto P3                                                = NColorManagement::CImageDescription::from(p3);
+
+    const auto ROOT  = makeFullscreenWindow(OUTPUT);
+    const auto CHILD = makeSubsurface(ROOT);
+    present(CHILD, P3);
+    ASSERT_EQ(m_window->getSolitaryResource(), CHILD);
+
+    frame();
+    EXPECT_EQ(m_monitor->fullscreenContentDescription(), OUTPUT); // the root still classifies the content, as at HEAD
+    EXPECT_EQ(m_monitor->solitaryColorDescription(), P3);
+    EXPECT_TRUE(m_monitor->m_fullscreenCTMInputs.solitarySource);
+    EXPECT_EQ(m_monitor->m_fullscreenCTMInputs.source, P3->id());
+    EXPECT_TRUE(m_monitor->m_fullscreenCTMInputs.needsCM);
+    EXPECT_FALSE(m_monitor->doesNoShaderCM());
+    // P3 values must not reach an sRGB sink unconverted: neither the CTM nor the display hardware converts them
+    EXPECT_TRUE(cmBlocked());
+
+    // the other way round the child already is in the output's encoding
+    present(ROOT, P3);
+    present(CHILD, OUTPUT);
+    frame();
+    EXPECT_FALSE(cmBlocked());
+    EXPECT_FALSE(m_monitor->m_fullscreenCTMInputs.needsCM);
+    EXPECT_EQ(m_monitor->m_fullscreenCTMInputs.source, OUTPUT->id());
+}
+
+// Second review, finding 2: the cursor zoom takes its software cursor lock after the colour state pass of the same frame. The bypass must
+// already see it, or the sRGB cursor is drawn with the monitor-wide skip.
+TEST_F(COutputColorStateTest, CursorZoomKeepsShaderCMOnItsFirstFrame) {
+    *CConfigValue<Config::INTEGER>("render:non_shader_cm").ptr() = NColorManagement::CM_NS_ALWAYS;
+    // the output's encoding with other content light levels: the CTM converts it exactly
+    auto content    = m_monitor->m_imageDescription->value();
+    content.maxFALL = content.maxFALL + 1;
+    makeFullscreenWindow(NColorManagement::CImageDescription::from(content));
+
+    frame();
+    ASSERT_TRUE(m_monitor->doesNoShaderCM());
+
+    m_monitor->m_cursorZoom->setValueAndWarp(2.F);
+    ASSERT_FALSE(Pointer::mgr()->softwareLockedFor(m_monitor)); // renderMonitor locks only after this pass
+    frame();
+    EXPECT_FALSE(m_monitor->doesNoShaderCM());
+    EXPECT_FALSE(m_monitor->m_fullscreenCTMInputs.coversFrame);
+
+    m_monitor->m_cursorZoom->setValueAndWarp(1.F);
+    frame();
+    EXPECT_TRUE(m_monitor->doesNoShaderCM());
+
+    // a DPMS fade is drawn over the window too
+    m_monitor->m_dpmsBlackOpacity->setValueAndWarp(0.5F);
+    frame();
+    EXPECT_FALSE(m_monitor->doesNoShaderCM());
+}
+
+// Second review, finding 3: a monitor rule change publishes the auto HDR offer together with the description. A preferred-description
+// request before the next frame must not get the PQ description for an output that can no longer switch to it.
+TEST_F(COutputColorStateTest, PreferredDescriptionFollowsARuleChangeBeforeTheNextFrame) {
+    const auto ROOT = makeFullscreenWindow(m_monitor->m_imageDescription);
+    const auto HDR  = m_monitor->getHDRImageDescription(NCMType::CM_HDR);
+    frame();
+    ASSERT_EQ(ROOT->getPreferredImageDescription(), HDR);
+
+    // HDR support withdrawn while the output stays sRGB: no description change, the offer goes anyway
+    applyRule(NCMType::CM_SRGB, -1);
+    EXPECT_EQ(ROOT->getPreferredImageDescription(), m_monitor->m_imageDescription);
+    EXPECT_FALSE(NColorManagement::isHDR(ROOT->getPreferredImageDescription()->value()));
+    applyRule(NCMType::CM_SRGB, 1);
+    EXPECT_EQ(ROOT->getPreferredImageDescription(), HDR);
+
+    // ... and while auto HDR holds the output in PQ: the description changes back with the offer
+    present(ROOT, pqContent(500));
+    frame();
+    ASSERT_TRUE(m_monitor->inHDR());
+    applyRule(NCMType::CM_SRGB, -1);
+    EXPECT_FALSE(NColorManagement::isHDR(m_monitor->m_imageDescription->value()));
+    EXPECT_EQ(ROOT->getPreferredImageDescription(), m_monitor->m_imageDescription);
+
+    // a configured HDR preset already is the HDR mode: no offer, the output description is the preference
+    applyRule(NCMType::CM_HDR, 1);
+    EXPECT_FALSE(m_monitor->m_autoHDROffer.has_value());
+    EXPECT_EQ(ROOT->getPreferredImageDescription(), m_monitor->m_imageDescription);
+}
+
+// Second review, findings 4 and 7: after an admitted PQ scanout, a candidate admission rejects never supplies the composited frame's
+// metadata, neither before admission nor after the renderer leaves the scanout. Only a composite that reproduces the surface keeps it.
+TEST_F(COutputColorStateTest, RejectedPQCandidateUsesTheOutputMetadata) {
+    *CConfigValue<Config::INTEGER>("render:non_shader_cm").ptr() = NColorManagement::CM_NS_ONDEMAND;
+    const auto ADMITTED                                          = pqContent(500);
+    const auto ROOT                                              = makeFullscreenWindow(ADMITTED);
+    frame();
+    ASSERT_TRUE(m_monitor->inHDR());
+    const auto OUTPUT_METADATA = NColorManagement::selectHDRMetadata(m_monitor->m_imageDescription->value(), true);
+
+    // the state CMonitor::attemptDirectScanout commits for an admitted PQ buffer
+    const auto admit = [&] {
+        m_monitor->m_lastScanout            = m_window;
+        m_monitor->m_hdrMetadataFromSurface = true;
+        m_monitor->m_hdrMetadataWindow      = m_window;
+        m_monitor->m_output->state->setHDRMetadata(NColorManagement::selectHDRMetadata(m_monitor->m_imageDescription->value(), true, ADMITTED));
+    };
+    const auto SURFACE_METADATA = NColorManagement::selectHDRMetadata(m_monitor->m_imageDescription->value(), true, ADMITTED);
+
+    struct SCase {
+        const char*                         name;
+        NColorManagement::PImageDescription candidate;
+    };
+    for (const auto& c : {SCase{"wider gamut", pqContent(500, NColorManagement::CM_PRIMARIES_DCI_P3)}, SCase{"4000 nit", pqContent(4000)}}) {
+        SCOPED_TRACE(c.name);
+        admit();
+        present(ROOT, c.candidate);
+
+        frame(); // before admission the output keeps the admitted surface's metadata
+        EXPECT_TRUE(NColorManagement::hdrMetadataEqual(staged(), SURFACE_METADATA));
+        EXPECT_TRUE(cmBlocked());
+
+        rejectCandidate();
+        EXPECT_TRUE(NColorManagement::hdrMetadataEqual(staged(), OUTPUT_METADATA));
+        EXPECT_FALSE(m_monitor->m_hdrMetadataFromSurface);
+
+        frame(); // and keeps it
+        EXPECT_TRUE(NColorManagement::hdrMetadataEqual(staged(), OUTPUT_METADATA));
+    }
+
+    // A candidate the colour checks admit but scanout can't take (here: no dmabuf) is composited unchanged: its own metadata stays...
+    const auto SAME    = pqContent(400);
+    const auto SAME_MD = NColorManagement::selectHDRMetadata(SAME->value(), true);
+    admit();
+    present(ROOT, SAME);
+    frame();
+    EXPECT_FALSE(cmBlocked());
+    rejectCandidate();
+    EXPECT_TRUE(NColorManagement::hdrMetadataEqual(staged(), SAME_MD));
+    EXPECT_TRUE(m_monitor->m_hdrMetadataFromSurface);
+
+    // ... only while the frame shows nothing else
+    m_monitor->m_cursorZoom->setValueAndWarp(2.F);
+    frame();
+    EXPECT_TRUE(NColorManagement::hdrMetadataEqual(staged(), OUTPUT_METADATA));
+    EXPECT_FALSE(m_monitor->m_hdrMetadataFromSurface);
+}
+
+// Second review, finding 5: auto HDR that only render:cm_enabled = false keeps from switching reports it once per monitor, and again
+// after the condition ended.
+TEST_F(COutputColorStateTest, AutoHDRWithoutShaderCMIsReportedOncePerEpisode) {
+    *CConfigValue<Config::BOOL>("render:cm_enabled").ptr() = false;
+    const auto ROOT                                        = makeFullscreenWindow(pqContent(500));
+
+    frame();
+    EXPECT_FALSE(m_monitor->inHDR());
+    EXPECT_FALSE(NColorManagement::isHDR(m_monitor->m_imageDescription->value()));
+    EXPECT_TRUE(Notification::overlay()->hasAny());
+
+    Notification::overlay()->dismissNotifications(-1);
+    frame();
+    frame();
+    EXPECT_FALSE(Notification::overlay()->hasAny());
+
+    present(ROOT, m_monitor->m_imageDescription); // the condition ends
+    frame();
+    EXPECT_FALSE(Notification::overlay()->hasAny());
+
+    present(ROOT, pqContent(500));
+    frame();
+    EXPECT_TRUE(Notification::overlay()->hasAny());
+}
+
+// First review, finding 1, through the real rule path: a profile that fails to load leaves the installed preset, auto HDR and the
+// signalling in place.
+TEST_F(COutputColorStateTest, RejectedICCLoadKeepsTheInstalledColourState) {
+    makeFullscreenWindow(pqContent(500));
+    frame();
+    ASSERT_TRUE(m_monitor->inHDR());
+    const auto DESCRIPTION = m_monitor->m_imageDescription;
+    const auto METADATA    = staged();
+
+    applyRule(NCMType::CM_SRGB, 1, (std::filesystem::current_path() / "verification" / "missing-profile.icc").string());
+    EXPECT_EQ(m_monitor->m_imageDescription, DESCRIPTION);
+    frame();
+    EXPECT_EQ(m_monitor->m_imageDescription, DESCRIPTION);
+    EXPECT_FALSE(m_monitor->m_imageDescription->value().icc.present);
+    EXPECT_TRUE(m_monitor->inHDR());
+    EXPECT_TRUE(NColorManagement::hdrMetadataEqual(staged(), METADATA));
+}
+
+// OUT-01 through the renderer: a configured HDR preset keeps PQ and HDR10 signalling for a tagged SDR fullscreen window, with and
+// without auto HDR, also on the first pass after a scanout.
+TEST_F(COutputColorStateTest, TaggedSDROnFixedHDRKeepsSignalling) {
+    applyRule(NCMType::CM_HDR, 1);
+    const auto HDR = m_monitor->m_imageDescription;
+    ASSERT_TRUE(NColorManagement::isHDR(HDR->value()));
+    makeFullscreenWindow(NColorManagement::DEFAULT_SRGB_IMAGE_DESCRIPTION);
+
+    for (const int autoHDR : {1, 0}) {
+        SCOPED_TRACE(autoHDR);
+        *CConfigValue<Config::INTEGER>("render:cm_auto_hdr").ptr() = autoHDR;
+        frame();
+        EXPECT_EQ(m_monitor->m_imageDescription, HDR);
+        EXPECT_TRUE(m_monitor->inHDR());
+
+        m_monitor->m_lastScanout = m_window;
+        frame();
+        EXPECT_TRUE(m_monitor->inHDR());
+        rejectCandidate();
+        EXPECT_TRUE(m_monitor->inHDR());
+    }
+}
+
+// OUT-02 through the renderer: auto HDR switched off, or HDR support withdrawn, while auto HDR holds the output in PQ restores the
+// configured preset and SDR signalling on the next frame, also while the window is scanned out.
+TEST_F(COutputColorStateTest, AutoOffAndCapabilityWithdrawalRestoreTheBaseline) {
+    const auto SRGB = m_monitor->m_imageDescription;
+    makeFullscreenWindow(pqContent(500));
+    frame();
+    ASSERT_TRUE(m_monitor->inHDR());
+
+    m_monitor->m_lastScanout                                   = m_window;
+    *CConfigValue<Config::INTEGER>("render:cm_auto_hdr").ptr() = 0;
+    frame();
+    EXPECT_EQ(m_monitor->m_imageDescription, SRGB);
+    EXPECT_FALSE(m_monitor->inHDR());
+
+    m_monitor->m_lastScanout.reset();
+    *CConfigValue<Config::INTEGER>("render:cm_auto_hdr").ptr() = 1;
+    frame();
+    ASSERT_TRUE(m_monitor->inHDR());
+
+    m_monitor->m_lastScanout = m_window;
+    applyRule(NCMType::CM_SRGB, -1);
+    frame();
+    EXPECT_EQ(m_monitor->m_imageDescription, SRGB);
+    EXPECT_FALSE(m_monitor->inHDR());
+}
+
+// Third review, blocker 1: a config reload rechecks the held feedback objects before the next frame. The preferred description must
+// already follow the reloaded setting, and the frame after it must not change it again.
+TEST_F(COutputColorStateTest, ConfigReloadPublishesTheAutoHDROfferBeforeTheNextFrame) {
+    const auto ROOT = makeFullscreenWindow(m_monitor->m_imageDescription);
+    const auto HDR  = m_monitor->getHDRImageDescription(NCMType::CM_HDR);
+    frame();
+    ASSERT_EQ(ROOT->getPreferredImageDescription(), HDR);
+
+    // wp_color_manager_v1.get_surface_feedback (3) for the window's root surface
+    const uint32_t MANAGER  = nextID();
+    const uint32_t FEEDBACK = nextID();
+    PROTO::colorManagement->bindManager(client(), nullptr, 1, MANAGER);
+    request({MANAGER, (16U << 16) | 3, FEEDBACK, ROOT->id()});
+    PROTO::colorManagement->recheckFeedbacks(); // a new feedback object starts from the current preference, so this is silent
+    const auto preferredChanges = [&] {
+        return std::ranges::count_if(receiveEvents(), [FEEDBACK](const auto& event) { return event[0] == FEEDBACK && (event[1] & 0xFFFF) == 0; });
+    };
+    ASSERT_EQ(preferredChanges(), 0);
+
+    *CConfigValue<Config::INTEGER>("render:cm_auto_hdr").ptr() = 0;
+    Event::bus()->m_events.config.reloaded.emit();
+    EXPECT_EQ(preferredChanges(), 1);
+    EXPECT_EQ(ROOT->getPreferredImageDescription(), m_monitor->m_imageDescription);
+    EXPECT_FALSE(NColorManagement::isHDR(ROOT->getPreferredImageDescription()->value()));
+
+    frame();
+    EXPECT_EQ(preferredChanges(), 0);
+    EXPECT_EQ(ROOT->getPreferredImageDescription(), m_monitor->m_imageDescription);
+}
+
+// Third review, blocker 2: renderMonitor samples the cursor zoom before its pre-checks and animation tick, and takes the software cursor
+// lock from that sample. The conversion bypass must follow the same sample, not a zoom that changed in between.
+TEST_F(COutputColorStateTest, ConversionBypassFollowsTheZoomTheFrameSampled) {
+    *CConfigValue<Config::INTEGER>("render:non_shader_cm").ptr() = NColorManagement::CM_NS_ALWAYS;
+    auto content                                                 = m_monitor->m_imageDescription->value();
+    content.maxFALL                                              = content.maxFALL + 1;
+    makeFullscreenWindow(NColorManagement::CImageDescription::from(content));
+    frame();
+    ASSERT_TRUE(m_monitor->doesNoShaderCM());
+
+    m_monitor->m_cursorZoom->setValueAndWarp(2.F);
+    auto zoomOut = Event::bus()->m_events.render.preChecks.listen([this](PHLMONITOR) { m_monitor->m_cursorZoom->setValueAndWarp(1.F); });
+    // The frame resolves the colour state, then stops before drawing, which needs GL.
+    auto stop = Event::bus()->m_events.render.pre.listen([this](PHLMONITOR) {
+        m_monitor->m_damage.rotate();
+        m_monitor->m_output->needsFrame = false;
+    });
+    m_monitor->m_damage.rotate();
+    g_pCompositor->m_sessionActive = true;
+    g_pHyprRenderer->renderMonitor(m_monitor);
+    g_pCompositor->m_sessionActive = false;
+
+    EXPECT_EQ(m_monitor->m_cursorZoom->value(), 1.F);
+    EXPECT_FALSE(m_monitor->m_fullscreenCTMInputs.coversFrame);
+    EXPECT_FALSE(m_monitor->doesNoShaderCM());
+}
+
+// Third review, blocker 3: needsCM() and canNoShaderCM() answer for what is presented now, between frames too.
+TEST_F(COutputColorStateTest, PublicCMQueriesFollowThePresentationBetweenFrames) {
+    *CConfigValue<Config::INTEGER>("render:non_shader_cm").ptr() = NColorManagement::CM_NS_ALWAYS;
+    const auto OUTPUT                                            = m_monitor->m_imageDescription;
+    auto       p3                                                = OUTPUT->value();
+    p3.primariesNamed                                            = NColorManagement::CM_PRIMARIES_DISPLAY_P3;
+    p3.primaries                                                 = NColorManagement::getPrimaries(NColorManagement::CM_PRIMARIES_DISPLAY_P3);
+    const auto P3                                                = NColorManagement::CImageDescription::from(p3);
+
+    EXPECT_FALSE(m_monitor->needsCM());
+    // a newly fullscreen window, before its first colour state pass
+    const auto ROOT = makeFullscreenWindow(P3);
+    EXPECT_TRUE(m_monitor->needsCM());
+    EXPECT_FALSE(m_monitor->canNoShaderCM(true));
+
+    present(ROOT, OUTPUT);
+    frame();
+    EXPECT_FALSE(m_monitor->needsCM());
+    EXPECT_TRUE(m_monitor->canNoShaderCM(true));
+
+    // a colour commit on the same root, no frame in between: the CTM can't convert P3 into the sRGB output
+    present(ROOT, P3);
+    EXPECT_TRUE(m_monitor->needsCM());
+    EXPECT_FALSE(m_monitor->canNoShaderCM(true));
+}
+
+// Third review, blocker 4, and fourth review, finding 2: a successfully installed ICC profile ends a fallback episode, also when no
+// frame sees it before its removal, so the fallback after the removal is reported again. A profile that fails to load keeps the
+// episode. Through the real rule path, for the suppressed auto HDR switch and for a configured HDR preset without shader CM.
+TEST_F(COutputColorStateTest, ICCProfileEndsTheFallbackEpisode) {
+    // a private directory per invocation, so parallel runs sharing TMPDIR don't share the profile
+    auto directory = (std::filesystem::temp_directory_path() / "hyprland-color-state-XXXXXX").string();
+    ASSERT_NE(mkdtemp(directory.data()), nullptr);
+    const std::filesystem::path         DIRECTORY = directory;
+    const Hyprutils::Utils::CScopeGuard removeDirectory([&] { std::filesystem::remove_all(DIRECTORY); });
+    const auto                          PROFILE = DIRECTORY / "srgb.icc";
+    {
+        const auto SRGB = cmsCreate_sRGBProfile();
+        ASSERT_NE(SRGB, nullptr);
+        const bool SAVED = cmsSaveProfileToFile(SRGB, PROFILE.c_str());
+        cmsCloseProfile(SRGB);
+        ASSERT_TRUE(SAVED);
+    }
+
+    *CConfigValue<Config::BOOL>("render:cm_enabled").ptr() = false;
+    makeFullscreenWindow(pqContent(500));
+
+    struct SCase {
+        const char*      name;
+        NCMType::eCMType rule;
+    };
+    for (const auto& c : {SCase{"auto HDR", NCMType::CM_SRGB}, SCase{"HDR preset", NCMType::CM_HDR}}) {
+        SCOPED_TRACE(c.name);
+        applyRule(c.rule, 1);
+        frame();
+        EXPECT_FALSE(m_monitor->inHDR());
+        EXPECT_TRUE(Notification::overlay()->hasAny());
+        Notification::overlay()->dismissNotifications(-1);
+
+        for (const bool profileFrame : {true, false}) {
+            SCOPED_TRACE(profileFrame ? "a frame sees the profile" : "no frame sees the profile");
+            applyRule(c.rule, 1, PROFILE.string());
+            ASSERT_TRUE(m_monitor->m_imageDescription->value().icc.present);
+            if (profileFrame)
+                frame();
+            EXPECT_FALSE(Notification::overlay()->hasAny());
+
+            applyRule(c.rule, 1);
+            frame();
+            EXPECT_FALSE(m_monitor->inHDR());
+            EXPECT_TRUE(Notification::overlay()->hasAny());
+            Notification::overlay()->dismissNotifications(-1);
+        }
+
+        // a profile that fails to load leaves the episode running
+        applyRule(c.rule, 1, (DIRECTORY / "missing.icc").string());
+        ASSERT_FALSE(m_monitor->m_imageDescription->value().icc.present);
+        frame();
+        applyRule(c.rule, 1);
+        frame();
+        EXPECT_FALSE(Notification::overlay()->hasAny());
+    }
+}
+
+// Fourth review, finding 1: the offer a reload publishes is the one the next frame compares against. A retraction between the reload and
+// that frame, here leaving fullscreen on the same output, changes the preference back exactly once.
+TEST_F(COutputColorStateTest, ReloadedOfferIsRetractedByTheNextFrame) {
+    *CConfigValue<Config::INTEGER>("render:cm_auto_hdr").ptr() = 0;
+    const auto ROOT                                            = makeFullscreenWindow(m_monitor->m_imageDescription);
+    const auto SDR                                             = m_monitor->m_imageDescription;
+    frame();
+    ASSERT_EQ(ROOT->getPreferredImageDescription(), SDR);
+
+    // wp_color_manager_v1.get_surface_feedback (3) for the window's root surface
+    const uint32_t MANAGER  = nextID();
+    const uint32_t FEEDBACK = nextID();
+    PROTO::colorManagement->bindManager(client(), nullptr, 1, MANAGER);
+    request({MANAGER, (16U << 16) | 3, FEEDBACK, ROOT->id()});
+    PROTO::colorManagement->recheckFeedbacks(); // a new feedback object starts from the current preference, so this is silent
+    const auto preferredChanges = [&] {
+        return std::ranges::count_if(receiveEvents(), [FEEDBACK](const auto& event) { return event[0] == FEEDBACK && (event[1] & 0xFFFF) == 0; });
+    };
+    ASSERT_EQ(preferredChanges(), 0);
+
+    *CConfigValue<Config::INTEGER>("render:cm_auto_hdr").ptr() = 1;
+    Event::bus()->m_events.config.reloaded.emit();
+    EXPECT_EQ(preferredChanges(), 1);
+    EXPECT_EQ(ROOT->getPreferredImageDescription(), m_monitor->getHDRImageDescription(NCMType::CM_HDR));
+
+    m_workspace->space()->algorithm()->tiledAlgo()->getFSHandler()->setTargetFullscreenModeInternal(m_window->windowTarget(), Fullscreen::FSMODE_NONE);
+    frame();
+    EXPECT_EQ(preferredChanges(), 1);
+    EXPECT_EQ(ROOT->getPreferredImageDescription(), SDR);
+
+    frame();
+    EXPECT_EQ(preferredChanges(), 0);
 }

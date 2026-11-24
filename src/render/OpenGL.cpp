@@ -1168,6 +1168,10 @@ bool CHyprOpenGLImpl::isLegacy() const {
     return m_eglContextVersion == EGL_CONTEXT_GLES_2_0;
 }
 
+bool CHyprOpenGLImpl::cmSupported() const {
+    return m_cmSupported;
+}
+
 GLint CHyprOpenGLImpl::textureInternalFormat(const Hyprgraphics::Egl::SPixelFormat* format) const {
     if (isLegacy() || !format->glInternalFormat)
         return format->glFormat;
@@ -1596,6 +1600,7 @@ WP<CShader> CHyprOpenGLImpl::renderToFBInternal(CRenderContext& ctx, SP<ITexture
     // The unmodified copy is always BT.709 SDR, so it still needs CM when only the target matches the source.
     const bool mirrorNeedsCM  = (globalFeatures(ctx) & SH_FEAT_MIRROR) && TARGET_IMAGE_DESCRIPTION->needsCM(DEFAULT_SRGB_IMAGE_DESCRIPTION);
     const bool EXPLICIT_SCENE = ctx.sceneResources() && ctx.sceneResources()->bufferDescription().has_value();
+    // The fullscreen CTM converts only the frame KMS scans out. Captures, copies and other scenes still need their own conversion.
     // render:cm_sdr_eotf can decode a described sRGB source as gamma 2.2, which no longer matches an equal target description.
     const bool sourceTFOverridden =
         g_pHyprRenderer->effectiveSourceTF(ctx, SOURCE_IMAGE_DESCRIPTION, source.useSurfacePolicy) != SOURCE_IMAGE_DESCRIPTION->value().transferFunction;
@@ -1604,8 +1609,8 @@ WP<CShader> CHyprOpenGLImpl::renderToFBInternal(CRenderContext& ctx, SP<ITexture
     // A tint on PQ or HLG scales display light, which needs the target transfer function in the shader.
     const auto targetTF    = TARGET_IMAGE_DESCRIPTION->value().transferFunction;
     const bool tintNeedsCM = tinted && (targetTF == CM_TRANSFER_FUNCTION_ST2084_PQ || targetTF == CM_TRANSFER_FUNCTION_HLG);
-    const bool skipCM      = !*PENABLECM || !m_cmSupported            /* CM unsupported or disabled */
-        || (!EXPLICIT_SCENE && ctx.m_data.pMonitor->doesNoShaderCM()) /* monitor-only optimization */
+    const bool skipCM      = !*PENABLECM || !m_cmSupported                                                           /* CM unsupported or disabled */
+        || shaderCMBypassed(ctx.m_data.pMonitor->doesNoShaderCM(), ctx.m_mode == RENDER_MODE_NORMAL, EXPLICIT_SCENE) /* monitor-only optimization */
         || (!SOURCE_IMAGE_DESCRIPTION->needsCM(TARGET_IMAGE_DESCRIPTION) && !mirrorNeedsCM && !sourceTFOverridden &&
             !tintNeedsCM) /* Source and target have matching image descriptions */
         ;
