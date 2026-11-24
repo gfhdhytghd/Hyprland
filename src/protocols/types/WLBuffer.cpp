@@ -10,15 +10,10 @@ CWLBufferResource::CWLBufferResource(WP<CWlBuffer> resource_) : m_resource(resou
         return;
 
     m_resource->setOnDestroy([this](CWlBuffer* r) {
-        if (m_buffer.expired())
-            return;
-        m_buffer->events.destroy.emit();
+        if (const auto buffer = m_buffer.lock())
+            buffer->events.destroy.emit();
     });
-    m_resource->setDestroy([this](CWlBuffer* r) {
-        if (m_buffer.expired())
-            return;
-        m_buffer->events.destroy.emit();
-    });
+    m_resource->setDestroy([](CWlBuffer* r) { wl_resource_destroy(r->resource()); });
 
     m_resource->setData(this);
 }

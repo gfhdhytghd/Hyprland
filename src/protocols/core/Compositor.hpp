@@ -104,8 +104,10 @@ class CWLSurfaceResource {
         CSignalT<PHLMONITOR>                leave;
     } m_events;
 
-    SSurfaceState                          m_current;
-    SSurfaceState                          m_pending;
+    SSurfaceState m_current;
+    SSurfaceState m_pending;
+    // Effective contents on the client commit timeline, including states waiting for presentation.
+    std::optional<uint32_t>                m_committingFormat;
     CSurfaceStateQueue                     m_stateQueue;
 
     WP<CWLSurfaceResource>                 m_self;

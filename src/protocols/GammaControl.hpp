@@ -18,11 +18,11 @@ class CGammaControl {
   private:
     SP<CZwlrGammaControlV1> m_resource;
     PHLMONITORREF           m_monitor;
-    size_t                  m_gammaSize     = 0;
-    bool                    m_gammaTableSet = false;
+    size_t                  m_gammaSize = 0;
     std::vector<uint16_t>   m_gammaTable; // [r,g,b]+
 
-    void                    onMonitorDestroy();
+    void                    setGamma(int fd);
+    void                    fail();
 
     struct {
         CHyprSignalListener monitorDisconnect;

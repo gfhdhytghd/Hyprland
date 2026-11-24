@@ -235,8 +235,11 @@ void SSurfaceState::updateFrom(SSurfaceState& ref) {
     if (ref.updated.bits.viewport)
         viewport = ref.viewport;
 
-    if (ref.updated.bits.colorRepresentation)
+    if (ref.updated.bits.colorRepresentation && colorRepresentation != ref.colorRepresentation) {
         colorRepresentation = ref.colorRepresentation;
+        bufferDamage.add(CBox{{}, bufferSize});
+        updated.bits.damage = true;
+    }
 
     if (ref.updated.bits.acquire)
         acquire = ref.acquire;

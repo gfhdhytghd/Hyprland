@@ -1,5 +1,6 @@
 #include "GammaControl.hpp"
-#include <fcntl.h>
+#include <cerrno>
+#include <sys/stat.h>
 #include <unistd.h>
 #include "../output/Monitor.hpp"
 #include "../protocols/core/Output.hpp"
@@ -10,124 +11,52 @@ CGammaControl::CGammaControl(SP<CZwlrGammaControlV1> resource_, wl_resource* out
     if UNLIKELY (!resource_->resource())
         return;
 
+    m_resource->setDestroy([this](CZwlrGammaControlV1* gamma) { PROTO::gamma->destroyGammaControl(this); });
+    m_resource->setOnDestroy([this](CZwlrGammaControlV1* gamma) { PROTO::gamma->destroyGammaControl(this); });
+
+    m_resource->setSetGamma([this](CZwlrGammaControlV1*, int32_t fd) { setGamma(fd); });
+
     auto OUTPUTRES = CWLOutputResource::fromResource(output);
 
-    if UNLIKELY (!OUTPUTRES) {
+    if UNLIKELY (!OUTPUTRES || !OUTPUTRES->m_owner || OUTPUTRES->m_owner->isDefunct()) {
         LOG(Log::ERR, "No output in CGammaControl");
         m_resource->sendFailed();
         return;
     }
 
-    m_monitor = OUTPUTRES->m_monitor;
+    const auto monitor = OUTPUTRES->m_monitor.lock();
 
-    if UNLIKELY (!m_monitor || !m_monitor->m_output) {
+    if UNLIKELY (!monitor || !monitor->m_output) {
         LOG(Log::ERR, "No CMonitor");
         m_resource->sendFailed();
         return;
     }
 
     for (auto const& g : PROTO::gamma->m_gammaControllers) {
-        if UNLIKELY (g->m_monitor == m_monitor) {
+        if UNLIKELY (g->m_monitor == monitor) {
             m_resource->sendFailed();
             return;
         }
     }
 
-    m_gammaSize = m_monitor->m_output->getGammaSize();
+    m_gammaSize = monitor->m_output->getGammaSize();
 
     if UNLIKELY (m_gammaSize <= 0) {
-        LOG(Log::ERR, "Output {} doesn't support gamma", m_monitor->m_name);
+        LOG(Log::ERR, "Output {} doesn't support gamma", monitor->m_name);
         m_resource->sendFailed();
         return;
     }
 
-    m_gammaTable.resize(m_gammaSize * 3);
-
-    m_resource->setDestroy([this](CZwlrGammaControlV1* gamma) { PROTO::gamma->destroyGammaControl(this); });
-    m_resource->setOnDestroy([this](CZwlrGammaControlV1* gamma) { PROTO::gamma->destroyGammaControl(this); });
-
-    m_resource->setSetGamma([this](CZwlrGammaControlV1* gamma, int32_t fd) {
-        CFileDescriptor gammaFd{fd};
-        if UNLIKELY (!m_monitor) {
-            LOG(Log::ERR, "setGamma for a dead monitor");
-            m_resource->sendFailed();
-            return;
-        }
-
-        LOG(Log::DEBUG, "setGamma for {}", m_monitor->m_name);
-
-        if UNLIKELY (m_monitor->gammaRampsInUse()) {
-            LOG(Log::ERR, "Monitor has gamma ramps in use (ICC?)");
-            m_resource->sendFailed();
-            return;
-        }
-
-        // TODO: make CFileDescriptor getflags use F_GETFL
-        int fdFlags = fcntl(gammaFd.get(), F_GETFL, 0);
-        if UNLIKELY (fdFlags < 0) {
-            LOG(Log::ERR, "Failed to get fd flags");
-            m_resource->sendFailed();
-            return;
-        }
-
-        // TODO: make CFileDescriptor setflags use F_SETFL
-        if UNLIKELY (fcntl(gammaFd.get(), F_SETFL, fdFlags | O_NONBLOCK) < 0) {
-            LOG(Log::ERR, "Failed to set fd flags");
-            m_resource->sendFailed();
-            return;
-        }
-
-        ssize_t readBytes = read(gammaFd.get(), m_gammaTable.data(), m_gammaTable.size() * sizeof(uint16_t));
-
-        ssize_t moreBytes = 0;
-        {
-            const size_t BUF_SIZE      = 1;
-            char         buf[BUF_SIZE] = {};
-            moreBytes                  = read(gammaFd.get(), buf, BUF_SIZE);
-        }
-
-        if (readBytes < 0 || sc<size_t>(readBytes) != m_gammaTable.size() * sizeof(uint16_t) || moreBytes != 0) {
-            LOG(Log::ERR, "Failed to read bytes");
-
-            if (sc<size_t>(readBytes) != m_gammaTable.size() * sizeof(uint16_t) || moreBytes > 0) {
-                gamma->error(ZWLR_GAMMA_CONTROL_V1_ERROR_INVALID_GAMMA, "Gamma ramps size mismatch");
-                return;
-            }
-
-            m_resource->sendFailed();
-            return;
-        }
-
-        m_gammaTableSet = true;
-
-        // translate the table to AQ format
-        std::vector<uint16_t> red, green, blue;
-        red.resize(m_gammaTable.size() / 3);
-        green.resize(m_gammaTable.size() / 3);
-        blue.resize(m_gammaTable.size() / 3);
-        for (size_t i = 0; i < m_gammaTable.size() / 3; ++i) {
-            red.at(i)   = m_gammaTable.at(i);
-            green.at(i) = m_gammaTable.at(m_gammaTable.size() / 3 + i);
-            blue.at(i)  = m_gammaTable.at((m_gammaTable.size() / 3) * 2 + i);
-        }
-
-        for (size_t i = 0; i < m_gammaTable.size() / 3; ++i) {
-            m_gammaTable.at(i * 3)     = red.at(i);
-            m_gammaTable.at(i * 3 + 1) = green.at(i);
-            m_gammaTable.at(i * 3 + 2) = blue.at(i);
-        }
-
-        applyToMonitor();
-    });
+    m_monitor = monitor;
 
     m_resource->sendGammaSize(m_gammaSize);
 
-    m_listeners.monitorDestroy    = m_monitor->m_events.destroy.listen([this] { this->onMonitorDestroy(); });
-    m_listeners.monitorDisconnect = m_monitor->m_events.disconnect.listen([this] { this->onMonitorDestroy(); });
+    m_listeners.monitorDestroy    = m_monitor->m_events.destroy.listen([this] { fail(); });
+    m_listeners.monitorDisconnect = m_monitor->m_events.disconnect.listen([this] { fail(); });
 }
 
 CGammaControl::~CGammaControl() {
-    if (!m_gammaTableSet || !m_monitor || !m_monitor->m_output)
+    if (m_gammaTable.empty() || !m_monitor || !m_monitor->m_output)
         return;
 
     // reset the ramp if the client dies for whatever reason and doesn't unset the gamma, keeping the monitor's own LUTs
@@ -138,13 +67,61 @@ bool CGammaControl::good() {
     return m_resource->resource();
 }
 
+void CGammaControl::setGamma(int fd) {
+    CFileDescriptor gammaFd{fd};
+    if (!m_monitor)
+        return;
+
+    LOG(Log::DEBUG, "setGamma for {}", m_monitor->m_name);
+
+    if UNLIKELY (m_monitor->gammaRampsInUse()) {
+        LOG(Log::ERR, "Monitor has gamma ramps in use (ICC?)");
+        fail();
+        return;
+    }
+
+    struct stat info = {};
+    if (fstat(gammaFd.get(), &info) < 0) {
+        fail();
+        return;
+    }
+
+    if (!S_ISREG(info.st_mode) || info.st_size != sc<off_t>(m_gammaSize * 3 * sizeof(uint16_t))) {
+        m_resource->error(ZWLR_GAMMA_CONTROL_V1_ERROR_INVALID_GAMMA, "Gamma ramps size mismatch");
+        return;
+    }
+
+    std::vector<uint16_t> channels(m_gammaSize * 3);
+    const auto            bytes = std::as_writable_bytes(std::span{channels});
+    for (size_t offset = 0; offset < bytes.size();) {
+        const auto count = pread(gammaFd.get(), bytes.data() + offset, bytes.size() - offset, offset);
+        if (count < 0 && errno == EINTR)
+            continue;
+        if (count <= 0) {
+            fail();
+            return;
+        }
+        offset += count;
+    }
+
+    // Wayland supplies three consecutive channels. Aquamarine takes interleaved RGB.
+    m_gammaTable.resize(channels.size());
+    for (size_t i = 0; i < m_gammaSize; ++i) {
+        m_gammaTable[i * 3]     = channels[i];
+        m_gammaTable[i * 3 + 1] = channels[m_gammaSize + i];
+        m_gammaTable[i * 3 + 2] = channels[m_gammaSize * 2 + i];
+    }
+
+    applyToMonitor();
+}
+
 void CGammaControl::applyToMonitor() {
     if UNLIKELY (!m_monitor || !m_monitor->m_output)
         return; // ??
 
     LOG(Log::DEBUG, "setting to monitor {}", m_monitor->m_name);
 
-    if (!m_gammaTableSet) {
+    if (m_gammaTable.empty()) {
         m_monitor->setClientGammaRamp({});
         return;
     }
@@ -153,7 +130,8 @@ void CGammaControl::applyToMonitor() {
 
     if (!m_monitor->m_state.test()) {
         LOG(Log::DEBUG, "setting to monitor {} failed", m_monitor->m_name);
-        m_monitor->setClientGammaRamp({});
+        fail();
+        return;
     }
 
     g_pHyprRenderer->damageMonitor(m_monitor.lock());
@@ -163,8 +141,13 @@ PHLMONITOR CGammaControl::getMonitor() {
     return m_monitor.lock();
 }
 
-void CGammaControl::onMonitorDestroy() {
-    LOG(Log::DEBUG, "Destroying gamma control for {}", m_monitor->m_name);
+void CGammaControl::fail() {
+    m_listeners.monitorDisconnect.reset();
+    m_listeners.monitorDestroy.reset();
+    if (!m_gammaTable.empty() && m_monitor && m_monitor->m_output)
+        m_monitor->setClientGammaRamp({});
+    m_gammaTable.clear();
+    m_monitor.reset();
     m_resource->sendFailed();
 }
 

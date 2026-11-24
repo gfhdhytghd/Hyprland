@@ -6,6 +6,7 @@
 #include <protocols/core/Compositor.hpp>
 #include <state/MonitorState.hpp>
 
+#include <drm_fourcc.h>
 #include <gtest/gtest.h>
 #include <array>
 #include <initializer_list>
@@ -17,19 +18,40 @@
 using namespace Hyprutils::OS;
 using namespace NColorManagement;
 
+class CRepresentationTestRole : public ISurfaceRole {
+  public:
+    eSurfaceRole role() override {
+        return SURFACE_ROLE_XDG_SHELL;
+    }
+};
+
 class CColorRepresentationTestBuffer : public IHLBuffer {
   public:
+    bool                     m_shm = false;
+    std::optional<uint32_t>  m_format;
+    Aquamarine::SDMABUFAttrs dmabuf() override {
+        Aquamarine::SDMABUFAttrs attrs;
+        attrs.format = m_format.value_or(DRM_FORMAT_INVALID);
+        return attrs;
+    }
     Aquamarine::eBufferCapability caps() override {
         return Aquamarine::BUFFER_CAPABILITY_NONE;
     }
     Aquamarine::eBufferType type() override {
-        return Aquamarine::BUFFER_TYPE_MISC;
+        if (m_shm)
+            return Aquamarine::BUFFER_TYPE_SHM;
+        return m_format ? Aquamarine::BUFFER_TYPE_DMABUF : Aquamarine::BUFFER_TYPE_MISC;
     }
     void update(const CRegion&) override {
         ADD_FAILURE();
     }
+    Aquamarine::SSHMAttrs shm() override {
+        Aquamarine::SSHMAttrs attrs;
+        attrs.format = DRM_FORMAT_ARGB8888;
+        return attrs;
+    }
     bool isSynchronous() override {
-        return false;
+        return m_shm;
     }
     bool good() override {
         return true;
@@ -119,6 +141,10 @@ class CColorRepresentationTest : public ::testing::Test {
         const auto size = message.size() * sizeof(uint32_t);
         ASSERT_EQ(send(m_socket.get(), message.data(), size, MSG_NOSIGNAL), sc<ssize_t>(size));
         ASSERT_EQ(wl_event_loop_dispatch(wl_display_get_event_loop(m_display.get()), 0), 0);
+    }
+
+    void attach(SP<CWLSurfaceResource> surf, SP<CColorRepresentationTestBuffer> buf) {
+        request(surf->id(), 1, {buf ? wl_resource_get_id(buf->m_resource->getResource()) : 0, 0, 0});
     }
 
     void commit(SP<CWLSurfaceResource> surface) {
@@ -248,4 +274,103 @@ TEST_F(CColorRepresentationTest, RequestsAfterSurfaceDestructionAreAnError) {
     surf.reset();
     request(id, 1, {WP_COLOR_REPRESENTATION_SURFACE_V1_ALPHA_MODE_PREMULTIPLIED_ELECTRICAL});
     EXPECT_EQ(protocolError(), std::pair(id, sc<uint32_t>(WP_COLOR_REPRESENTATION_SURFACE_V1_ERROR_INERT)));
+}
+
+TEST_F(CColorRepresentationTest, QueuedAttachmentDefinesMetadataFormat) {
+    auto surf     = surface();
+    auto rgb      = buffer();
+    auto yuv      = buffer();
+    yuv->m_format = DRM_FORMAT_NV12;
+    attach(surf, rgb);
+    commit(surf);
+    auto lock = surf->m_events.stateCommit.listen([&](WP<SSurfaceState> state) { surf->m_stateQueue.lock(state, LOCK_REASON_TIMER); });
+    attach(surf, yuv);
+    commit(surf);
+    ASSERT_EQ(surf->m_current.buffer.m_buffer.get(), rgb.get());
+    const auto id = representation(surf);
+    request(id, 3, {WP_COLOR_REPRESENTATION_SURFACE_V1_CHROMA_LOCATION_TYPE_2});
+    commit(surf);
+    EXPECT_FALSE(protocolError());
+}
+
+TEST_F(CColorRepresentationTest, ReleasedContentsStillHaveAFormat) {
+    auto surf    = surface();
+    auto rgb     = buffer();
+    surf->m_role = makeShared<CRepresentationTestRole>();
+    rgb->m_shm   = true;
+    attach(surf, rgb);
+    commit(surf);
+    ASSERT_FALSE(surf->m_current.buffer);
+    const auto id = representation(surf);
+    request(id, 2, {WP_COLOR_REPRESENTATION_SURFACE_V1_COEFFICIENTS_BT709, WP_COLOR_REPRESENTATION_SURFACE_V1_RANGE_FULL});
+    commit(surf);
+    EXPECT_EQ(protocolError(), std::pair(id, sc<uint32_t>(WP_COLOR_REPRESENTATION_SURFACE_V1_ERROR_PIXEL_FORMAT)));
+}
+
+TEST_F(CColorRepresentationTest, NullAttachmentClearsFormat) {
+    auto surf = surface();
+    auto rgb  = buffer();
+    attach(surf, rgb);
+    commit(surf);
+    attach(surf, nullptr);
+    commit(surf);
+    const auto id = representation(surf);
+    request(id, 3, {WP_COLOR_REPRESENTATION_SURFACE_V1_CHROMA_LOCATION_TYPE_2});
+    commit(surf);
+    EXPECT_FALSE(protocolError());
+}
+
+TEST_F(CColorRepresentationTest, ChromaLocationRequires420ButCoefficientsDoNot) {
+    auto surf     = surface();
+    auto yuv      = buffer();
+    yuv->m_format = DRM_FORMAT_NV24;
+    const auto id = representation(surf);
+    attach(surf, yuv);
+    request(id, 2, {WP_COLOR_REPRESENTATION_SURFACE_V1_COEFFICIENTS_BT709, WP_COLOR_REPRESENTATION_SURFACE_V1_RANGE_FULL});
+    commit(surf);
+    ASSERT_FALSE(protocolError());
+    request(id, 3, {WP_COLOR_REPRESENTATION_SURFACE_V1_CHROMA_LOCATION_TYPE_2});
+    commit(surf);
+    EXPECT_EQ(protocolError(), std::pair(id, sc<uint32_t>(WP_COLOR_REPRESENTATION_SURFACE_V1_ERROR_PIXEL_FORMAT)));
+}
+
+TEST_F(CColorRepresentationTest, RepresentationChangeAndResetDamageWholeBuffer) {
+    auto surf     = surface();
+    auto yuv      = buffer();
+    yuv->m_format = DRM_FORMAT_NV12;
+    const auto id = representation(surf);
+    attach(surf, yuv);
+    commit(surf);
+    const CRegion full{CBox{{}, yuv->size}};
+    surf->m_current.accumulateBufferDamage();
+    request(id, 3, {WP_COLOR_REPRESENTATION_SURFACE_V1_CHROMA_LOCATION_TYPE_2});
+    commit(surf);
+    EXPECT_TRUE(pixman_region32_equal(surf->m_current.accumulateBufferDamage().pixman(), full.pixman()));
+    request(id, 0);
+    commit(surf);
+    EXPECT_TRUE(pixman_region32_equal(surf->m_current.accumulateBufferDamage().pixman(), full.pixman()));
+    EXPECT_FALSE(protocolError());
+}
+
+TEST_F(CColorRepresentationTest, NullAttachmentPreservesQueuedReset) {
+    auto surf     = surface();
+    auto yuv      = buffer();
+    yuv->m_format = DRM_FORMAT_NV12;
+    const auto id = representation(surf);
+    attach(surf, yuv);
+    request(id, 2, {WP_COLOR_REPRESENTATION_SURFACE_V1_COEFFICIENTS_BT709, WP_COLOR_REPRESENTATION_SURFACE_V1_RANGE_FULL});
+    commit(surf);
+    ASSERT_NE(surf->m_current.colorRepresentation, SColorRepresentation{});
+    auto lock = surf->m_events.stateCommit.listen([&](WP<SSurfaceState> state) { surf->m_stateQueue.lock(state, LOCK_REASON_TIMER); });
+    request(id, 0);
+    commit(surf);
+    ASSERT_NE(surf->m_current.colorRepresentation, SColorRepresentation{});
+    attach(surf, nullptr);
+    commit(surf);
+    lock.reset();
+    attach(surf, yuv);
+    commit(surf);
+    ASSERT_FALSE(protocolError());
+    ASSERT_EQ(surf->m_current.buffer.m_buffer.get(), yuv.get());
+    EXPECT_EQ(surf->m_current.colorRepresentation, SColorRepresentation{});
 }

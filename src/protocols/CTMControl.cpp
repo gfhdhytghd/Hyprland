@@ -27,9 +27,9 @@ CHyprlandCTMControlResource::CHyprlandCTMControlResource(UP<CHyprlandCtmControlM
         if UNLIKELY (!OUTPUTRESOURCE)
             return; // ?!
 
-        const auto PMONITOR = OUTPUTRESOURCE->m_monitor.lock();
+        const auto owner = OUTPUTRESOURCE->m_owner.lock();
 
-        if UNLIKELY (!PMONITOR)
+        if UNLIKELY (!owner || owner->isDefunct() || !owner->m_monitor)
             return; // ?!?!
 
         const std::array<float, 9> MAT = {wl_fixed_to_double(mat0), wl_fixed_to_double(mat1), wl_fixed_to_double(mat2), wl_fixed_to_double(mat3), wl_fixed_to_double(mat4),
@@ -42,9 +42,9 @@ CHyprlandCTMControlResource::CHyprlandCTMControlResource(UP<CHyprlandCtmControlM
             }
         }
 
-        m_ctms[PMONITOR->m_name] = MAT;
+        m_ctms[owner] = MAT;
 
-        LOG(Log::DEBUG, "CTM set for output {}: {}", PMONITOR->m_name, m_ctms.at(PMONITOR->m_name).toString());
+        LOG(Log::DEBUG, "CTM set for output {}: {}", owner->m_monitor->m_name, m_ctms.at(owner).toString());
     });
 
     m_resource->setCommit([this](CHyprlandCtmControlManagerV1* r) {
@@ -54,13 +54,15 @@ CHyprlandCTMControlResource::CHyprlandCTMControlResource(UP<CHyprlandCtmControlM
         LOG(Log::DEBUG, "Committing ctms to outputs");
 
         for (auto& m : State::monitorState()->monitors()) {
-            if (!m_ctms.contains(m->m_name)) {
+            const auto output = PROTO::outputs.find(m->m_name);
+            if (output == PROTO::outputs.end() || output->second->m_monitor != m || output->second->isDefunct() || !m_ctms.contains(output->second)) {
                 PROTO::ctm->setCTM(m, Mat3x3::identity());
                 continue;
             }
 
-            PROTO::ctm->setCTM(m, m_ctms.at(m->m_name));
+            PROTO::ctm->setCTM(m, m_ctms.at(output->second));
         }
+        m_ctms.clear();
     });
 }
 
@@ -127,6 +129,7 @@ CHyprlandCTMControlProtocol::SCTMData::SCTMData() {
 
 void CHyprlandCTMControlProtocol::setCTM(PHLMONITOR monitor, const Mat3x3& ctm) {
     if (!isCTMAnimationEnabled()) {
+        m_ctmDatas.erase(monitor);
         monitor->setCTM(ctm);
         return;
     }
@@ -138,9 +141,10 @@ void CHyprlandCTMControlProtocol::setCTM(PHLMONITOR monitor, const Mat3x3& ctm) 
 
     auto& data = m_ctmDatas.at(monitor);
 
-    data->ctmFrom = data->ctmTo;
+    data->ctmFrom = monitor->m_ctm;
     data->ctmTo   = ctm;
 
+    data->progress->resetAllCallbacks();
     data->progress->setValueAndWarp(0.F);
     *data->progress = 1.F;
 

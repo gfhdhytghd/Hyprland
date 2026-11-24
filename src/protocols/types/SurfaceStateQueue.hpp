@@ -11,7 +11,7 @@ class CSurfaceStateQueue {
     CSurfaceStateQueue() = default;
     explicit CSurfaceStateQueue(WP<CWLSurfaceResource> surf);
 
-    void              clear();
+    void              applyNullAttachment(SSurfaceState& state);
     WP<SSurfaceState> enqueue(UP<SSurfaceState>&& state);
     void              dropState(const WP<SSurfaceState>& state);
     void              lock(const WP<SSurfaceState>& state, eLockReason reason);
