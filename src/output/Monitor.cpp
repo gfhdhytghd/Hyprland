@@ -1,4 +1,5 @@
 #include "Monitor.hpp"
+#include "../helpers/cm/Luminance.hpp"
 #include "../desktop/view/window/WindowEffectsController.hpp"
 #include "../desktop/view/window/WindowPresentation.hpp"
 #include "../helpers/MiscFunctions.hpp"
@@ -146,6 +147,7 @@ void CMonitor::onConnect(bool noRule) {
         if (!m_commitCoordinator->shouldForwardCommitEvent())
             return;
 
+        m_committedContentType = m_output->state->state().contentType;
         m_events.commit.emit();
     });
     m_listeners.commitResult = m_output->events.commitResult.listen([this](const Aquamarine::IOutput::SCommitResult& result) { m_commitCoordinator->onCommitResult(result); });
@@ -611,9 +613,68 @@ void CMonitor::applyCMType(NCMType::eCMType cmType, NTransferFunction::eTF cmSdr
     }
 }
 
-bool CMonitor::applyMonitorRuleSoft(Config::CMonitorRule&& pMonitorRule) {
+void CMonitor::reloadICC() {
     const auto oldDescription = m_imageDescription;
-    m_activeMonitorRule       = std::move(pMonitorRule);
+    auto       image          = NColorManagement::SImageDescription::fromICC(m_activeMonitorRule.m_iccFile, m_imageDescription);
+    if (!image) {
+        LOG(Log::ERR, "icc for {} ({}) failed: {}", m_name, m_activeMonitorRule.m_iccFile, image.error());
+        ErrorOverlay::overlay()->queueError(std::format("failed to apply icc {} to {}: {}", m_activeMonitorRule.m_iccFile, m_name, image.error()));
+    } else {
+        m_imageDescription = CImageDescription::from(*image);
+        if (!m_imageDescription) {
+            LOG(Log::ERR, "icc for {} ({}) failed 2: {}", m_name, m_activeMonitorRule.m_iccFile, image.error());
+            ErrorOverlay::overlay()->queueError(std::format("failed to apply icc {} to {}: {}", m_activeMonitorRule.m_iccFile, m_name, image.error()));
+            m_imageDescription = CImageDescription::from(SImageDescription{});
+        }
+    }
+    if (oldDescription != m_imageDescription) {
+        if (PROTO::colorManagement)
+            PROTO::colorManagement->onMonitorImageDescriptionChanged(m_self);
+        m_blurFBDirty = true;
+        g_pHyprRenderer->damageMonitor(m_self.lock());
+    }
+}
+
+bool CMonitor::stageContentType(uint16_t desired) {
+    if (m_output->state->state().contentType != desired)
+        m_output->state->setContentType(desired);
+    return m_committedContentType != desired;
+}
+
+void CMonitor::refreshColorConfig() {
+    static const auto PVCGT              = CConfigValue<Config::INTEGER>("render:icc_vcgt_enabled");
+    const auto        source             = NTransferFunction::fromConfig();
+    const bool        sourceChanged      = m_appliedGlobalSdrEotf != source;
+    const bool        calibrationChanged = !m_activeMonitorRule.m_iccFile.empty() && m_appliedVCGTEnabled != !!*PVCGT;
+    if (!sourceChanged && !calibrationChanged)
+        return;
+
+    if (calibrationChanged) {
+        m_appliedVCGTEnabled = !!*PVCGT;
+        if (m_appliedVCGTEnabled)
+            reloadICC();
+        updateVCGTRamps();
+    } else if (m_activeMonitorRule.m_iccFile.empty() && m_sdrEotf == NTransferFunction::TF_AUTO && !NColorManagement::isHDR(m_imageDescription->value()))
+        applyCMType(m_cmType, m_sdrEotf);
+
+    Pointer::mgr()->onMonitorImageDescriptionChanged();
+    m_appliedGlobalSdrEotf = source;
+    m_blurFBDirty          = true;
+    m_damage.damageEntire();
+    scheduleFrame(Aquamarine::IOutput::AQ_SCHEDULE_DAMAGE);
+}
+
+bool CMonitor::applyMonitorRuleSoft(Config::CMonitorRule&& pMonitorRule) {
+    m_activeMonitorRule     = std::move(pMonitorRule);
+    static const auto PVCGT = CConfigValue<Config::INTEGER>("render:icc_vcgt_enabled");
+    m_appliedVCGTEnabled    = !!*PVCGT;
+    if (m_appliedGlobalSdrEotf != NTransferFunction::fromConfig()) {
+        m_blurFBDirty = true;
+        m_damage.damageEntire();
+        if (m_enabled && m_output)
+            scheduleFrame(Aquamarine::IOutput::AQ_SCHEDULE_DAMAGE);
+    }
+    m_appliedGlobalSdrEotf = NTransferFunction::fromConfig();
     m_reservedArea.setStatic(m_activeMonitorRule.m_reservedArea);
     m_transform         = m_activeMonitorRule.m_transform;
     m_supportsWideColor = m_activeMonitorRule.m_supportsWideColor;
@@ -625,7 +686,7 @@ bool CMonitor::applyMonitorRuleSoft(Config::CMonitorRule&& pMonitorRule) {
         m_cmType = m_activeMonitorRule.m_cmType;
         switch (m_cmType) {
             case NCMType::CM_AUTO: m_cmType = m_enabled10bit && supportsWideColor() ? NCMType::CM_WIDE : NCMType::CM_SRGB; break;
-            case NCMType::CM_EDID: m_cmType = m_output->parsedEDID.chromaticityCoords.has_value() ? NCMType::CM_EDID : NCMType::CM_SRGB; break;
+            case NCMType::CM_EDID: m_cmType = getMasteringPrimaries() != SPCPRimaries{} ? NCMType::CM_EDID : NCMType::CM_SRGB; break;
             case NCMType::CM_WIDE:
                 // BT.2020 pixels the connector can't signal would be shown with the display's default colorimetry.
                 if (!canSignalBT2020()) {
@@ -652,25 +713,7 @@ bool CMonitor::applyMonitorRuleSoft(Config::CMonitorRule&& pMonitorRule) {
         m_sdrSaturation = m_activeMonitorRule.m_sdrSaturation;
         m_sdrBrightness = m_activeMonitorRule.m_sdrBrightness;
     } else {
-        auto image = NColorManagement::SImageDescription::fromICC(m_activeMonitorRule.m_iccFile, m_imageDescription);
-        if (!image) {
-            LOG(Log::ERR, "icc for {} ({}) failed: {}", m_name, m_activeMonitorRule.m_iccFile, image.error());
-            ErrorOverlay::overlay()->queueError(std::format("failed to apply icc {} to {}: {}", m_activeMonitorRule.m_iccFile, m_name, image.error()));
-        } else {
-            m_imageDescription = CImageDescription::from(*image);
-            if (!m_imageDescription) {
-                LOG(Log::ERR, "icc for {} ({}) failed 2: {}", m_name, m_activeMonitorRule.m_iccFile, image.error());
-                ErrorOverlay::overlay()->queueError(std::format("failed to apply icc {} to {}: {}", m_activeMonitorRule.m_iccFile, m_name, image.error()));
-                m_imageDescription = CImageDescription::from(SImageDescription{});
-            }
-        }
-    }
-
-    if (!m_activeMonitorRule.m_iccFile.empty() && oldDescription != m_imageDescription) {
-        if (PROTO::colorManagement)
-            PROTO::colorManagement->onMonitorImageDescriptionChanged(m_self);
-        m_blurFBDirty = true;
-        g_pHyprRenderer->damageMonitor(m_self.lock());
+        reloadICC();
     }
 
     // the VCGT belongs to the active profile, so replacing or removing the ICC must replace or drop it
@@ -2494,14 +2537,23 @@ int CMonitor::referenceLuminance() const {
 int CMonitor::maxLuminance(int defaultValue) {
     if (m_maxLuminance > 0)
         return m_maxLuminance;
-    if (m_output && m_output->parsedEDID.hdrMetadata && m_output->parsedEDID.hdrMetadata->desiredContentMaxLuminance > 0)
-        return m_output->parsedEDID.hdrMetadata->desiredContentMaxLuminance;
+    if (m_output && m_output->parsedEDID.hdrMetadata) {
+        const double peak = m_output->parsedEDID.hdrMetadata->desiredContentMaxLuminance;
+        if (peak >= 1 && peak <= INT_MAX)
+            return sc<int>(peak);
+    }
     return defaultValue;
 }
 
 int CMonitor::maxAvgLuminance(int defaultValue) {
-    return m_maxAvgLuminance > 0 ? m_maxAvgLuminance :
-                                   (m_output && m_output->parsedEDID.hdrMetadata.has_value() ? m_output->parsedEDID.hdrMetadata->desiredMaxFrameAverageLuminance : defaultValue);
+    if (m_maxAvgLuminance > 0)
+        return m_maxAvgLuminance;
+    if (m_output && m_output->parsedEDID.hdrMetadata) {
+        const double average = m_output->parsedEDID.hdrMetadata->desiredMaxFrameAverageLuminance;
+        if (average >= 0 && average <= INT_MAX)
+            return sc<int>(average);
+    }
+    return defaultValue;
 }
 
 float CMonitor::maxFALL() {
@@ -2552,14 +2604,17 @@ std::optional<NColorManagement::PImageDescription> CMonitor::getAutoHDRImageDesc
 }
 
 NColorManagement::SPCPRimaries CMonitor::getMasteringPrimaries() {
-    return m_output && m_output->parsedEDID.chromaticityCoords.has_value() ?
-        NColorManagement::SPCPRimaries{
-            .red   = {.x = m_output->parsedEDID.chromaticityCoords->red.x, .y = m_output->parsedEDID.chromaticityCoords->red.y},
-            .green = {.x = m_output->parsedEDID.chromaticityCoords->green.x, .y = m_output->parsedEDID.chromaticityCoords->green.y},
-            .blue  = {.x = m_output->parsedEDID.chromaticityCoords->blue.x, .y = m_output->parsedEDID.chromaticityCoords->blue.y},
-            .white = {.x = m_output->parsedEDID.chromaticityCoords->white.x, .y = m_output->parsedEDID.chromaticityCoords->white.y},
-        } :
-        NColorManagement::SPCPRimaries{};
+    if (!m_output || !m_output->parsedEDID.chromaticityCoords)
+        return {};
+
+    const auto& edid      = *m_output->parsedEDID.chromaticityCoords;
+    const auto  primaries = SPCPRimaries{
+        .red   = {.x = edid.red.x, .y = edid.red.y},
+        .green = {.x = edid.green.x, .y = edid.green.y},
+        .blue  = {.x = edid.blue.x, .y = edid.blue.y},
+        .white = {.x = edid.white.x, .y = edid.white.y},
+    };
+    return isPhysicalDisplayChromaticities(primaries) ? primaries : SPCPRimaries{};
 }
 
 NColorManagement::SImageDescription::SPCMasteringLuminances CMonitor::getMasteringLuminances() {
@@ -2571,18 +2626,47 @@ NColorManagement::SImageDescription::SPCMasteringLuminances CMonitor::getMasteri
 
 // HDR10 signals BT.2020 colorimetry, so both HDR presets encode pixels in BT.2020. The panel's EDID gamut is only its mastering volume.
 NColorManagement::PImageDescription CMonitor::getHDRImageDescription(NCMType::eCMType /* both HDR presets share the encoding */) {
+    const auto pqPeak    = sc<int>(HDR_MAX_LUMINANCE);
+    auto       reference = referenceLuminance();
+    if (reference > pqPeak) {
+        LOG(Log::WARN, "Output {}: reference_luminance exceeds the PQ encoding range, using the default", m_name);
+        reference = sc<int>(HDR_REF_LUMINANCE);
+    }
+
+    auto peak = maxLuminance(pqPeak);
+    if (peak > pqPeak) {
+        if (m_maxLuminance > 0)
+            LOG(Log::WARN, "Output {}: max_luminance exceeds the PQ encoding range, using the default", m_name);
+        peak = pqPeak;
+    }
+
+    auto black = minLuminance(HDR_MIN_LUMINANCE);
+    // CTA-861.3 encodes mastering black in an unsigned 16-bit field in units of 0.0001 cd/m².
+    const auto blackEncoded = encodeMinimumLuminance(black);
+    if (!std::isfinite(black) || black < 0 || blackEncoded > UINT16_MAX || blackEncoded >= std::min(reference, peak) * 10000.0) {
+        if (m_minLuminance != -1.F)
+            LOG(Log::WARN, "Output {}: min_luminance is outside the encodable range or is not below reference white and mastering peak, using the default", m_name);
+        black = HDR_MIN_LUMINANCE;
+    }
+
+    const auto validLightLevel = [&](int value) { return value * 10000.0 > encodeMinimumLuminance(black) && value <= peak; };
+    const auto cll             = maxLuminance(0);
+    const auto fall            = maxAvgLuminance(0);
+    const bool validCLL        = validLightLevel(cll);
+    const bool validFALL       = validLightLevel(fall) && (!validCLL || fall <= cll);
+    if (!validFALL && m_maxAvgLuminance > 0)
+        LOG(Log::WARN, "Output {}: max_avg_luminance is outside the mastering range or exceeds MaxCLL, omitting MaxFALL", m_name);
+
     return CImageDescription::from({
         .transferFunction    = NColorManagement::CM_TRANSFER_FUNCTION_ST2084_PQ,
         .primariesNameSet    = true,
         .primariesNamed      = NColorManagement::CM_PRIMARIES_BT2020,
         .primaries           = NColorManagement::getPrimaries(NColorManagement::CM_PRIMARIES_BT2020),
         .masteringPrimaries  = getMasteringPrimaries(),
-        .luminances          = {.min       = minLuminance(HDR_MIN_LUMINANCE),
-                                .max       = sc<uint32_t>(DEFAULT_HDR_IMAGE_DESCRIPTION->value().getTFMaxLuminance()),
-                                .reference = sc<uint32_t>(referenceLuminance())},
-        .masteringLuminances = {.min = minLuminance(HDR_MIN_LUMINANCE), .max = sc<uint32_t>(maxLuminance(HDR_MAX_LUMINANCE))},
-        .maxCLL              = maxCLL(),
-        .maxFALL             = maxFALL(),
+        .luminances          = {.min = black, .max = sc<uint32_t>(pqPeak), .reference = sc<uint32_t>(reference)},
+        .masteringLuminances = {.min = black, .max = sc<uint32_t>(peak)},
+        .maxCLL              = validCLL ? sc<uint32_t>(cll) : 0,
+        .maxFALL             = validFALL ? sc<uint32_t>(fall) : 0,
     });
 }
 
@@ -2712,14 +2796,10 @@ static std::vector<uint16_t> resampleInterleavedToKms(const SVCGTTable16& t, siz
 }
 
 void CMonitor::updateVCGTRamps() {
-    auto gammaSize = m_output->getGammaSize();
+    static auto PVCGTENABLED = CConfigValue<Config::INTEGER>("render:icc_vcgt_enabled");
 
-    if (gammaSize <= 10) {
-        LOG(Log::DEBUG, "CMonitor::updateVCGTRamps: skipping, no gamma ramp for output");
-        return;
-    }
-
-    if (!m_imageDescription->value().icc.vcgt) {
+    const auto  gammaSize = m_output->getGammaSize();
+    if (gammaSize <= 10 || !*PVCGTENABLED || !m_imageDescription->value().icc.vcgt) {
         m_vcgtRamp.clear();
         m_vcgtRampsSet = false;
         applyColorLuts();

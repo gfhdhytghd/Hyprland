@@ -84,7 +84,8 @@ COutputCommitCoordinator::eSubmitResult COutputCommitCoordinator::submit(SFrame&
         return SUBMIT_FAILED;
     }
 
-    const auto CAPS = m_monitor->m_output->commitCapabilities();
+    frame.contentType = m_monitor->m_output->state->state().contentType;
+    const auto CAPS   = m_monitor->m_output->commitCapabilities();
 
     LOG(Log::TRACE, "COutputCommitCoordinator: submit() with caps={}", m_monitor->m_name, sc<uint32_t>(CAPS));
 
@@ -162,6 +163,7 @@ void COutputCommitCoordinator::onCommitResult(const Aquamarine::IOutput::SCommit
     else
         LOG(Log::TRACE, "Async output commit {} for {} submitted successfully", result.id, m_monitor->m_name);
 
+    m_monitor->m_committedContentType = m_pending->contentType;
     submitted(*m_pending, true);
     m_monitor->m_events.commit.emit();
 }

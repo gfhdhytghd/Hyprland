@@ -30,6 +30,7 @@ namespace Monitor {
             PHLWINDOWREF                             scanoutCandidate;
             bool                                     rollbackSwapchain = false;
             bool                                     tearing           = false;
+            uint16_t                                 contentType       = DRM_MODE_CONTENT_TYPE_GRAPHICS;
             bool                                     vrr               = false;
             bool                                     copyFBPrepared    = false;
             std::optional<uint32_t>                  previousFormat;

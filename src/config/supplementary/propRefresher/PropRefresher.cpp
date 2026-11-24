@@ -121,6 +121,13 @@ void CPropRefresher::refreshProp(const bool execdAsScheduled) {
         }
     }
 
+    if (m_propsTripped & (REFRESH_SDR_EOTF | REFRESH_ICC_PROFILES)) {
+        for (const auto& m : State::monitorState()->allMonitors()) {
+            if (m && m->m_enabled && m->m_output)
+                m->refreshColorConfig();
+        }
+    }
+
     if (m_propsTripped & REFRESH_MONITOR_STATES) {
         Config::monitorRuleMgr()->scheduleReload();
         Config::monitorRuleMgr()->ensureVRR();

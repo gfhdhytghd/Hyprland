@@ -17,6 +17,8 @@ namespace Config::Supplementary {
         REFRESH_CURSOR_ZOOMS       = (1 << 7),
         REFRESH_CONFIG_WATCHER     = (1 << 8),
         REFRESH_GRADIENTS_GROUPBAR = (1 << 9),
+        REFRESH_SDR_EOTF           = (1 << 11),
+        REFRESH_ICC_PROFILES       = (1 << 10),
 
         REFRESH_ALL = std::numeric_limits<std::underlying_type_t<ePropRefreshProp>>::max(),
     };

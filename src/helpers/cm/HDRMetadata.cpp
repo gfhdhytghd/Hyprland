@@ -1,4 +1,5 @@
 #include "ColorManagement.hpp"
+#include "Luminance.hpp"
 #include <drm_mode.h>
 #include <algorithm>
 #include <cmath>
@@ -16,6 +17,10 @@ bool                             NColorManagement::isPhysicalDisplayChromaticiti
             return false;
     }
     return rgbToXYZFromPrimaries(primaries).has_value();
+}
+
+double NColorManagement::encodeMinimumLuminance(float nits) {
+    return std::round(nits * 10000.0);
 }
 
 hdr_output_metadata NColorManagement::createHDRMetadata(const SImageDescription& settings) {
@@ -54,7 +59,7 @@ hdr_output_metadata NColorManagement::createHDRMetadata(const SImageDescription&
                     },
                 .white_point                     = {.x = to16Bit(colorimetry.white.x), .y = to16Bit(colorimetry.white.y)},
                 .max_display_mastering_luminance = toNits(luminances.max),
-                .min_display_mastering_luminance = toNits(luminances.min * 10000),
+                .min_display_mastering_luminance = toNits(encodeMinimumLuminance(luminances.min)),
                 .max_cll                         = toNits(settings.maxCLL),
                 .max_fall                        = toNits(settings.maxFALL),
             },

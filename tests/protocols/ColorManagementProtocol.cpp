@@ -451,3 +451,37 @@ TEST_F(CColorManagementProtocolTest, ClientDisconnectReleasesParametricDescripti
     EXPECT_FALSE(CImageDescription::from(id));
     EXPECT_FALSE(CPrimaries::from(primariesId));
 }
+
+TEST_F(CColorManagementProtocolTest, MinimumLuminanceUsesTheSameUnitsInBothWireEvents) {
+    SImageDescription settings;
+    settings.luminances          = {.min = 0.99995F, .max = 10000, .reference = 1};
+    settings.masteringLuminances = {.min = settings.luminances.min, .max = 1};
+    CColorManagementImageDescriptionInfo info{makeShared<CWpImageDescriptionInfoV1>(m_client, 1, 2), settings};
+    ASSERT_TRUE(info.good());
+    wl_display_flush_clients(m_display.get());
+
+    std::array<uint32_t, 128> events{};
+    const auto                bytes = recv(m_socket.get(), events.data(), sizeof(events), MSG_DONTWAIT);
+    ASSERT_GT(bytes, 0);
+    bool primary = false, target = false;
+    for (size_t offset = 0; offset + 2 <= sc<size_t>(bytes) / 4;) {
+        const auto words = (events[offset + 1] >> 16) / 4;
+        ASSERT_GE(words, 2U);
+        ASSERT_LE(offset + words, sc<size_t>(bytes) / 4);
+        const auto opcode = events[offset + 1] & 0xffff;
+        if (events[offset] == 2 && (opcode == 6 || opcode == 8)) {
+            ASSERT_EQ(words, opcode == 6 ? 5U : 4U);
+            EXPECT_EQ(events[offset + 2], 9999U);
+            if (opcode == 6) {
+                primary = true;
+                EXPECT_EQ(events[offset + 4], 1U);
+            } else {
+                target = true;
+                EXPECT_EQ(events[offset + 3], 1U);
+            }
+        }
+        offset += words;
+    }
+    EXPECT_TRUE(primary);
+    EXPECT_TRUE(target);
+}

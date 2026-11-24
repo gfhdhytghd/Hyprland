@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 
 namespace NTransferFunction {
@@ -12,8 +13,9 @@ namespace NTransferFunction {
         TF_FORCED_GAMMA22 = 4,
     };
 
-    eTF         fromString(const std::string tfName);
-    std::string toString(eTF tf);
+    eTF                fromString(const std::string tfName);
+    std::optional<eTF> parse(const std::string& tfName);
+    std::string        toString(eTF tf);
 
-    eTF         fromConfig(bool useICC = false);
+    eTF                fromConfig(bool useICC = false);
 }

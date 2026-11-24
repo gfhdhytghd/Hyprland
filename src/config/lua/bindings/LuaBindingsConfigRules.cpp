@@ -112,17 +112,11 @@ namespace {
              return true;
          }},
         {"bitdepth", []() -> ILuaConfigValue* { return new CLuaConfigInt(8); },
-         [](ILuaConfigValue* v, CMonitorRuleParser& p) {
-             p.rule().m_enable10bit = *sc<const Config::INTEGER*>(v->data()) == 10;
-             return true;
-         }},
+         [](ILuaConfigValue* v, CMonitorRuleParser& p) { return p.parseBitdepth(std::to_string(*sc<const Config::INTEGER*>(v->data()))); }},
         {"cm", []() -> ILuaConfigValue* { return new CLuaConfigString("srgb"); },
          [](ILuaConfigValue* v, CMonitorRuleParser& p) { return p.parseCM(*sc<const Config::STRING*>(v->data())); }},
         {"sdr_eotf", []() -> ILuaConfigValue* { return new CLuaConfigString("default"); },
-         [](ILuaConfigValue* v, CMonitorRuleParser& p) {
-             p.rule().m_sdrEotf = NTransferFunction::fromString(*sc<const Config::STRING*>(v->data()));
-             return true;
-         }},
+         [](ILuaConfigValue* v, CMonitorRuleParser& p) { return p.parseSDREotf(*sc<const Config::STRING*>(v->data())); }},
         {"sdrbrightness", []() -> ILuaConfigValue* { return new CLuaConfigFloat(1.F); },
          [](ILuaConfigValue* v, CMonitorRuleParser& p) {
              p.rule().m_sdrBrightness = *sc<const Config::FLOAT*>(v->data());
@@ -982,8 +976,12 @@ static int hlConfig(lua_State* L) {
                     const auto err = it->second->parse(L);
                     if (err.errorCode != PARSE_ERROR_OK)
                         self->addError(std::format("{}: error setting '{}': {}", sourceInfo, it->first, err.message));
-                    else if (self->isDynamicParse())
-                        Supplementary::refresher()->scheduleRefresh(it->second->refreshBits());
+                    else {
+                        if (fullKey == "render.cm_sdr_eotf" && !NTransferFunction::parse(it->second->asString()))
+                            self->addError(std::format("{}: invalid SDR transfer function '{}', using default", sourceInfo, it->second->asString()));
+                        if (self->isDynamicParse())
+                            Supplementary::refresher()->scheduleRefresh(it->second->refreshBits());
+                    }
                 }
             }
 
