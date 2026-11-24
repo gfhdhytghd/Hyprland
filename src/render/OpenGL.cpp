@@ -2575,30 +2575,35 @@ void CHyprOpenGLImpl::renderInnerGlow(CRenderContext& ctx, const CBox& box, int 
 }
 
 bool CHyprOpenGLImpl::saveBufferForMirror(CRenderContext& ctx, const CBox& box) {
-    const auto TEX = ctx.m_data.pMonitor->resources()->m_mirrorTex ? ctx.m_data.pMonitor->resources()->m_mirrorTex : ctx.m_data.currentFB->getTexture();
-    if (!TEX) {
-        LOG(Log::ERR, "Invalid source texture for mirror");
-        return false;
-    }
-    auto fb    = ctx.m_data.pMonitor->resources()->mirrorFB();
-    auto guard = g_pHyprRenderer->bindTempFB(ctx, fb);
+    using enum Monitor::CMonitorResources::eCopySource;
+    const auto RESOURCES = ctx.m_data.pMonitor->resources();
+    const auto SCENE     = ctx.m_data.currentFB->getTexture();
 
-    LOG(Log::TRACE, "CM: saveBufferForMirror {} -> {}", TEX->m_imageDescription->value(), ctx.m_data.currentFB->imageDescription()->value());
+    const auto copy = [&](const SP<ITexture>& texture, Monitor::CMonitorResources::eCopySource source) {
+        const auto FB = RESOURCES->mirrorFB(source);
+        if (!texture || !FB) {
+            LOG(Log::ERR, "Invalid source texture or framebuffer for mirror");
+            return false;
+        }
 
-    blend(false);
+        auto guard = g_pHyprRenderer->bindTempFB(ctx, FB);
 
-    renderTexture(ctx, TEX, box,
-                  STextureRenderData{
-                      .damage        = &ctx.m_data.finalDamage,
-                      .a             = 1.F,
-                      .round         = 0,
-                      .discardActive = false,
-                      .allowCustomUV = false,
-                  });
+        blend(false);
+        renderTexture(ctx, texture, box,
+                      STextureRenderData{
+                          .damage        = &ctx.m_data.finalDamage,
+                          .a             = 1.F,
+                          .round         = 0,
+                          .discardActive = false,
+                          .allowCustomUV = false,
+                      });
+        blend(true);
+        return true;
+    };
 
-    blend(true);
-
-    return true;
+    const bool CAPTURE_READY  = copy(RESOURCES->m_mirrorTex ? RESOURCES->m_mirrorTex : SCENE, CAPTURE);
+    const bool PHYSICAL_READY = !RESOURCES->needsSeparatePhysicalMirrorFB() || copy(SCENE, HDR_MIRROR);
+    return CAPTURE_READY && PHYSICAL_READY;
 }
 
 WP<CShader> CHyprOpenGLImpl::useShader(WP<CShader> prog) {

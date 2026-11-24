@@ -1958,8 +1958,12 @@ bool IHyprRenderer::beginRender(PHLMONITOR pMonitor, CRegion& damage, eRenderMod
         transaction.emplace(pMonitor->m_damage.beginTransaction());
         damage = transaction->getBufferDamage(bufferAge);
 
-        if (pMonitor->needsACopyFB())
-            damage.add(pMonitor->resources()->pendingMirrorFBDamage());
+        if (pMonitor->needsACopyFB()) {
+            if (pMonitor->needsUnmodifiedCopy() != sc<bool>(RESOURCES->m_mirrorTex))
+                damage.add(CBox{{}, pMonitor->m_transformedSize});
+            else
+                damage.add(RESOURCES->pendingMirrorFBDamage());
+        }
     }
 
     const auto res = beginRenderInternal(m_context, pMonitor, damage, simple);
@@ -2198,7 +2202,8 @@ void IHyprRenderer::renderMirrored(CRenderContext& ctx) {
     auto mirrored = monitor->m_mirrorOf;
 
     // saveBufferForMirror should create it
-    if (!mirrored->resources()->hasMirrorFB())
+    const auto MIRROR_TEX = mirrored->resources()->getPhysicalMirrorTexture(monitor.lock());
+    if (!MIRROR_TEX)
         return;
 
     const double scale  = std::min(monitor->m_transformedSize.x / mirrored->m_transformedSize.x, monitor->m_transformedSize.y / mirrored->m_transformedSize.y);
@@ -2206,8 +2211,6 @@ void IHyprRenderer::renderMirrored(CRenderContext& ctx) {
 
     monbox.x = (monitor->m_transformedSize.x - monbox.w) / 2;
     monbox.y = (monitor->m_transformedSize.y - monbox.h) / 2;
-
-    const auto MIRROR_TEX = mirrored->resources()->getMirrorTexture();
 
     addPassElement(ctx, makeUnique<CClearPassElement>(CClearPassElement::SClearData{CHyprColor(0, 0, 0, 0)}));
 

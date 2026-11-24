@@ -627,6 +627,7 @@ class CLifecycleRenderbuffer : public Render::IRenderbuffer {
 
 class CLifecycleRenderer : public CDMABUFTestRenderer {
   public:
+    using IHyprRenderer::renderMirrored;
     using IHyprRenderer::beginRender;
 
     enum eFailure {
@@ -1025,6 +1026,69 @@ TEST_F(CRenderLifecycleTest, MissingIsolatedBlurSourceNeverFallsBackToMonitorFra
     EXPECT_NE(framebuffer, monitorFramebuffer);
     resources->setBlurDirty(true);
     EXPECT_FALSE(renderer().blurMainFramebuffer(ctx, 1.F, damage));
+}
+
+TEST_F(CRenderLifecycleTest, HDRPhysicalMirrorKeepsSceneEncodingWithSDRCaptureAttachment) {
+    using enum Monitor::CMonitorResources::eCopySource;
+    using namespace NColorManagement;
+
+    m_monitor->m_imageDescription = DEFAULT_HDR_IMAGE_DESCRIPTION;
+    m_monitor->m_output->state->setFormat(DRM_FORMAT_XRGB2101010);
+    const auto RESOURCES = m_monitor->resources();
+    const auto SCENE     = RESOURCES->mirrorFB(HDR_MIRROR);
+    ASSERT_TRUE(SCENE);
+    ASSERT_TRUE(SCENE->imageDescription());
+    EXPECT_TRUE(isHDR(SCENE->imageDescription()->value()));
+    EXPECT_EQ(RESOURCES->getMirrorTexture(HDR_MIRROR), RESOURCES->getMirrorTexture(CAPTURE));
+    const auto SCENE_FORMAT = SCENE->m_drmFormat;
+
+    RESOURCES->markMirrorFBUpdated();
+    auto attachment                = makeShared<CDMABUFTestTexture>(true);
+    attachment->m_drmFormat        = DRM_FORMAT_XRGB8888;
+    attachment->m_imageDescription = DEFAULT_SRGB_IMAGE_DESCRIPTION;
+    auto sdrMirror                 = makeShared<Monitor::CMonitor>(makeShared<CLifecycleOutput>());
+    sdrMirror->m_imageDescription  = DEFAULT_SRGB_IMAGE_DESCRIPTION;
+    m_monitor->m_mirrors.emplace_back(sdrMirror);
+    RESOURCES->m_mirrorTex        = attachment;
+    const auto initialAllocations = renderer().m_framebuffers;
+    const auto SDR                = RESOURCES->mirrorFB(CAPTURE);
+    EXPECT_EQ(renderer().m_framebuffers, initialAllocations);
+    EXPECT_FALSE(RESOURCES->needsSeparatePhysicalMirrorFB());
+    EXPECT_EQ(RESOURCES->getPhysicalMirrorTexture(sdrMirror), RESOURCES->getMirrorTexture(CAPTURE));
+    auto hdrMirror                = makeShared<Monitor::CMonitor>(makeShared<CLifecycleOutput>());
+    hdrMirror->m_imageDescription = DEFAULT_HDR_IMAGE_DESCRIPTION;
+    m_monitor->m_mirrors.emplace_back(hdrMirror);
+    EXPECT_TRUE(RESOURCES->needsSeparatePhysicalMirrorFB());
+    EXPECT_EQ(RESOURCES->pendingMirrorFBDamage().getExtents(), (CBox{{}, m_monitor->m_transformedSize}));
+
+    const auto HDR = RESOURCES->mirrorFB(HDR_MIRROR);
+    EXPECT_EQ(renderer().m_framebuffers, initialAllocations + 1);
+    ASSERT_TRUE(SDR && HDR);
+    auto&      ctx        = renderer().context();
+    const auto sdrTexture = SDR->getTexture();
+    const auto hdrTexture = HDR->getTexture();
+    const auto sdrRefs    = sdrTexture.strongRef();
+    const auto hdrRefs    = hdrTexture.strongRef();
+    for (const auto& destination : {sdrMirror, hdrMirror}) {
+        destination->m_mirrorOf        = m_monitor;
+        destination->m_transformedSize = m_monitor->m_transformedSize;
+        ctx.m_data.pMonitor            = destination;
+        renderer().renderMirrored(ctx);
+        EXPECT_EQ(sdrTexture.strongRef(), sdrRefs + (destination == sdrMirror));
+        EXPECT_EQ(hdrTexture.strongRef(), hdrRefs + (destination == hdrMirror));
+        ctx.m_pass.clear();
+    }
+    ctx.m_data.pMonitor.reset();
+    EXPECT_NE(SDR, HDR);
+    EXPECT_EQ(RESOURCES->getPhysicalMirrorTexture(sdrMirror), SDR->getTexture());
+    EXPECT_EQ(RESOURCES->getPhysicalMirrorTexture(hdrMirror), HDR->getTexture());
+    EXPECT_EQ(RESOURCES->getMirrorTexture(CAPTURE)->m_imageDescription, DEFAULT_SRGB_IMAGE_DESCRIPTION);
+    EXPECT_EQ(RESOURCES->getMirrorTexture(HDR_MIRROR)->m_imageDescription, HDR->imageDescription());
+    EXPECT_TRUE(isHDR(HDR->imageDescription()->value()));
+    EXPECT_EQ(HDR->m_drmFormat, SCENE_FORMAT);
+    EXPECT_EQ(SDR->m_drmFormat, DRM_FORMAT_XRGB8888);
+    RESOURCES->markMirrorFBUpdated();
+    EXPECT_TRUE(RESOURCES->pendingMirrorFBDamage().empty());
 }
 
 TEST_F(CRenderLifecycleTest, IsolatedBeginUsesFullTargetDamageAndPreservesMonitorResources) {

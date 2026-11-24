@@ -87,6 +87,8 @@ void CMonitorResources::forEachUnusedFB(std::function<void(SP<Render::IFramebuff
             callback(m_blurFB);
         if (hasMirrorFB() && m_monitorMirrorFB.strongRef() < 2)
             callback(m_monitorMirrorFB);
+        if (m_physicalMirrorFB && m_physicalMirrorFB->isAllocated() && m_physicalMirrorFB.strongRef() < 2)
+            callback(m_physicalMirrorFB);
     }
 }
 
@@ -101,6 +103,7 @@ bool CMonitorResources::shouldKeepMirrorFB() const {
 void CMonitorResources::releaseMirrorFB() {
     if (m_monitorMirrorFB)
         m_monitorMirrorFB->release();
+    m_physicalMirrorFB.reset();
 
     invalidateMirrorFB();
 }
@@ -127,6 +130,8 @@ void CMonitorResources::markMirrorFBStale() {
 }
 
 void CMonitorResources::markMirrorFBUpdated() {
+    if (!needsSeparatePhysicalMirrorFB())
+        m_physicalMirrorFB.reset();
     m_mirrorFBValid            = true;
     m_mirrorFBNeedsFullRefresh = false;
     m_mirrorFBStaleDamage.clear();
@@ -137,28 +142,50 @@ CRegion CMonitorResources::pendingMirrorFBDamage() const {
     if (!hasMirrorFB() || !m_mirrorFBValid || m_mirrorFBNeedsFullRefresh)
         return CRegion{0, 0, DAMAGE_SIZE.x, DAMAGE_SIZE.y};
 
+    if (needsSeparatePhysicalMirrorFB() && (!m_physicalMirrorFB || !m_physicalMirrorFB->isAllocated()))
+        return CRegion{0, 0, DAMAGE_SIZE.x, DAMAGE_SIZE.y};
+
     return m_mirrorFBStaleDamage.copy();
 }
 
-SP<Render::IFramebuffer> CMonitorResources::mirrorFB() {
-    if (!m_monitorMirrorFB)
-        m_monitorMirrorFB = g_pHyprRenderer->createFB(std::format("Monitor {} mirror FB", m_monitor->m_name));
-
-    // Copy the unmodified SDR texture when it exists; otherwise keep the work buffer's format and HDR range.
-    const auto FORMAT      = m_mirrorTex ? m_mirrorTex->m_drmFormat : m_drmFormat;
-    const auto DESCRIPTION = m_mirrorTex ? m_mirrorTex->m_imageDescription : m_imageDescription;
-
-    if (!m_monitorMirrorFB->isAllocated() || m_monitorMirrorFB->m_drmFormat != FORMAT || m_monitorMirrorFB->imageDescription() != DESCRIPTION) {
-        m_monitorMirrorFB->alloc(m_size.x, m_size.y, FORMAT);
-        m_monitorMirrorFB->setImageDescription(DESCRIPTION);
-        invalidateMirrorFB();
-    }
-
-    return m_monitorMirrorFB;
+bool CMonitorResources::needsSeparatePhysicalMirrorFB() const {
+    return m_mirrorTex && std::ranges::any_of(m_monitor->m_mirrors, [](const auto& mirror) { return mirror && isHDR(mirror->m_imageDescription->value()); });
 }
 
-SP<Render::ITexture> CMonitorResources::getMirrorTexture() {
-    return hasMirrorFB() ? mirrorFB()->getTexture() : nullptr;
+SP<Render::IFramebuffer>& CMonitorResources::copyFramebuffer(eCopySource source) {
+    return source == eCopySource::HDR_MIRROR && m_mirrorTex ? m_physicalMirrorFB : m_monitorMirrorFB;
+}
+
+SP<Render::IFramebuffer> CMonitorResources::mirrorFB(eCopySource source) {
+    auto& framebuffer = copyFramebuffer(source);
+    if (!framebuffer)
+        framebuffer = g_pHyprRenderer->createFB(std::format("Monitor {} mirror FB", m_monitor->m_name));
+
+    if (!framebuffer)
+        return nullptr;
+
+    // HDR mirrors keep the scene encoding when the SDR capture attachment is active.
+    const auto SDR_TEXTURE = source == eCopySource::CAPTURE ? m_mirrorTex : nullptr;
+    const auto FORMAT      = SDR_TEXTURE ? SDR_TEXTURE->m_drmFormat : m_drmFormat;
+    const auto DESCRIPTION = SDR_TEXTURE ? SDR_TEXTURE->m_imageDescription : m_imageDescription;
+
+    if (!framebuffer->isAllocated() || framebuffer->m_drmFormat != FORMAT || framebuffer->imageDescription() != DESCRIPTION) {
+        invalidateMirrorFB();
+        if (!framebuffer->alloc(m_size.x, m_size.y, FORMAT))
+            return nullptr;
+        framebuffer->setImageDescription(DESCRIPTION);
+    }
+
+    return framebuffer;
+}
+
+SP<Render::ITexture> CMonitorResources::getMirrorTexture(eCopySource source) {
+    const auto& FB = copyFramebuffer(source);
+    return FB && FB->isAllocated() ? FB->getTexture() : nullptr;
+}
+
+SP<Render::ITexture> CMonitorResources::getPhysicalMirrorTexture(PHLMONITOR destination) {
+    return getMirrorTexture(isHDR(destination->m_imageDescription->value()) ? eCopySource::HDR_MIRROR : eCopySource::CAPTURE);
 }
 
 NColorManagement::PImageDescription CMonitorResources::getMirrorTexImageDescription() {
@@ -177,7 +204,8 @@ void CMonitorResources::enableMirror() {
     m_mirrorTex->allocate({m_size.x, m_size.y}, m_monitor->m_activeMonitorRule.m_enable10bit ? DRM_FORMAT_XRGB2101010 : DRM_FORMAT_XRGB8888);
     m_mirrorTex->m_imageDescription = getMirrorTexImageDescription();
     m_monitor->m_blurFBDirty        = true;
-    // The mirror FB switches to this texture's encoding and needs a full copy.
+    invalidateMirrorFB();
+    // The capture FB switches to this texture's encoding and needs a full copy.
     g_pHyprRenderer->damageMonitor(m_monitor.lock());
 }
 
@@ -186,6 +214,7 @@ void CMonitorResources::disableMirror() {
         return;
     m_monitor->m_blurFBDirty = true;
     m_mirrorTex.reset();
+    invalidateMirrorFB();
     g_pHyprRenderer->damageMonitor(m_monitor.lock());
 }
 

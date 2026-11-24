@@ -87,7 +87,6 @@ namespace Screenshare {
         std::vector<DRMFormat>      m_formats;
         Vector2D                    m_bufferSize = Vector2D(0, 0);
 
-        SP<Render::IFramebuffer>    m_tempFB;
         SP<Render::CSceneResources> m_sceneResources;
 
         SP<CEventLoopTimer>         m_shareStopTimer;
@@ -181,16 +180,18 @@ namespace Screenshare {
         const CRegion&      damage() const;
 
       private:
-        WP<CScreenshareFrame>   m_self;
-        WP<CScreenshareSession> m_session;
-        FScreenshareCallback    m_callback;
-        SP<IHLBuffer>           m_buffer;
-        Vector2D                m_bufferSize = Vector2D(0, 0);
-        CRegion                 m_damage; // damage in buffer coords
-        bool                    m_shared = false, m_copied = false, m_failed = false;
-        bool                    m_copyInFlight  = false; // a dmabuf copy is issued and waiting on its fence
-        bool                    m_overlayCursor = true;
-        bool                    m_isFirst       = false;
+        SP<Render::IFramebuffer> m_permissionSnapshot;
+        CHyprSignalListener      m_sessionStopped;
+        WP<CScreenshareFrame>    m_self;
+        WP<CScreenshareSession>  m_session;
+        FScreenshareCallback     m_callback;
+        SP<IHLBuffer>            m_buffer;
+        Vector2D                 m_bufferSize = Vector2D(0, 0);
+        CRegion                  m_damage; // damage in buffer coords
+        bool                     m_shared = false, m_copied = false, m_failed = false;
+        bool                     m_copyInFlight  = false; // a dmabuf copy is issued and waiting on its fence
+        bool                     m_overlayCursor = true;
+        bool                     m_isFirst       = false;
 
         //
         void copy();
