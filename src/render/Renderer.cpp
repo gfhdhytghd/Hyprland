@@ -1649,11 +1649,16 @@ SP<ITexture> IHyprRenderer::getBlurTexture(CRenderContext& ctx) {
     return ctx.m_data.pMonitor ? getBlurTexture(ctx.m_data.pMonitor) : nullptr;
 }
 
+SP<IFramebuffer> IHyprRenderer::getWorkBuffer(CRenderContext& ctx, std::optional<Vector2D> size, DRMFormat format, NColorManagement::PImageDescription description) {
+    auto framebuffer = ctx.m_data.pMonitor->resources()->getUnusedWorkBuffer(format, description, size);
+    return ctx.sceneResources() ? ctx.sceneResources()->prepareWorkBuffer(std::move(framebuffer)) : framebuffer;
+}
+
 SP<IFramebuffer> IHyprRenderer::getWorkBuffer(CRenderContext& ctx, std::optional<Vector2D> size) {
     const auto resources = ctx.m_data.pMonitor->resources();
     if (ctx.sceneResources() && ctx.sceneResources()->bufferDescription()) {
         const auto& description = *ctx.sceneResources()->bufferDescription();
-        return ctx.sceneResources()->prepareWorkBuffer(resources->getUnusedWorkBuffer(description.format, description.imageDescription, size));
+        return getWorkBuffer(ctx, size, description.format, description.imageDescription);
     }
 
     auto framebuffer = size ? resources->getUnusedWorkBuffer(*size) : resources->getUnusedWorkBuffer();
@@ -1718,6 +1723,12 @@ void IHyprRenderer::initAssets() {
     m_screencopyDeniedTexture = renderText("Permission denied to share screen", Colors::WHITE, 20);
 }
 
+// Text and the splash are rasterized from sRGB config colours. Tag them, so they do not take the SDR transfer policy of untagged client content.
+static void tagCompositorRaster(const SP<ITexture>& tex) {
+    if (tex)
+        tex->m_imageDescription = NColorManagement::DEFAULT_SRGB_IMAGE_DESCRIPTION;
+}
+
 SP<ITexture> IHyprRenderer::renderText(const std::string& text, CHyprColor col, int pt, bool italic, const std::string& fontFamily, int maxWidth, int weight) {
     static auto           FONT = CConfigValue<std::string>("misc:font_family");
 
@@ -1760,6 +1771,7 @@ SP<ITexture> IHyprRenderer::renderText(const std::string& text, CHyprColor col, 
 
     cairo_surface_flush(CAIROSURFACE);
     auto tex = createTexture(CAIROSURFACE);
+    tagCompositorRaster(tex);
 
     cairo_destroy(CAIRO);
     cairo_surface_destroy(CAIROSURFACE);
@@ -1775,7 +1787,9 @@ SP<ITexture> IHyprRenderer::renderText(Hyprgraphics::CTextResource::STextResourc
     if (!res->m_asset.cairoSurface)
         return nullptr;
 
-    return createTexture(res->m_asset.pixelSize.x, res->m_asset.pixelSize.y, res->m_asset.cairoSurface->data());
+    auto tex = createTexture(res->m_asset.pixelSize.x, res->m_asset.pixelSize.y, res->m_asset.cairoSurface->data());
+    tagCompositorRaster(tex);
+    return tex;
 }
 
 void IHyprRenderer::ensureLockTexturesRendered(bool load) {
@@ -2157,29 +2171,17 @@ void IHyprRenderer::clearCMSettingsCache(CRenderContext& ctx) {
     ctx.m_cmSettingsCache.clear();
 }
 
+NColorManagement::eTransferFunction IHyprRenderer::effectiveSourceTF(CRenderContext& ctx, const NColorManagement::PImageDescription imageDescription, bool shouldUseSurface) {
+    const bool surfaceSource = shouldUseSurface && ctx.m_data.surface.valid();
+    return resolveSourceTF(imageDescription->value().transferFunction, surfaceSource, surfaceSource && ctx.m_data.surface->m_colorManagement.valid(),
+                           NTransferFunction::fromConfig());
+}
+
 SCMSettings IHyprRenderer::getCMSettings(CRenderContext& ctx, const NColorManagement::PImageDescription imageDescription,
                                          const NColorManagement::PImageDescription targetImageDescription, SP<CWLSurfaceResource> surface, bool modifySDR, float sdrMinLuminance,
                                          bool shouldUseSurface) {
-    const auto                          sdrEOTF = NTransferFunction::fromConfig();
-    NColorManagement::eTransferFunction srcTF   = imageDescription->value().transferFunction;
-
-    const int                           tonemapMode = shouldUseSurface && ctx.m_data.currentWindow ? ctx.m_data.currentWindow->m_ruleApplicator->tonemap().valueOr(1) : 1;
-
-    if (shouldUseSurface && ctx.m_data.surface.valid() &&
-        (imageDescription->value().transferFunction == CM_TRANSFER_FUNCTION_GAMMA22 || imageDescription->value().transferFunction == CM_TRANSFER_FUNCTION_SRGB)) {
-        if (ctx.m_data.surface->m_colorManagement.valid()) {
-            if (sdrEOTF == NTransferFunction::TF_FORCED_GAMMA22 && imageDescription->value().transferFunction == NColorManagement::eTransferFunction::CM_TRANSFER_FUNCTION_SRGB)
-                srcTF = NColorManagement::eTransferFunction::CM_TRANSFER_FUNCTION_GAMMA22;
-            else
-                srcTF = imageDescription->value().transferFunction;
-        } else if (sdrEOTF == NTransferFunction::TF_SRGB)
-            srcTF = NColorManagement::eTransferFunction::CM_TRANSFER_FUNCTION_SRGB;
-        else if (sdrEOTF == NTransferFunction::TF_GAMMA22 || sdrEOTF == NTransferFunction::TF_FORCED_GAMMA22)
-            srcTF = NColorManagement::eTransferFunction::CM_TRANSFER_FUNCTION_GAMMA22;
-        else
-            srcTF = imageDescription->value().transferFunction;
-    } else
-        srcTF = imageDescription->value().transferFunction;
+    const auto tonemapMode = shouldUseSurface && ctx.m_data.currentWindow ? ctx.m_data.currentWindow->m_ruleApplicator->tonemap().valueOr(1) : 1;
+    const auto srcTF       = effectiveSourceTF(ctx, imageDescription, shouldUseSurface);
 
     const bool needsSDRmod = modifySDR && isSDR2HDR(ctx, imageDescription->value(), targetImageDescription->value());
     return ctx.m_cmSettingsCache.get(imageDescription, targetImageDescription,
@@ -3327,7 +3329,11 @@ void IHyprRenderer::addWindowToRenderUnfocused(PHLWINDOW window) {
 }
 
 static DRMFormat snapshotFormat(PHLMONITOR monitor) {
-    return monitor->useFP16() ? DRM_FORMAT_ABGR16161616F : DRM_FORMAT_ABGR8888;
+    // Snapshots keep the work buffer encoding and need alpha for the fade. A 10 bit work format has only 2 bits of alpha,
+    // so it is kept as FP16, which also reproduces every 10 bit code value, rather than reduced to 8 bits.
+    if (monitor->useFP16() || (monitor->m_enabled10bit && g_pHyprRenderer->fp16Supported()))
+        return DRM_FORMAT_ABGR16161616F;
+    return DRM_FORMAT_ABGR8888;
 }
 
 SP<IFramebuffer> IHyprRenderer::makeSnapshotFB(PHLWINDOW pWindow) {
@@ -3684,6 +3690,7 @@ SP<ITexture> IHyprRenderer::renderSplash(const std::function<SP<ITexture>(const 
     cairo_surface_flush(smallSurf);
 
     auto tex = handleData(textW, textH, cairo_image_surface_get_data(smallSurf));
+    tagCompositorRaster(tex);
 
     cairo_surface_destroy(smallSurf);
     cairo_destroy(small);

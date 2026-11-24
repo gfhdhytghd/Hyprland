@@ -1,9 +1,34 @@
 #include "CMSettings.hpp"
+#include "../helpers/TransferFunction.hpp"
 
 #include <algorithm>
 
 using namespace Render;
 using namespace NColorManagement;
+
+STextureColorSource Render::textureColorSource(PImageDescription texture, PImageDescription surface, PImageDescription workFallback) {
+    if (texture)
+        return {.description = texture};
+    if (surface)
+        return {.description = surface, .useSurfacePolicy = true};
+    if (workFallback)
+        return {.description = workFallback};
+    return {.description = getDefaultImageDescription(), .useSurfacePolicy = true};
+}
+
+eTransferFunction Render::resolveSourceTF(eTransferFunction describedTF, bool surfaceSource, bool cmAwareSurface, NTransferFunction::eTF sdrEOTF) {
+    if (!surfaceSource || (describedTF != CM_TRANSFER_FUNCTION_GAMMA22 && describedTF != CM_TRANSFER_FUNCTION_SRGB))
+        return describedTF;
+
+    if (cmAwareSurface)
+        return sdrEOTF == NTransferFunction::TF_FORCED_GAMMA22 && describedTF == CM_TRANSFER_FUNCTION_SRGB ? CM_TRANSFER_FUNCTION_GAMMA22 : describedTF;
+
+    if (sdrEOTF == NTransferFunction::TF_SRGB)
+        return CM_TRANSFER_FUNCTION_SRGB;
+    if (sdrEOTF == NTransferFunction::TF_GAMMA22 || sdrEOTF == NTransferFunction::TF_FORCED_GAMMA22)
+        return CM_TRANSFER_FUNCTION_GAMMA22;
+    return describedTF;
+}
 
 SCMSettings CCMSettingsCache::get(PImageDescription imageDescription, PImageDescription targetImageDescription, const SCMSettingsInputs& inputs) {
     const auto srcId = imageDescription->id();

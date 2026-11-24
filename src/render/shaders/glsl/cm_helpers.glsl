@@ -13,6 +13,8 @@ uniform vec3  targetLuminanceCoefficients;
 // Target / source reference white, already applied to the source luminance range.
 uniform float sourceReferenceScale;
 #if USE_TONEMAP
+// Target RGB -> XYZ adapted to D65 and its inverse, for the ICtCp tone mapping.
+uniform mat3 targetD65XYZ;
 uniform mat3 targetXYZPrimaries;
 // Source black after reference white anchoring, the BT.2390 EETF black input.
 uniform float srcMinLuminance;
@@ -50,6 +52,12 @@ vec3 cmSelect(vec3 falseValue, vec3 trueValue, bvec3 condition) {
     return vec3(condition.x ? trueValue.x : falseValue.x, condition.y ? trueValue.y : falseValue.y, condition.z ? trueValue.z : falseValue.z);
 }
 
+// Straight colour of a premultiplied pixel. A fully transparent pixel carries no colour; any other alpha,
+// however small (FP16 buffers represent alpha far below 1/255), divides exactly so encode and decode stay inverse.
+vec3 unpremultiply(vec3 color, float alpha) {
+    return alpha > 0.0 ? color / alpha : vec3(0.0);
+}
+
 vec3 xy2xyz(vec2 xy) {
     if (xy.y == 0.0)
         return vec3(0.0, 0.0, 0.0);
@@ -77,14 +85,14 @@ float hlgBeta(vec2 range, float nominalPeak) {
 
 // BT.2100 HLG EOTF: signal -> display light, normalized to range like the other transfer functions.
 // The system gamma follows the nominal peak of the display the signal was graded for, which is range.y unless the range was rescaled.
-vec3 tfInvHLG(vec3 color, vec2 range, float nominalPeak) {
+vec3 tfInvHLG(vec3 color, vec2 range, float nominalPeak, vec3 coefficients) {
     float beta    = hlgBeta(range, nominalPeak);
     vec3  signal  = max((1.0 - beta) * color.rgb + beta, vec3(0.0));
     bvec3 isLow   = lessThanEqual(signal, vec3(HLG_E_CUT));
     vec3  lo      = signal * signal / 3.0;
     vec3  hi      = (exp((signal - HLG_C) / HLG_A) + HLG_B) / 12.0;
     vec3  scene   = cmSelect(hi, lo, isLow);
-    float Ys      = max(dot(scene, sourceLuminanceCoefficients), 0.0);
+    float Ys      = max(dot(scene, coefficients), 0.0);
     // Scene black stays display black for any system gamma, including gamma < 1 where pow(0, gamma - 1) is undefined.
     vec3  display = Ys > 0.0 ? range.y * pow(Ys, hlgGamma(nominalPeak) - 1.0) * scene : vec3(0.0);
     return (display - range.x) / (range.y - range.x);
@@ -203,7 +211,7 @@ vec3 toLinearRGB(vec3 color, int tf) {
     if (tf == CM_TRANSFER_FUNCTION_GAMMA28)
         return pow(max(color, vec3(0.0)), vec3(2.8));
     if (tf == CM_TRANSFER_FUNCTION_HLG)
-        return tfInvHLG(color, vec2(HDR_MIN_LUMINANCE, HLG_MAX_LUMINANCE), HLG_MAX_LUMINANCE);
+        return tfInvHLG(color, vec2(HDR_MIN_LUMINANCE, HLG_MAX_LUMINANCE), HLG_MAX_LUMINANCE, sourceLuminanceCoefficients);
     if (tf == CM_TRANSFER_FUNCTION_EXT_SRGB)
         return tfInvExtSRGB(color);
     if (tf == CM_TRANSFER_FUNCTION_BT1886)
@@ -226,7 +234,7 @@ vec3 toLinearRGB(vec3 color, int tf, vec2 range) {
     if (tf == CM_TRANSFER_FUNCTION_BT1886)
         return tfInvBT1886(color, range);
     if (tf == CM_TRANSFER_FUNCTION_HLG)
-        return tfInvHLG(color, range, sourceReferenceScale > 0.0 ? range.y / sourceReferenceScale : range.y);
+        return tfInvHLG(color, range, sourceReferenceScale > 0.0 ? range.y / sourceReferenceScale : range.y, sourceLuminanceCoefficients);
     return toLinearRGB(color, tf);
 }
 
@@ -234,7 +242,7 @@ vec4 toLinear(vec4 color, int tf) {
     if (tf == CM_TRANSFER_FUNCTION_EXT_LINEAR)
         return color;
 
-    color.rgb /= max(color.a, 0.001);
+    color.rgb = unpremultiply(color.rgb, color.a);
     color.rgb = toLinearRGB(color.rgb, tf);
     color.rgb *= color.a;
     return color;
@@ -278,7 +286,7 @@ vec4 fromLinear(vec4 color, int tf) {
     if (tf == CM_TRANSFER_FUNCTION_EXT_LINEAR || tf == CM_TRANSFER_FUNCTION_LINEAR)
         return color;
 
-    color.rgb /= max(color.a, 0.001);
+    color.rgb = unpremultiply(color.rgb, color.a);
     color.rgb = fromLinearRGB(color.rgb, tf);
     color.rgb *= color.a;
     return color;
@@ -289,7 +297,7 @@ vec4 fromLinearNit(vec4 color, int tf, vec2 range) {
         return color;
 
     color.rgb = (color.rgb - range[0] * color.a) / (range[1] - range[0]); // @gulafaran
-    color.rgb /= max(color.a, 0.001);
+    color.rgb = unpremultiply(color.rgb, color.a);
     color.rgb = tf == CM_TRANSFER_FUNCTION_BT1886 ? tfBT1886(color.rgb, range) : (tf == CM_TRANSFER_FUNCTION_HLG ? tfHLG(color.rgb, range) : fromLinearRGB(color.rgb, tf));
     color.rgb *= color.a;
     return color;
@@ -298,6 +306,23 @@ vec4 fromLinearNit(vec4 color, int tf, vec2 range) {
 #if USE_TONEMAP || (USE_MIRROR && !USE_ICC)
 #include "tonemap.glsl"
 #endif
+
+// Window tint (dimming) on a premultiplied pixel in the target encoding. SDR encodings multiply code values, the established
+// look of the tint. PQ and HLG code values are not comparable to them, so HDR encodings scale display light, as the
+// FP16 linear work buffer of HDR outputs does.
+vec4 applyTint(vec4 color, vec3 tint, int tf, vec2 range) {
+    if (tf != CM_TRANSFER_FUNCTION_ST2084_PQ && tf != CM_TRANSFER_FUNCTION_HLG) {
+        color.rgb *= tint;
+        return color;
+    }
+
+    vec3 straight = unpremultiply(color.rgb, color.a);
+    vec3 linear   = tf == CM_TRANSFER_FUNCTION_HLG ? tfInvHLG(straight, range, range.y, targetLuminanceCoefficients) : tfInvPQ(straight);
+    vec4 light    = toNit(vec4(linear, 1.0), range);
+    light.rgb *= tint * color.a;
+    light.a = color.a;
+    return fromLinearNit(light, tf, range);
+}
 
 // Hue-preserving gamut clipping (BT.2407): out-of-range colors are desaturated towards the
 // achromatic color of the same luminance, which moves them along a straight line to the white point.
@@ -322,7 +347,7 @@ vec3 mapToGamut(vec3 color, vec2 range, vec3 luminanceCoefficients) {
 // Highlights above SDR white are mapped by the BT.2390 EETF, then out-of-gamut colors are clipped preserving hue.
 vec4 toMirror(vec3 nits, float peak, float alpha) {
     vec2 range = vec2(SDR_MIN_LUMINANCE, SDR_MAX_LUMINANCE);
-    vec4 color = tonemap(vec4(mirrorConvertMatrix * nits, 1.0), BT709toXYZ, XYZtoBT709, 0.0, peak, range.y, range.x, 1);
+    vec4 color = tonemap(vec4(mirrorConvertMatrix * nits, 1.0), BT709toXYZ, BT709toXYZ, XYZtoBT709, 0.0, peak, range.y, range.x, 1);
     color.rgb  = mapToGamut(color.rgb, range, BT709_LUMINANCE);
     return fromLinearNit(vec4(color.rgb * alpha, alpha), CM_TRANSFER_FUNCTION_SRGB, range);
 }
@@ -363,7 +388,7 @@ vec4
     float sourceAlpha = pixColor.a;
     float finalAlpha  = sourceAlpha * additionalAlpha;
 
-    pixColor.rgb /= max(sourceAlpha, 0.001);
+    pixColor.rgb = unpremultiply(pixColor.rgb, sourceAlpha);
     pixColor.rgb = toLinearRGB(pixColor.rgb, srcTF, srcTFRange);
     pixColor.rgb += linearNoise;
 
@@ -388,7 +413,7 @@ vec4
     pixColor.rgb *= sdrBrightnessMultiplier;
 #endif
 #if USE_TONEMAP
-    pixColor = tonemap(pixColor, dstxyz, targetXYZPrimaries, srcMinLuminance, maxLuminance, dstMaxLuminance, dstTFRange.x, tonemapMode);
+    pixColor = tonemap(pixColor, dstxyz, targetD65XYZ, targetXYZPrimaries, srcMinLuminance, maxLuminance, dstMaxLuminance, dstTFRange.x, tonemapMode);
 #endif
     // Linear targets are intermediate buffers that keep extended values; encoded targets get gamut mapped.
     if (dstTF != CM_TRANSFER_FUNCTION_LINEAR && dstTF != CM_TRANSFER_FUNCTION_EXT_LINEAR)

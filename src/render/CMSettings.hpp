@@ -1,9 +1,26 @@
 #pragma once
 
 #include "types.hpp"
+#include <cstdint>
 #include <vector>
 
+namespace NTransferFunction {
+    enum eTF : uint8_t;
+}
+
 namespace Render {
+    struct STextureColorSource {
+        NColorManagement::PImageDescription description;
+        bool                                useSurfacePolicy = false;
+    };
+
+    STextureColorSource textureColorSource(NColorManagement::PImageDescription texture, NColorManagement::PImageDescription surface,
+                                           NColorManagement::PImageDescription workFallback);
+
+    // The transfer function a source is decoded with. render:cm_sdr_eotf overrides the described sRGB / gamma 2.2
+    // of surface content: always for surfaces without a CM extension, and only gamma22force for CM-aware ones.
+    NColorManagement::eTransferFunction resolveSourceTF(NColorManagement::eTransferFunction describedTF, bool surfaceSource, bool cmAwareSurface, NTransferFunction::eTF sdrEOTF);
+
     // Resolved policy inputs, rather than the identity/address of a surface or
     // monitor. Equal inputs must produce equal settings across nested draws.
     struct SCMSettingsInputs {

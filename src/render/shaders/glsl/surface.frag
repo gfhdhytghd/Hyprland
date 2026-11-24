@@ -83,8 +83,9 @@ void main() {
 #if USE_MOTION_BLUR
     vec4 pixColor = motionBlurSample(tex, motionPrevBox, motionCurrBox, motionSourceBox, motionSourceTexOrigin, motionSourceTexSize, motionSamples, USE_RGBA == 1);
 #if USE_BLUR_MATTE
+    // The matte stores coverage in alpha, which colour management leaves untouched.
     float blurAlphaMask =
-        clamp(motionBlurSample(blurAlphaMatte, motionPrevBox, motionCurrBox, motionSourceBox, motionSourceTexOrigin, motionSourceTexSize, motionSamples, true).r, 0.0, 1.0);
+        clamp(motionBlurSample(blurAlphaMatte, motionPrevBox, motionCurrBox, motionSourceBox, motionSourceTexOrigin, motionSourceTexSize, motionSamples, true).a, 0.0, 1.0);
 #endif
 #else
 #if USE_RGBA
@@ -93,7 +94,8 @@ void main() {
     vec4 pixColor = vec4(texture(tex, v_texcoord).rgb, 1.0);
 #endif
 #if USE_BLUR_MATTE
-    float blurAlphaMask = clamp(texture(blurAlphaMatte, v_texcoord).r, 0.0, 1.0);
+    // The matte stores coverage in alpha, which colour management leaves untouched.
+    float blurAlphaMask = clamp(texture(blurAlphaMatte, v_texcoord).a, 0.0, 1.0);
 #endif
 #endif
 
@@ -145,7 +147,11 @@ void main() {
 #endif
 
 #if USE_TINT
+#if USE_CM
+    pixColor = applyTint(pixColor, tint, targetTF, dstTFRange);
+#else
     pixColor.rgb = pixColor.rgb * tint;
+#endif
 #endif
 
 #if USE_ROUNDING && !USE_MOTION_BLUR && !(LEGACY_GLES2 && USE_BLUR)

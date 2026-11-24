@@ -56,16 +56,32 @@ vec4[2]
 #else
 vec4
 #endif
-    getShadow(vec4 pixColor, vec4 colorSRGB, vec2 v_texcoord, float borderRadius, float roundingPower, vec2 topLeft, vec2 fullSize, float range, float shadowPower,
-              vec2 bottomRight, vec2 windowTopLeft, vec2 windowBottomRight, float windowRadius, int gradientLength, vec4 gradient[10], float angle, int gradient2Length,
-              vec4 gradient2[10], float angle2, float gradientLerp, float alpha
+    getShadow(vec4 pixColor, vec2 v_texcoord, float borderRadius, float roundingPower, vec2 topLeft, vec2 fullSize, float range, float shadowPower, vec2 bottomRight,
+              vec2 windowTopLeft, vec2 windowBottomRight, float windowRadius, int gradientLength, vec4 gradient[10], float angle, int gradient2Length, vec4 gradient2[10],
+              float angle2, float gradientLerp, float alpha
 #if USE_CM
               ,
-              int srcTF
+              int sourceTF, int targetTF, mat3 convertMatrix, vec2 srcTFRange, vec2 dstTFRange
+#if USE_ICC
+              ,
+              highp sampler3D iccLut3D, float iccLutSize
+#else
+#if USE_TONEMAP || USE_SDR_MOD
+              ,
+              mat3 targetPrimariesXYZ
+#endif
+#if USE_TONEMAP
+              ,
+              float maxLuminance, float dstMaxLuminance, float dstRefLuminance, int tonemapMode
+#endif
+#if USE_SDR_MOD
+              ,
+              float sdrSaturation, float sdrBrightnessMultiplier
+#endif
+#endif
 #endif
     ) {
-    float radius        = range + borderRadius;
-    float originalAlpha = pixColor[3];
+    float radius = range + borderRadius;
 
     bool  done = false;
 
@@ -74,29 +90,31 @@ vec4
     if (gradientLength > 0 || gradient2Length > 0)
         pixColor = getColorForCoord(v_texcoord, gradientLength, gradient, angle, gradient2Length, gradient2, angle2, gradientLerp);
 
-    pixColor.a *= alpha;
+    // The falloff is coverage. It is applied like opacity after the colour is converted, so the colour and
+    // its premultiplication stay in the framebuffer encoding like for the other decorations.
+    float coverage = alpha;
 
     // ok, now we check the distance to a border.
     // corners
     if (pixCoord[0] < topLeft[0]) {
         if (pixCoord[1] < topLeft[1]) {
             // top left
-            pixColor[3] = pixColor[3] * pixAlphaRoundedDistance(modifiedLength(pixCoord - topLeft, roundingPower), radius, range, shadowPower);
-            done        = true;
+            coverage = coverage * pixAlphaRoundedDistance(modifiedLength(pixCoord - topLeft, roundingPower), radius, range, shadowPower);
+            done     = true;
         } else if (pixCoord[1] > bottomRight[1]) {
             // bottom left
-            pixColor[3] = pixColor[3] * pixAlphaRoundedDistance(modifiedLength(pixCoord - vec2(topLeft[0], bottomRight[1]), roundingPower), radius, range, shadowPower);
-            done        = true;
+            coverage = coverage * pixAlphaRoundedDistance(modifiedLength(pixCoord - vec2(topLeft[0], bottomRight[1]), roundingPower), radius, range, shadowPower);
+            done     = true;
         }
     } else if (pixCoord[0] > bottomRight[0]) {
         if (pixCoord[1] < topLeft[1]) {
             // top right
-            pixColor[3] = pixColor[3] * pixAlphaRoundedDistance(modifiedLength(pixCoord - vec2(bottomRight[0], topLeft[1]), roundingPower), radius, range, shadowPower);
-            done        = true;
+            coverage = coverage * pixAlphaRoundedDistance(modifiedLength(pixCoord - vec2(bottomRight[0], topLeft[1]), roundingPower), radius, range, shadowPower);
+            done     = true;
         } else if (pixCoord[1] > bottomRight[1]) {
             // bottom right
-            pixColor[3] = pixColor[3] * pixAlphaRoundedDistance(modifiedLength(pixCoord - bottomRight, roundingPower), radius, range, shadowPower);
-            done        = true;
+            coverage = coverage * pixAlphaRoundedDistance(modifiedLength(pixCoord - bottomRight, roundingPower), radius, range, shadowPower);
+            done     = true;
         }
     }
 
@@ -113,43 +131,48 @@ vec4
 
         if (smallest < range) {
             // between border and max shadow distance
-            pixColor[3] = pixColor[3] * pow((smallest / range), shadowPower);
+            coverage = coverage * pow((smallest / range), shadowPower);
         }
     }
 
     if (pointInRoundedRect(pixCoord, windowTopLeft, windowBottomRight, windowRadius, roundingPower))
-        pixColor[3] = 0.0;
+        coverage = 0.0;
 
-    if (pixColor[3] == 0.0) {
+    if (pixColor.a * coverage == 0.0)
         discard;
-#if USE_MIRROR
-        vec4[2] pixColors;
-        pixColors[0] = pixColor;
-        pixColors[1] = pixColor;
-        return pixColors;
-#else
-        return pixColor;
-#endif
-    }
 
-    // premultiply
+    // premultiply the straight sRGB colour
+    pixColor.rgb *= pixColor.a;
+
 #if USE_CM
-    pixColor.rgb = toLinearRGB(pixColor.rgb, srcTF);
-    pixColor.rgb *= pixColor[3];
-    pixColor.rgb = fromLinearRGB(pixColor.rgb, srcTF);
+    return doColorManagement(pixColor, coverage, sourceTF, targetTF, convertMatrix, srcTFRange, dstTFRange, 0.0
+#if USE_ICC
+                             ,
+                             iccLut3D, iccLutSize
 #else
-    pixColor.rgb *= pixColor[3];
+#if USE_TONEMAP || USE_SDR_MOD
+                             ,
+                             targetPrimariesXYZ
+#endif
+#if USE_TONEMAP
+                             ,
+                             maxLuminance, dstMaxLuminance, dstRefLuminance, tonemapMode
+#endif
+#if USE_SDR_MOD
+                             ,
+                             sdrSaturation, sdrBrightnessMultiplier
+#endif
+#endif
+    );
 #endif
 
 #if USE_MIRROR
     vec4[2] pixColors;
-    pixColors[0]   = pixColor;
-    pixColors[1]   = colorSRGB;
-    pixColors[1].a = pixColor.a;
-    pixColors[1].rgb *= pixColors[1].a;
+    pixColors[0] = pixColor * coverage;
+    pixColors[1] = pixColors[0];
     return pixColors;
 #else
-    return pixColor;
+    return pixColor * coverage;
 #endif
 }
 #endif

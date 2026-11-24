@@ -226,7 +226,7 @@ void IElementRenderer::drawPreBlur(CRenderContext& ctx, WP<CPreBlurElement> elem
 }
 
 void IElementRenderer::drawClear(CRenderContext& ctx, WP<CClearPassElement> element, const CRegion& damage) {
-    element->m_data.color = g_pHyprRenderer->getConvertedColor(ctx, element->m_data.color); // FIXME create element copy?
+    // The element keeps the sRGB config colour: the backend converts it once for the work buffer and the SDR mirror takes it as is.
     draw(ctx, element, damage);
 }
 
@@ -697,7 +697,8 @@ void IElementRenderer::drawTransformedWindow(CRenderContext& ctx, WP<CTransforme
     const double CANVASPADDING = 1.0 / pMonitor->m_scale;
     CBox         SOURCECANVAS  = pixelBoxForLogical(plan.sourceBox.copy().expand(CANVASPADDING), pMonitor->m_scale);
     auto         fb            = g_pHyprRenderer->getWorkBuffer(ctx, SOURCECANVAS.size());
-    auto         matteFB       = element->m_data.blur ? g_pHyprRenderer->getWorkBuffer(ctx, SOURCECANVAS.size()) : nullptr;
+    auto         matteFB =
+        element->m_data.blur ? g_pHyprRenderer->getWorkBuffer(ctx, SOURCECANVAS.size(), WINDOW_BLUR_MATTE_FORMAT, NColorManagement::DEFAULT_SRGB_IMAGE_DESCRIPTION) : nullptr;
     if (!fb || (element->m_data.blur && !matteFB)) {
         fb.reset();
         matteFB.reset();
@@ -709,7 +710,7 @@ void IElementRenderer::drawTransformedWindow(CRenderContext& ctx, WP<CTransforme
         plan.outputBox    = MONITORBOX;
         SOURCECANVAS      = {0, 0, pMonitor->m_transformedSize.x, pMonitor->m_transformedSize.y};
         fb                = g_pHyprRenderer->getWorkBuffer(ctx);
-        matteFB           = element->m_data.blur ? g_pHyprRenderer->getWorkBuffer(ctx) : nullptr;
+        matteFB = element->m_data.blur ? g_pHyprRenderer->getWorkBuffer(ctx, std::nullopt, WINDOW_BLUR_MATTE_FORMAT, NColorManagement::DEFAULT_SRGB_IMAGE_DESCRIPTION) : nullptr;
         if (!fb || (element->m_data.blur && !matteFB)) {
             renderNestedDirect();
             return;
@@ -718,7 +719,7 @@ void IElementRenderer::drawTransformedWindow(CRenderContext& ctx, WP<CTransforme
 
     const CRegion  CANVASDAMAGE      = CRegion{0, 0, sc<int>(SOURCECANVAS.w), sc<int>(SOURCECANVAS.h)};
     const Vector2D CANVASTRANSLATION = -SOURCECANVAS.pos();
-    const auto     transformWindowFB = [&](const SWindowTransformBuffer& in) {
+    const auto     transformWindowFB = [&](const SWindowTransformBuffer& in, bool blurMatte) {
         if (!applyTransformers)
             return in;
 
@@ -730,6 +731,7 @@ void IElementRenderer::drawTransformedWindow(CRenderContext& ctx, WP<CTransforme
                                                                 .monitor           = pMonitor,
                                                                 .standalone        = element->m_data.standalone,
                                                                 .renderingSnapshot = element->m_data.renderingSnapshot,
+                                                                .blurMatte         = blurMatte,
                                                             });
     };
 
@@ -756,7 +758,7 @@ void IElementRenderer::drawTransformedWindow(CRenderContext& ctx, WP<CTransforme
         element->m_data.pass->render(ctx, CANVASDAMAGE);
 
         renderData.renderModif = {};
-        last                   = transformWindowFB({.framebuffer = fb, .box = SOURCECANVAS});
+        last                   = transformWindowFB({.framebuffer = fb, .box = SOURCECANVAS}, false);
     }
 
     SP<IFramebuffer>     blurAlphaMatteFB;
@@ -768,7 +770,7 @@ void IElementRenderer::drawTransformedWindow(CRenderContext& ctx, WP<CTransforme
             auto                         state = ctx.saveDrawState();
             g_pHyprRenderer->bindFB(ctx, matteFB);
 
-            renderData.currentWindow = element->m_data.window;
+            renderData.currentWindow.reset();
             renderData.surface.reset();
             renderData.clipBox         = {};
             renderData.damage          = CANVASDAMAGE;
@@ -776,7 +778,8 @@ void IElementRenderer::drawTransformedWindow(CRenderContext& ctx, WP<CTransforme
             renderData.fbSize          = SOURCECANVAS.size();
             g_pHyprRenderer->setProjectionType(ctx, RPT_EXPORT);
 
-            g_pHyprRenderer->draw(ctx, CClearPassElement::SClearData{CHyprColor(0, 0, 0, 1)});
+            // The matte is coverage in alpha: transparent outside, opaque inside. Its RGB is colour managed display light and is not read.
+            g_pHyprRenderer->draw(ctx, CClearPassElement::SClearData{CHyprColor(0, 0, 0, 0)});
 
             renderData.renderModif = {};
             renderData.renderModif.modifs.emplace_back(std::make_pair<>(SRenderModifData::eRenderModifType::RMOD_TYPE_TRANSLATE, CANVASTRANSLATION));
@@ -794,7 +797,7 @@ void IElementRenderer::drawTransformedWindow(CRenderContext& ctx, WP<CTransforme
                                   CANVASDAMAGE);
 
             renderData.renderModif = {};
-            matteLast              = transformWindowFB({.framebuffer = matteFB, .box = SOURCECANVAS});
+            matteLast              = transformWindowFB({.framebuffer = matteFB, .box = SOURCECANVAS}, true);
         }
 
         if (last.framebuffer && matteLast.framebuffer && matteLast.framebuffer->getTexture() && matteLast.success == last.success && matteLast.box == last.box &&

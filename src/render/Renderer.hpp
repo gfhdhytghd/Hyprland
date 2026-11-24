@@ -220,6 +220,7 @@ namespace Render {
         bool                     preBlurQueued(PHLMONITORREF pMonitor);
         bool                     preBlurQueued(CRenderContext& ctx);
         SP<ITexture>             getBlurTexture(CRenderContext& ctx);
+        SP<IFramebuffer>         getWorkBuffer(CRenderContext& ctx, std::optional<Vector2D> size, DRMFormat format, NColorManagement::PImageDescription description);
         SP<IFramebuffer>         getWorkBuffer(CRenderContext& ctx, std::optional<Vector2D> size = std::nullopt);
         void                     sendFrameEventsToWorkspace(PHLMONITOR pMonitor, PHLWORKSPACE pWorkspace, const Time::steady_tp& now);
 
@@ -242,8 +243,10 @@ namespace Render {
 
         SCMSettings getCMSettings(CRenderContext& ctx, const NColorManagement::PImageDescription imageDescription, const NColorManagement::PImageDescription targetImageDescription,
                                   SP<CWLSurfaceResource> surface = nullptr, bool modifySDR = false, float sdrMinLuminance = -1.0f, bool shouldUseSurface = false);
-        void        clearCMSettingsCache(CRenderContext& ctx);
-        virtual bool reloadShaders(const std::string& path = "") = 0;
+        // Source TF after the render:cm_sdr_eotf policy, see Render::resolveSourceTF.
+        NColorManagement::eTransferFunction effectiveSourceTF(CRenderContext& ctx, const NColorManagement::PImageDescription imageDescription, bool shouldUseSurface);
+        void                                clearCMSettingsCache(CRenderContext& ctx);
+        virtual bool                        reloadShaders(const std::string& path = "") = 0;
 
       protected:
         CRenderContext            m_context;

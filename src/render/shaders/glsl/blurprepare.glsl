@@ -21,8 +21,8 @@ vec4 blurPrepare(vec4 pixColor, float contrast, float brightness
         return vec4(0.0);
 
 #if USE_CM
-    float alpha = pixColor.a;
-    pixColor.rgb /= max(alpha, 0.001);
+    float alpha  = pixColor.a;
+    pixColor.rgb = unpremultiply(pixColor.rgb, alpha);
     pixColor.rgb = toLinearRGB(pixColor.rgb, sourceTF, srcTFRange);
     pixColor     = toNit(pixColor, srcTFRange);
     pixColor.rgb /= max(sdrBrightnessMultiplier, 0.001);

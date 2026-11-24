@@ -14,8 +14,8 @@ uniform int       hazeTransferFunction;
 
 #include "defines.h"
 #if USE_CM
-uniform int sourceTF;
-uniform int targetTF;
+const int sourceTF = SOURCE_TF;
+const int targetTF = TARGET_TF;
 #include "CM.glsl"
 #endif
 
