@@ -170,12 +170,16 @@ void CScreenshareFrame::copy() {
     // store a snapshot before the permission popup so we don't break screenshots
     const auto PERM = g_pDynamicPermissionManager->clientPermissionMode(m_session->m_client, PERMISSION_TYPE_SCREENCOPY);
     if (PERM == PERMISSION_RULE_ALLOW_MODE_PENDING) {
-        if (m_session->m_type != SHARE_WORKSPACE && (!m_session->m_tempFB || !m_session->m_tempFB->isAllocated()))
+        if (m_session->m_type != SHARE_WORKSPACE && (!m_permissionSnapshot || !m_permissionSnapshot->isAllocated()))
             storeTempFB();
 
         // don't copy a frame while allow is pending because screenshot tools will only take the first frame we give, which is empty
         return;
     }
+
+    m_sessionStopped.reset();
+    if (PERM == PERMISSION_RULE_ALLOW_MODE_DENY)
+        m_permissionSnapshot.reset();
 
     if (m_session->m_type == SHARE_WORKSPACE && (PERM == PERMISSION_RULE_ALLOW_MODE_DENY || m_bufferSize != m_session->bufferSize())) {
         m_failed = true;
@@ -188,6 +192,7 @@ void CScreenshareFrame::copy() {
     else if (m_buffer->dmabuf().success)
         m_failed = !copyDmabuf();
 
+    m_permissionSnapshot.reset();
     if (!m_failed) {
         // screensharing has started again
         m_session->screenshareEvents(true);
@@ -424,11 +429,16 @@ void CScreenshareFrame::render(Render::CRenderContext& ctx) {
         return;
     }
 
-    if (m_session->m_tempFB && m_session->m_tempFB->isAllocated()) {
-        CBox texbox = {{}, m_bufferSize};
-        g_pHyprRenderer->draw(ctx, CTexPassElement::SRenderData{.tex = m_session->m_tempFB->getTexture(), .box = texbox}, texbox);
-        m_session->m_tempFB->release();
-        return;
+    if (m_permissionSnapshot && m_permissionSnapshot->isAllocated()) {
+        const auto DMABUF = m_buffer->dmabuf();
+        const auto FORMAT = DMABUF.success ? DMABUF.format : m_buffer->shm().format;
+        if (m_permissionSnapshot->m_size == m_bufferSize && m_permissionSnapshot->m_drmFormat == FORMAT) {
+            const CBox BOX{{}, m_bufferSize};
+            g_pHyprRenderer->blend(false);
+            g_pHyprRenderer->draw(ctx, CTexPassElement::SRenderData{.tex = m_permissionSnapshot->getTexture(), .box = BOX}, BOX);
+            g_pHyprRenderer->blend(true);
+            return;
+        }
     }
 
     switch (m_session->m_type) {
@@ -565,15 +575,21 @@ void CScreenshareFrame::storeTempFB() {
     if (g_pHyprRenderer->context().active())
         return;
 
-    if (!m_session->m_tempFB)
-        m_session->m_tempFB = g_pHyprRenderer->createFB();
-    m_session->m_tempFB->alloc(m_bufferSize.x, m_bufferSize.y);
-    m_session->m_tempFB->setImageDescription(NColorManagement::DEFAULT_SRGB_IMAGE_DESCRIPTION);
+    if (!m_permissionSnapshot) {
+        m_permissionSnapshot = g_pHyprRenderer->createFB();
+        m_sessionStopped     = m_session->m_events.stopped.listen([this] { m_permissionSnapshot.reset(); });
+    }
+    const auto DMABUF = m_buffer->dmabuf();
+    const auto FORMAT = DMABUF.success ? DMABUF.format : m_buffer->shm().format;
+    if (!m_permissionSnapshot || !m_permissionSnapshot->alloc(m_bufferSize.x, m_bufferSize.y, FORMAT))
+        return;
+    m_permissionSnapshot->setImageDescription(NColorManagement::DEFAULT_SRGB_IMAGE_DESCRIPTION);
 
     CRegion fakeDamage = {0, 0, m_bufferSize.x, m_bufferSize.y};
 
-    if (!g_pHyprRenderer->beginFullFakeRender(m_session->monitor(), fakeDamage, m_session->m_tempFB)) {
+    if (!g_pHyprRenderer->beginFullFakeRender(m_session->monitor(), fakeDamage, m_permissionSnapshot)) {
         LOG(Log::ERR, "Can't copy: failed to begin rendering to temp fb");
+        m_permissionSnapshot->release();
         return;
     }
     bool                      finishing = false;

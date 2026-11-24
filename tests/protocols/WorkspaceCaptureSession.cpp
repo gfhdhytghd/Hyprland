@@ -178,6 +178,7 @@ class CSessionTestElements : public Render::IElementRenderer {
         Vector2D   exportSize;
     };
     std::vector<SClear> m_clears;
+    bool                m_simpleExport = false;
     struct STexture {
         WP<Render::ITexture>   texture;
         WP<CWLSurfaceResource> surface;
@@ -195,8 +196,10 @@ class CSessionTestElements : public Render::IElementRenderer {
 
   protected:
     void draw(Render::CRenderContext& ctx, WP<CClearPassElement> element, const CRegion& damage) override {
-        EXPECT_TRUE(ctx.m_renderingCapture);
-        EXPECT_TRUE(ctx.m_blockSurfaceFeedback);
+        if (!m_simpleExport) {
+            EXPECT_TRUE(ctx.m_renderingCapture);
+            EXPECT_TRUE(ctx.m_blockSurfaceFeedback);
+        }
         m_clears.push_back({element->m_data.color, damage, ctx.m_data.currentFB->m_size, ctx.m_data.outFB->m_size});
     }
     void draw(Render::CRenderContext&, WP<CBorderPassElement>, const CRegion&) override {
@@ -222,9 +225,11 @@ class CSessionTestElements : public Render::IElementRenderer {
         ADD_FAILURE() << "Unexpected glow draw";
     }
     void draw(Render::CRenderContext& ctx, WP<CTexPassElement> element, const CRegion&) override {
-        EXPECT_TRUE(ctx.m_renderingCapture);
-        EXPECT_TRUE(ctx.m_blockSurfaceFeedback);
-        EXPECT_TRUE(ctx.m_data.blockScreenShader);
+        if (!m_simpleExport) {
+            EXPECT_TRUE(ctx.m_renderingCapture);
+            EXPECT_TRUE(ctx.m_blockSurfaceFeedback);
+            EXPECT_TRUE(ctx.m_data.blockScreenShader);
+        }
         m_textures.push_back({element->m_data.tex, element->m_data.surface, element->m_data.box});
     }
     void draw(Render::CRenderContext&, WP<CTextureMatteElement>, const CRegion&) override {
@@ -234,7 +239,8 @@ class CSessionTestElements : public Render::IElementRenderer {
 
 class CSessionTestRenderbuffer : public Render::IRenderbuffer {
   public:
-    CSessionTestRenderbuffer(SP<Aquamarine::IBuffer> buffer, uint32_t format, int& unbinds) : IRenderbuffer(buffer, format), m_unbinds(unbinds) {
+    CSessionTestRenderbuffer(SP<Aquamarine::IBuffer> buffer, uint32_t format, int& unbinds, bool simpleExport) :
+        IRenderbuffer(buffer, format), m_unbinds(unbinds), m_simpleExport(simpleExport) {
         m_framebuffer = makeShared<CSessionTestFramebuffer>();
         m_framebuffer->alloc(buffer->size.x, buffer->size.y, buffer->dmabuf().format);
         m_good = true;
@@ -243,13 +249,16 @@ class CSessionTestRenderbuffer : public Render::IRenderbuffer {
         ;
     }
     void unbind() override {
-        EXPECT_TRUE(g_pHyprRenderer->context().m_renderingCapture);
-        EXPECT_TRUE(g_pHyprRenderer->context().m_blockSurfaceFeedback);
+        if (!m_simpleExport) {
+            EXPECT_TRUE(g_pHyprRenderer->context().m_renderingCapture);
+            EXPECT_TRUE(g_pHyprRenderer->context().m_blockSurfaceFeedback);
+        }
         ++m_unbinds;
     }
 
   private:
     int& m_unbinds;
+    bool m_simpleExport = false;
 };
 
 // Exercise the real render lifecycle and element dispatch without a GL backend.
@@ -261,6 +270,8 @@ class CSessionTestRenderer : public Render::IHyprRenderer {
     int                                      m_begins = 0, m_ends = 0;
     int                                      m_dmaBegins = 0, m_unbinds = 0, m_passStarts = 0;
     int                                      m_blurs = 0;
+    std::vector<DRMFormat>                   m_exportFormats;
+    WP<Render::ITexture>                     m_lastExportTexture;
     std::vector<WP<Render::CSceneResources>> m_resources;
 
     eType                                    type() override {
@@ -268,6 +279,16 @@ class CSessionTestRenderer : public Render::IHyprRenderer {
     }
     Render::SRenderResult endRender(const std::function<void()>& callback) override {
         EXPECT_TRUE(context().active());
+        if (m_elements->m_simpleExport) {
+            const auto& TARGET = context().m_data.outFB;
+            EXPECT_EQ(TARGET->imageDescription(), NColorManagement::DEFAULT_SRGB_IMAGE_DESCRIPTION);
+            m_exportFormats.push_back(TARGET->m_drmFormat);
+            m_lastExportTexture = TARGET->getTexture();
+            finishRender();
+            if (callback)
+                callback();
+            return {};
+        }
         EXPECT_TRUE(context().m_data.blockScreenShader);
         expectCapture(context());
         expectCaptureTarget(context());
@@ -281,7 +302,8 @@ class CSessionTestRenderer : public Render::IHyprRenderer {
         return {};
     }
     void startRenderPass(Render::CRenderContext& ctx) override {
-        expectCapture(ctx);
+        if (!m_elements->m_simpleExport)
+            expectCapture(ctx);
         ++m_passStarts;
     }
     SP<Render::ITexture> renderText(const std::string&, CHyprColor, int, bool, const std::string&, int, int) override {
@@ -327,6 +349,8 @@ class CSessionTestRenderer : public Render::IHyprRenderer {
         return {};
     }
     SP<Render::IFramebuffer> createFB(const std::string&) override {
+        if (m_elements->m_simpleExport)
+            return makeShared<CSessionTestSnapshotFramebuffer>();
         return makeShared<CSessionTestFramebuffer>();
     }
     void disableScissor() override {
@@ -393,6 +417,13 @@ class CSessionTestRenderer : public Render::IHyprRenderer {
     }
     void prepareTarget(Render::CRenderContext& ctx, PHLMONITOR monitor, CRegion& damage, SP<Render::IFramebuffer> fb, bool simple) {
         EXPECT_TRUE(ctx.active());
+        if (m_elements->m_simpleExport) {
+            EXPECT_TRUE(simple);
+            EXPECT_EQ(ctx.m_data.projectionType, Render::RPT_EXPORT);
+            ctx.m_data.currentFB = ctx.m_data.mainFB = ctx.m_data.outFB = fb;
+            setDamage(ctx, damage, std::nullopt);
+            return;
+        }
         EXPECT_FALSE(simple);
         EXPECT_EQ(ctx.m_data.projectionType, Render::RPT_MONITOR);
         ASSERT_TRUE(ctx.sceneResources());
@@ -418,7 +449,7 @@ class CSessionTestRenderer : public Render::IHyprRenderer {
     }
     bool initRenderBuffer(Render::CRenderContext& ctx, SP<Aquamarine::IBuffer> buffer, uint32_t format) override {
         EXPECT_TRUE(buffer->dmabuf().success);
-        ctx.m_currentRenderbuffer = makeShared<CSessionTestRenderbuffer>(buffer, format, m_unbinds);
+        ctx.m_currentRenderbuffer = makeShared<CSessionTestRenderbuffer>(buffer, format, m_unbinds, m_elements->m_simpleExport);
         return true;
     }
     bool beginRenderInternal(Render::CRenderContext& ctx, PHLMONITOR monitor, CRegion& damage, bool simple) override {
@@ -814,6 +845,103 @@ class CWorkspaceCaptureFrameTest : public CWorkspaceCaptureSessionTest {
     UP<CSessionLockProtocol>        m_previousLockProtocol;
     UP<Desktop::CFadingOutState>    m_previousFadeouts;
 };
+
+TEST_F(CWorkspaceCaptureFrameTest, PendingPermissionSnapshotUsesNegotiatedTenBitFormat) {
+    renderer().m_elements->m_simpleExport                                 = true;
+    *CConfigValue<Config::INTEGER>("ecosystem:enforce_permissions").ptr() = 1;
+    *CConfigValue<Config::INTEGER>("misc:screencopy_force_8b").ptr()      = 0;
+    m_monitor->m_output->state->setFormat(DRM_FORMAT_XRGB2101010);
+
+    const auto RESOURCES = m_monitor->resources();
+    ASSERT_TRUE(RESOURCES->mirrorFB());
+    RESOURCES->markMirrorFBUpdated();
+    for (const bool dma : {false, true}) {
+        SCOPED_TRACE(dma);
+        renderer().m_exportFormats.clear();
+        auto session = Screenshare::mgr()->newSession(m_client, m_monitor);
+        ASSERT_TRUE(session);
+        auto target       = buffer(session->bufferSize(), DRM_FORMAT_XBGR2101010, dma);
+        target->m_texture = makeShared<CSessionTestTexture>(target->size);
+
+        std::vector<Screenshare::eScreenshareResult> results;
+        auto                                         frame = session->nextFrame(false);
+        ASSERT_EQ(frame->share(target, {}, [&](auto result) { results.push_back(result); }), Screenshare::ERROR_NONE);
+
+        g_pDynamicPermissionManager->clearConfigPermissions();
+        g_pDynamicPermissionManager->addConfigPermissionRule(".*", PERMISSION_TYPE_SCREENCOPY, PERMISSION_RULE_ALLOW_MODE_PENDING);
+        Screenshare::mgr()->onOutputCommit(m_monitor);
+        const auto frozen = renderer().m_lastExportTexture.lock();
+        ASSERT_TRUE(frozen);
+        EXPECT_FALSE(frame->done());
+        EXPECT_TRUE(target->m_readbacks.empty());
+        EXPECT_EQ(renderer().m_exportFormats, (std::vector<DRMFormat>{DRM_FORMAT_XBGR2101010}));
+
+        g_pDynamicPermissionManager->clearConfigPermissions();
+        g_pDynamicPermissionManager->addConfigPermissionRule(".*", PERMISSION_TYPE_SCREENCOPY, PERMISSION_RULE_ALLOW_MODE_ALLOW);
+        Screenshare::mgr()->onOutputCommit(m_monitor);
+        EXPECT_TRUE(frame->done());
+        ASSERT_FALSE(renderer().m_elements->m_textures.empty());
+        EXPECT_EQ(renderer().m_elements->m_textures.back().texture, frozen);
+        EXPECT_EQ(renderer().m_exportFormats, (std::vector<DRMFormat>{DRM_FORMAT_XBGR2101010, DRM_FORMAT_XBGR2101010}));
+        EXPECT_EQ(target->m_readbacks, (dma ? std::vector<CBox>{} : std::vector<CBox>{CBox{{}, session->bufferSize()}}));
+        EXPECT_EQ(results, (std::vector<Screenshare::eScreenshareResult>{Screenshare::RESULT_TIMESTAMP, Screenshare::RESULT_TIMESTAMP, Screenshare::RESULT_COPIED}));
+    }
+}
+
+TEST_F(CWorkspaceCaptureFrameTest, PendingSnapshotExpiresOnDenialCancellationOrStop) {
+    renderer().m_elements->m_simpleExport                                 = true;
+    *CConfigValue<Config::INTEGER>("ecosystem:enforce_permissions").ptr() = 1;
+    renderer().m_screencopyDeniedTexture                                  = makeShared<CSessionTestTexture>(Vector2D{8, 8});
+    const auto resources                                                  = m_monitor->resources();
+    ASSERT_TRUE(resources->mirrorFB());
+    resources->markMirrorFBUpdated();
+    const auto setPermission = [](auto mode) {
+        g_pDynamicPermissionManager->clearConfigPermissions();
+        g_pDynamicPermissionManager->addConfigPermissionRule(".*", PERMISSION_TYPE_SCREENCOPY, mode);
+    };
+
+    enum eEnd {
+        DENY,
+        CANCEL,
+        STOP
+    };
+    for (const auto end : {DENY, CANCEL, STOP}) {
+        SCOPED_TRACE(end);
+        auto session = Screenshare::mgr()->newSession(m_client, m_monitor);
+        ASSERT_TRUE(session);
+        auto target       = buffer(session->bufferSize(), session->allowedFormats().front());
+        target->m_texture = makeShared<CSessionTestTexture>(target->size);
+        auto frame        = session->nextFrame(false);
+        ASSERT_EQ(frame->share(target, {}, [](auto) {}), Screenshare::ERROR_NONE);
+        setPermission(PERMISSION_RULE_ALLOW_MODE_PENDING);
+        Screenshare::mgr()->onOutputCommit(m_monitor);
+        auto frozen = renderer().m_lastExportTexture;
+        ASSERT_FALSE(frozen.expired());
+        if (end == STOP) {
+            session->stop();
+            EXPECT_TRUE(frozen.expired());
+            continue;
+        }
+        if (end == CANCEL)
+            frame.reset();
+        else {
+            setPermission(PERMISSION_RULE_ALLOW_MODE_DENY);
+            Screenshare::mgr()->onOutputCommit(m_monitor);
+            ASSERT_TRUE(frame->done());
+            EXPECT_EQ(renderer().m_elements->m_textures.back().texture, renderer().m_screencopyDeniedTexture);
+        }
+        EXPECT_TRUE(frozen.expired());
+        resources->releaseMirrorFB();
+        ASSERT_TRUE(resources->mirrorFB());
+        resources->markMirrorFBUpdated();
+        setPermission(PERMISSION_RULE_ALLOW_MODE_ALLOW);
+        frame = session->nextFrame(false);
+        ASSERT_EQ(frame->share(target, {}, [](auto) {}), Screenshare::ERROR_NONE);
+        Screenshare::mgr()->onOutputCommit(m_monitor);
+        ASSERT_TRUE(frame->done());
+        EXPECT_EQ(renderer().m_elements->m_textures.back().texture, resources->getMirrorTexture());
+    }
+}
 
 TEST_F(CWorkspaceCaptureFrameTest, EmptyAndRemovedFramesClearTransparentWithoutCopyFB) {
     for (const auto mode : {0U, 1U}) {
