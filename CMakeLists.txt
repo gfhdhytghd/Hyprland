@@ -34,6 +34,8 @@ set(CMAKE_MESSAGE_LOG_LEVEL "STATUS")
 message(STATUS "Gathering git info")
 
 # Make shader files includable
+file(GLOB HYPR_SHADER_SOURCES CONFIGURE_DEPENDS "src/render/shaders/glsl/*")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${HYPR_SHADER_SOURCES})
 execute_process(COMMAND ./scripts/generateShaderIncludes.sh
                 WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
                 RESULT_VARIABLE HYPR_SHADER_GEN_RESULT)

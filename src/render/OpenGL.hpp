@@ -323,6 +323,10 @@ namespace Render::GL {
         };
 
       private:
+        friend class CICCSurfaceTest;
+        struct STestContext {};
+        explicit CHyprOpenGLImpl(STestContext);
+
         CFramebufferBindingGuard* m_bindingGuard = nullptr;
 
         struct {

@@ -55,6 +55,215 @@ TEST_F(CICCProfileTest, SRGBProfileLUTIsIdentityInEncodedDomain) {
     }
 }
 
+TEST_F(CICCProfileTest, P3LUTMatchesDirectTransformForExtendedWorkBufferColors) {
+    const cmsCIExyY       white{0.3127, 0.3290, 1};
+    const cmsCIExyYTRIPLE p3{{0.68, 0.32, 1}, {0.265, 0.69, 1}, {0.15, 0.06, 1}};
+    const cmsCIExyYTRIPLE bt709{{0.64, 0.33, 1}, {0.30, 0.60, 1}, {0.15, 0.06, 1}};
+    auto                  makeProfile = [&](const cmsCIExyYTRIPLE& primaries, double gamma) {
+        auto          curve     = cmsBuildGamma(nullptr, gamma);
+        cmsToneCurve* curves[3] = {curve, curve, curve};
+        auto          result    = cmsCreateRGBProfile(&white, &primaries, curves);
+        cmsFreeToneCurve(curve);
+        return result;
+    };
+    cmsCloseProfile(m_profile);
+    m_profile = makeProfile(p3, 2.2);
+    ASSERT_NE(m_profile, nullptr);
+    const auto recovered = iccPrimaries(m_profile);
+    ASSERT_TRUE(recovered);
+    SImageDescription image{.primaries = *recovered};
+    ASSERT_TRUE(iccBuildLUTData(m_profile, image));
+
+    const auto work = makeProfile(bt709, 1);
+    ASSERT_NE(work, nullptr);
+    const auto direct = cmsCreateTransform(work, TYPE_RGB_FLT, m_profile, TYPE_RGB_FLT, INTENT_RELATIVE_COLORIMETRIC, cmsFLAGS_BLACKPOINTCOMPENSATION | cmsFLAGS_HIGHRESPRECALC);
+    cmsCloseProfile(work);
+    ASSERT_NE(direct, nullptr);
+    const auto n       = image.icc.lutSize;
+    const auto convert = CPrimaries::from(CM_PRIMARIES_SRGB)->convertMatrix(CPrimaries::from(image.getPrimaries()));
+    // Extended BT.709 for P3 red and green, plus an interior color and a near-black grid sample.
+    for (const std::array<float, 3> pixel :
+         {std::array{1.224940f, -0.042057f, -0.019638f}, {-0.224940f, 1.042057f, -0.078636f}, {0.61f, 0.35f, 0.42f}, {0.00242f, 0.00242f, 0.00242f}}) {
+        std::array<float, 3> expected{};
+        cmsDoTransform(direct, pixel.data(), expected.data(), 1);
+        const auto rgb = convert * Hyprgraphics::CColor::XYZ{.x = pixel[0], .y = pixel[1], .z = pixel[2]};
+        // Model the shader's shaper and hardware trilinear lookup in grid coordinates.
+        const auto coordinate = [&](double linear) {
+            linear = std::clamp(linear, 0.0, 1.0);
+            return std::clamp(linear <= 0.0031308 ? linear * 12.92 : 1.055 * std::pow(linear, 1.0 / 2.4) - 0.055, 0.0, 1.0) * (n - 1);
+        };
+        const std::array      coords{coordinate(rgb.x), coordinate(rgb.y), coordinate(rgb.z)};
+        std::array<double, 3> actual{};
+        for (size_t corner = 0; corner < 8; ++corner) {
+            size_t index  = 0;
+            double weight = 1;
+            for (int axis = 2; axis >= 0; --axis) {
+                const auto base = sc<size_t>(coords[axis]);
+                const auto frac = coords[axis] - base;
+                const bool high = corner & (1U << axis);
+                index           = index * n + std::min(base + high, n - 1);
+                weight *= high ? frac : 1 - frac;
+            }
+            for (size_t c = 0; c < 3; ++c)
+                actual[c] += weight * image.icc.lutDataPacked[index * 3 + c];
+        }
+        for (size_t c = 0; c < 3; ++c)
+            EXPECT_NEAR(actual[c], std::clamp(expected[c], 0.f, 1.f), 2e-3);
+    }
+    cmsDeleteTransform(direct);
+}
+
+class CVCGTTest : public CICCProfileTest {
+  protected:
+    void reopenWithTag(const std::vector<uint8_t>& tag) {
+        ASSERT_TRUE(cmsWriteRawTag(m_profile, cmsSigVcgtTag, tag.data(), tag.size()));
+        cmsUInt32Number size = 0;
+        ASSERT_TRUE(cmsSaveProfileToMem(m_profile, nullptr, &size));
+        std::vector<uint8_t> bytes(size);
+        ASSERT_TRUE(cmsSaveProfileToMem(m_profile, bytes.data(), &size));
+        cmsCloseProfile(m_profile);
+        m_bytes   = std::move(bytes);
+        m_profile = cmsOpenProfileFromMem(m_bytes.data(), size);
+        ASSERT_NE(m_profile, nullptr);
+    }
+
+    std::vector<uint8_t> m_bytes;
+};
+
+TEST_F(CVCGTTest, DecodesTableWidthsAndReplicatesSingleChannel) {
+    for (uint8_t channels : {1, 3}) {
+        for (uint8_t width : {1, 2}) {
+            std::vector<uint8_t> tag{'v', 'c', 'g', 't', 0, 0, 0, 0, 0, 0, 0, 0, 0, channels, 0, 4, 0, width};
+            for (uint8_t c = 0; c < channels; ++c)
+                for (uint8_t value : {0, 85, 170, 255}) {
+                    tag.push_back(value - c * (value > 0));
+                    if (width == 2)
+                        tag.push_back(42);
+                }
+            ASSERT_NO_FATAL_FAILURE(reopenWithTag(tag));
+            const auto result = iccReadVCGT(m_profile);
+            ASSERT_TRUE(result && *result);
+            for (size_t c = 0; c < 3; ++c) {
+                const int   delta = channels == 1 ? 0 : sc<int>(c);
+                const auto& ramp  = (**result).ch[c];
+                ASSERT_EQ(ramp.size(), 4U);
+                EXPECT_EQ(ramp[1], width == 1 ? (85 - delta) * 257 : (85 - delta) * 256 + 42);
+                EXPECT_EQ(ramp.back(), width == 1 ? (255 - delta) * 257 : (255 - delta) * 256 + 42);
+            }
+        }
+    }
+}
+
+TEST_F(CVCGTTest, DecodesFormulaTriples) {
+    std::vector<uint8_t> tag{'v', 'c', 'g', 't', 0, 0, 0, 0, 0, 0, 0, 1};
+    for (uint8_t gamma : {1, 2, 3})
+        tag.insert(tag.end(), {0, gamma, 0, 0, 0, 0, 64, 0, 0, 0, 192, 0});
+    ASSERT_NO_FATAL_FAILURE(reopenWithTag(tag));
+    const auto result = iccReadVCGT(m_profile);
+    ASSERT_TRUE(result && *result);
+    for (size_t c = 0; c < 3; ++c) {
+        const auto& ramp = (**result).ch[c];
+        ASSERT_GT(ramp.size(), 1U);
+        const auto i = ramp.size() / 2;
+        EXPECT_NEAR(ramp[i], 65535 * (0.25 + 0.5 * std::pow(sc<double>(i) / (ramp.size() - 1), c + 1)), 1);
+        EXPECT_EQ(ramp.front(), 16384);
+        EXPECT_EQ(ramp.back(), 49151);
+    }
+}
+
+TEST_F(CVCGTTest, RejectsSingletonAndTruncatedTags) {
+    std::vector<uint8_t> tag{'v', 'c', 'g', 't', 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 42};
+    ASSERT_NO_FATAL_FAILURE(reopenWithTag(tag));
+    EXPECT_FALSE(iccReadVCGT(m_profile));
+    tag[15] = 2;
+    ASSERT_NO_FATAL_FAILURE(reopenWithTag(tag));
+    EXPECT_FALSE(iccReadVCGT(m_profile));
+    tag[11] = 1;
+    tag.resize(47);
+    ASSERT_NO_FATAL_FAILURE(reopenWithTag(tag));
+    EXPECT_FALSE(iccReadVCGT(m_profile));
+}
+
+TEST_F(CVCGTTest, ReadsLegacyReservedWordAndLowEndpoints) {
+    const std::vector<uint8_t> tag{'v',
+                                   'c',
+                                   'g',
+                                   't',
+                                   0,
+                                   0,
+                                   0,
+                                   0,
+                                   0,
+                                   0,
+                                   0,
+                                   0,
+                                   0,
+                                   3,
+                                   0,
+                                   2,
+                                   0,
+                                   2,
+                                   0,
+                                   0,
+                                   0,
+                                   1,
+                                   10,
+                                   42,
+                                   0,
+                                   2,
+                                   11,
+                                   43,
+                                   0,
+                                   3,
+                                   12,
+                                   44};
+    ASSERT_NO_FATAL_FAILURE(reopenWithTag(tag));
+    const auto result = iccReadVCGT(m_profile);
+    ASSERT_TRUE(result && *result);
+    for (size_t c = 0; c < 3; ++c) {
+        EXPECT_EQ((**result).ch[c].front(), c + 1);
+        EXPECT_EQ((**result).ch[c].back(), (10 + c) * 256 + 42 + c);
+    }
+}
+
+TEST_F(CVCGTTest, ResolvesDeclaredAlignmentAndRejectsAmbiguousTables) {
+    std::vector<uint8_t> tag{'v', 'c', 'g', 't', 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 3, 0, 2, 0, 0};
+    for (int channel = 0; channel < 3; ++channel)
+        tag.insert(tag.end(), {0, 0, 128, 0, 255, 255});
+    tag.resize(40);
+    ASSERT_NO_FATAL_FAILURE(reopenWithTag(tag));
+    const auto result = iccReadVCGT(m_profile);
+    ASSERT_TRUE(result && *result);
+    for (const auto& ramp : (**result).ch)
+        EXPECT_EQ(ramp, (std::vector<uint16_t>{0, 32768, 65535}));
+
+    tag.back() = 1;
+    ASSERT_NO_FATAL_FAILURE(reopenWithTag(tag));
+    EXPECT_FALSE(iccReadVCGT(m_profile));
+    tag.pop_back();
+    ASSERT_NO_FATAL_FAILURE(reopenWithTag(tag));
+    EXPECT_FALSE(iccReadVCGT(m_profile));
+
+    // Two shared 16-bit samples: a 24-byte tag can be aligned standard or exact legacy.
+    tag = {'v', 'c', 'g', 't', 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 2, 0, 2, 0, 0, 128, 0, 0, 0};
+    ASSERT_NO_FATAL_FAILURE(reopenWithTag(tag));
+    EXPECT_FALSE(iccReadVCGT(m_profile));
+    tag[19] = 1;
+    ASSERT_NO_FATAL_FAILURE(reopenWithTag(tag));
+    const auto standard = iccReadVCGT(m_profile);
+    ASSERT_TRUE(standard && *standard);
+    EXPECT_EQ((**standard).ch[0], (std::vector<uint16_t>{1, 32768}));
+}
+
+TEST_F(CVCGTTest, RejectsInvalidTableHeaderFields) {
+    for (const auto& [offset, value] : std::array<std::pair<size_t, uint8_t>, 5>{{{0, 'x'}, {11, 2}, {13, 2}, {15, 0}, {17, 3}}}) {
+        std::vector<uint8_t> tag{'v', 'c', 'g', 't', 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 2, 0, 1, 0, 255};
+        tag[offset] = value;
+        ASSERT_NO_FATAL_FAILURE(reopenWithTag(tag));
+        EXPECT_FALSE(iccReadVCGT(m_profile));
+    }
+}
+
 TEST_F(CICCProfileTest, RecoversCustomWhiteFromSerializedProfile) {
     const cmsCIExyY                                          white{0.314, 0.351, 1.0};
     const cmsCIExyYTRIPLE                                    primaries{{0.68, 0.32, 1.0}, {0.265, 0.69, 1.0}, {0.15, 0.06, 1.0}};

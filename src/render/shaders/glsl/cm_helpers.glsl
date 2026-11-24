@@ -163,7 +163,7 @@ vec3 tfExtSRGB(vec3 color) {
 
 #if USE_ICC
 vec3 applyIcc3DLut(vec3 linearRgb01, highp sampler3D iccLut3D, float iccLutSize) {
-    // the LUT is indexed by sRGB-encoded values, see buildIcc3DLut
+    // The LUT uses display primaries with an sRGB shaper. Clamp after conversion from the FP16 work buffer.
     vec3 x = tfSRGB(clamp(linearRgb01, 0.0, 1.0));
 
     // Map [0..1] to texel centers to avoid edge issues
@@ -368,7 +368,7 @@ vec4
     pixColor.rgb += linearNoise;
 
 #if USE_ICC
-    pixColor.rgb = applyIcc3DLut(pixColor.rgb, iccLut3D, iccLutSize);
+    pixColor.rgb = applyIcc3DLut(convertMatrix * pixColor.rgb, iccLut3D, iccLutSize);
     pixColor.a   = finalAlpha;
     pixColor.rgb *= pixColor.a;
 #if USE_MIRROR

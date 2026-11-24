@@ -40,95 +40,73 @@ static uint32_t bigEndianU32(const uint8_t* p) {
     return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | (uint32_t)p[3];
 }
 
-static constexpr cmsTagSignature makeSig(char a, char b, char c, char d) {
-    return sc<cmsTagSignature>(sc<uint32_t>(a) << 24 | sc<uint32_t>(b) << 16 | sc<uint32_t>(c) << 8 | sc<uint32_t>(d));
-}
-
-static constexpr cmsTagSignature VCGT_SIG = makeSig('v', 'c', 'g', 't');
-
-//
-
-static std::expected<std::optional<SVCGTTable16>, std::string> readVCGT16(cmsHPROFILE prof) {
-    if (!cmsIsTag(prof, VCGT_SIG))
+std::expected<std::optional<SVCGTTable16>, std::string> NColorManagement::iccReadVCGT(cmsHPROFILE profile) {
+    if (!cmsIsTag(profile, cmsSigVcgtTag))
         return std::nullopt;
 
-    cmsUInt32Number n = cmsReadRawTag(prof, VCGT_SIG, nullptr, 0);
-    if (n < 8 + 4 + 2 + 2 + 2 + 2) // header + type + table header
-        return std::unexpected("Malformed vcgt tag");
+    const auto size = cmsReadRawTag(profile, cmsSigVcgtTag, nullptr, 0);
+    // Three channels of at most 65535 two-byte entries, plus the header and alignment.
+    if (size < 12 || size > 20 + 3 * 65535 * 2 + 3)
+        return std::unexpected("Invalid vcgt tag size");
 
-    std::vector<uint8_t> raw(n);
-    if (cmsReadRawTag(prof, VCGT_SIG, raw.data(), n) != n)
-        return std::unexpected("Malformed vcgt tag");
+    std::vector<uint8_t> raw(size);
+    if (cmsReadRawTag(profile, cmsSigVcgtTag, raw.data(), size) != size || bigEndianU32(raw.data()) != cmsSigVcgtType)
+        return std::unexpected("Invalid vcgt tag header");
 
-    // raw layout:
-    // 0 ... 3: 'vcgt'
-    // 4 ... 7: reserved
-    // 8 ... 11: gammaType (0 = table)
-    uint32_t gammaType = bigEndianU32(raw.data() + 8);
-    if (gammaType != 0)
-        return std::unexpected("VCGT formula type is not supported by Hyprland");
+    SVCGTTable16 table{.channels = 3, .entrySize = 2};
+    const auto   type = bigEndianU32(raw.data() + 8);
+    if (type == 1) {
+        if (size < 48)
+            return std::unexpected("Truncated vcgt formula");
 
-    SVCGTTable16 table;
-    table.channels  = bigEndianU16(raw.data() + 12);
-    table.entries   = bigEndianU16(raw.data() + 14);
-    table.entrySize = bigEndianU16(raw.data() + 16);
-    // raw+18: reserved u16
-
-    LOG(Log::DEBUG, "readVCGT16: table has {} channels, {} entries, and entry size of {}", table.channels, table.entries, table.entrySize);
-
-    if (table.channels != 3 || table.entrySize != 2 || table.entries == 0)
-        return std::unexpected("invalid vcgt table size");
-
-    size_t tableBytes = (size_t)table.channels * (size_t)table.entries * (size_t)table.entrySize;
-
-    // VCGT is a piece of shit and some absolute fucking mongoloid idiots
-    // decided it'd be great to have both 18 and 20
-    // FUCK YOU
-    size_t tableOff = 20;
-
-    auto   readTable = [&] -> void {
-        for (int c = 0; c < 3; ++c) {
+        // Per-channel signed 16.16 triples. Sample in the same normalized input domain as the KMS ramp.
+        table.entries = 4096;
+        for (size_t c = 0; c < table.ch.size(); ++c) {
+            const auto   fixed = [&](size_t field) { return std::bit_cast<int32_t>(bigEndianU32(raw.data() + 12 + c * 12 + field * 4)) / 65536.0; };
+            const double gamma = fixed(0), low = fixed(1), high = fixed(2);
+            if (gamma <= 0 || low < 0 || high > 1 || low >= high)
+                return std::unexpected("Invalid vcgt formula range or exponent");
             table.ch[c].resize(table.entries);
-            for (uint16_t i = 0; i < table.entries; ++i) {
-                const uint8_t* p = raw.data() + tableOff + sc<ptrdiff_t>((c * table.entries + i) * 2);
-                table.ch[c][i]   = bigEndianU16(p); // 0 ... 65535
+            for (size_t i = 0; i < table.entries; ++i) {
+                const auto value = std::lerp(low, high, std::pow(sc<double>(i) / (table.entries - 1), gamma));
+                table.ch[c][i]   = sc<uint16_t>(std::lround(value * 65535));
             }
         }
+        return table;
+    }
+
+    if (type != 0 || size < 18)
+        return std::unexpected("Invalid vcgt table header");
+
+    const auto channels = bigEndianU16(raw.data() + 12);
+    table.entries       = bigEndianU16(raw.data() + 14);
+    const auto width    = bigEndianU16(raw.data() + 16);
+    if ((channels != 1 && channels != 3) || (width != 1 && width != 2) || table.entries < 2)
+        return std::unexpected("Invalid vcgt table dimensions");
+
+    const size_t bytes = sc<size_t>(channels) * table.entries * width;
+    if (size < 18 + bytes)
+        return std::unexpected("Truncated vcgt table");
+
+    // The declared size may include zero padding to a four-byte boundary. External ICC alignment is not part of the tag.
+    const auto matchesLength = [&](size_t offset) {
+        const size_t end = offset + bytes;
+        return size == end || (size == ((end + 3) & ~size_t{3}) && std::ranges::all_of(std::span(raw).subspan(end), [](uint8_t byte) { return byte == 0; }));
     };
+    const bool standard = matchesLength(18);
+    const bool legacy   = matchesLength(20) && bigEndianU16(raw.data() + 18) == 0;
+    if (standard == legacy)
+        return std::unexpected("Invalid or ambiguous vcgt table layout");
 
-    if (raw.size() < tableOff + tableBytes) {
-        tableOff = 18;
-
-        if (raw.size() < tableOff + tableBytes) {
-            LOG(Log::ERR, "readVCGT16: table is too short, tag is invalid");
-            return std::unexpected("table is too short");
-        }
-
-        LOG(Log::DEBUG, "readVCGT16: table is too short, but off = 18 fits. Attempting offset = 18");
-
-        readTable();
-    } else {
-        readTable();
-
-        // if the table's last entry is suspiciously low, we more than likely read an 18 as a 20.
-        if (table.ch[0][table.entries - 1] < 30000) {
-            LOG(Log::DEBUG, "readVCGT16: table is likely offset 18 not 20, re-reading");
-
-            tableOff = 18;
-
-            readTable();
+    const size_t offset = legacy ? 20 : 18;
+    for (size_t c = 0; c < table.ch.size(); ++c) {
+        table.ch[c].resize(table.entries);
+        const auto channel = offset + (channels == 1 ? 0 : c) * table.entries * width;
+        for (size_t i = 0; i < table.entries; ++i) {
+            const auto pos = channel + i * width;
+            table.ch[c][i] = width == 1 ? raw[pos] * 257 : bigEndianU16(raw.data() + pos);
         }
     }
-
-    if (table.ch[0][table.entries - 1] < 30000) {
-        LOG(Log::ERR, "readVCGT16: table is malformed, last value of a gamma ramp can't be {}", table.ch[0][table.entries - 1]);
-        return std::unexpected("invalid table values");
-    }
-
-    LOG(Log::DEBUG, "readVCGT16: red channel: [{}, {}, ... {}, {}]", table.ch[0][0], table.ch[0][1], table.ch[0][table.entries - 2], table.ch[0][table.entries - 1]);
-    LOG(Log::DEBUG, "readVCGT16: green channel: [{}, {}, ... {}, {}]", table.ch[1][0], table.ch[1][1], table.ch[1][table.entries - 2], table.ch[1][table.entries - 1]);
-    LOG(Log::DEBUG, "readVCGT16: blue channel: [{}, {}, ... {}, {}]", table.ch[2][0], table.ch[2][1], table.ch[2][table.entries - 2], table.ch[2][table.entries - 1]);
-
     return table;
 }
 
@@ -148,41 +126,28 @@ struct CmsTransformDeleter {
 using UniqueProfile   = std::unique_ptr<std::remove_pointer_t<cmsHPROFILE>, CmsProfileDeleter>;
 using UniqueTransform = std::unique_ptr<std::remove_pointer_t<cmsHTRANSFORM>, CmsTransformDeleter>;
 
-// The LUT is indexed by sRGB-encoded values: a uniform grid in linear light leaves the shadows with a few
-// samples only, and an sRGB output profile then maps to the identity grid.
-static UniqueProfile createSRGBProfile() {
-    cmsCIExyYTRIPLE prim{};
-    // sRGB / Rec.709 primaries
-    prim.Red.x   = 0.6400;
-    prim.Red.y   = 0.3300;
-    prim.Red.Y   = 1.0;
-    prim.Green.x = 0.3000;
-    prim.Green.y = 0.6000;
-    prim.Green.Y = 1.0;
-    prim.Blue.x  = 0.1500;
-    prim.Blue.y  = 0.0600;
-    prim.Blue.Y  = 1.0;
-
-    cmsCIExyY wp{};
-    wp.x = 0.3127;
-    wp.y = 0.3290;
-    wp.Y = 1.0; // D65
+// Sample the display's linear RGB cube with a perceptual shaper to retain shadow precision.
+static UniqueProfile createLUTInputProfile(const SPCPRimaries& domain) {
+    const cmsCIExyYTRIPLE prim{{domain.red.x, domain.red.y, 1}, {domain.green.x, domain.green.y, 1}, {domain.blue.x, domain.blue.y, 1}};
+    const cmsCIExyY       wp{domain.white.x, domain.white.y, 1};
 
     // IEC 61966-2-1 piecewise sRGB, the same curve as tfInvSRGB in cm_helpers.glsl
     const cmsFloat64Number params[5] = {2.4, 1.0 / 1.055, 0.055 / 1.055, 1.0 / 12.92, 0.04045};
     cmsToneCurve*          srgb      = cmsBuildParametricToneCurve(nullptr, 4, params);
-    cmsToneCurve*          curves[3] = {srgb, srgb, srgb};
+    if (!srgb)
+        return {};
+    cmsToneCurve* curves[3] = {srgb, srgb, srgb};
 
-    cmsHPROFILE            p = cmsCreateRGBProfile(&wp, &prim, curves);
+    cmsHPROFILE   p = cmsCreateRGBProfile(&wp, &prim, curves);
 
     cmsFreeToneCurve(srgb);
     return UniqueProfile{p};
 }
 
 std::expected<void, std::string> NColorManagement::iccBuildLUTData(cmsHPROFILE profile, SImageDescription& image) {
-    UniqueProfile src = createSRGBProfile();
+    UniqueProfile src = createLUTInputProfile(image.getPrimaries());
     if (!src)
-        return std::unexpected("Failed to create sRGB profile");
+        return std::unexpected("Failed to create ICC LUT input profile");
 
     // Rendering intent: RELATIVE_COLORIMETRIC is common for displays; add BPC to be safe.
     const int             intent = INTENT_RELATIVE_COLORIMETRIC;
@@ -373,7 +338,7 @@ std::expected<SImageDescription, std::string> SImageDescription::fromICC(const s
     image.icc.present = true;
 
     if (*PVCGTENABLED) {
-        auto vcgtRes = readVCGT16(prof);
+        auto vcgtRes = iccReadVCGT(prof);
         if (!vcgtRes)
             return std::unexpected(vcgtRes.error());
 

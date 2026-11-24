@@ -1380,15 +1380,15 @@ void CHyprOpenGLImpl::passCMUniforms(WP<CShader> shader, const NColorManagement:
     shader->setUniformFloat(SHADER_SDR_SATURATION, settings.sdrSaturation);
     shader->setUniformFloat(SHADER_SDR_BRIGHTNESS, settings.sdrBrightnessMultiplier);
 
-    if (!targetImageDescription->value().icc.present) {
-        const auto&                  convert         = settings.convertMatrix;
-        const std::array<GLfloat, 9> glConvertMatrix = {
-            convert[0][0], convert[1][0], convert[2][0], //
-            convert[0][1], convert[1][1], convert[2][1], //
-            convert[0][2], convert[1][2], convert[2][2], //
-        };
-        shader->setUniformMatrix3fv(SHADER_CONVERT_MATRIX, 1, false, glConvertMatrix);
+    const auto&                  convert         = settings.convertMatrix;
+    const std::array<GLfloat, 9> glConvertMatrix = {
+        convert[0][0], convert[1][0], convert[2][0], //
+        convert[0][1], convert[1][1], convert[2][1], //
+        convert[0][2], convert[1][2], convert[2][2], //
+    };
+    shader->setUniformMatrix3fv(SHADER_CONVERT_MATRIX, 1, false, glConvertMatrix);
 
+    if (!targetImageDescription->value().icc.present) {
         const auto mat = settings.dstPrimaries2XYZ;
         // clang-format off
         const std::array<GLfloat, 9> glTargetPrimariesXYZ = {

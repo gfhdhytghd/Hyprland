@@ -1,3 +1,12 @@
+#include <Compositor.hpp>
+#include <config/ConfigValue.hpp>
+#include <config/lua/ConfigManager.hpp>
+#include <config/shared/inotify/ConfigWatcher.hpp>
+#include <config/supplementary/jeremy/Jeremy.hpp>
+#include <render/OpenGL.hpp>
+#include <render/gl/GLTexture.hpp>
+#include <render/CMSettings.hpp>
+#include <helpers/cm/ICC.hpp>
 #include <render/ShaderLoader.hpp>
 #include "ShaderCompiler.hpp"
 #include <gtest/gtest.h>
@@ -88,4 +97,122 @@ TEST(ColorManagementShader, ExternalSurfaceCompilesWithMotionBlurAndColorManagem
     defines["SOURCE_TF"]       = std::to_string(sc<int>(CM_TRANSFER_FUNCTION_ST2084_PQ));
     defines["TARGET_TF"]       = std::to_string(sc<int>(CM_TRANSFER_FUNCTION_BT1886));
     EXPECT_TRUE(compiler.compile(loader.process(FRAG_SHADERS[SH_FRAG_SURFACE], defines), GL_FRAGMENT_SHADER));
+}
+
+namespace Render::GL {
+    // Supply only the GLES entry points used by CShader. CShaderCompiler owns the EGL context.
+    CHyprOpenGLImpl::CHyprOpenGLImpl(STestContext) : m_currentProgram(0) {
+        m_proc.glGenVertexArrays    = glGenVertexArrays;
+        m_proc.glBindVertexArray    = glBindVertexArray;
+        m_proc.glDeleteVertexArrays = glDeleteVertexArrays;
+    }
+
+    class CICCSurfaceTest : public ::testing::Test {
+      protected:
+        void SetUp() override {
+            if (!m_compiler.initialize(3))
+                GTEST_SKIP() << "Surfaceless EGL with OpenGL ES 3 is unavailable";
+            m_previousCompositor                = std::move(g_pCompositor);
+            m_previousConfig                    = std::move(Config::mgr());
+            m_previousWatcher                   = std::move(Config::watcher());
+            g_pCompositor                       = makeUnique<CCompositor>(true);
+            g_pCompositor->m_explicitConfigPath = "icc-surface-test.lua";
+            Config::Supplementary::Jeremy::flushCachedCfgPath();
+            Config::watcher() = makeUnique<Config::CConfigWatcher>();
+            Config::mgr()     = makeUnique<Config::Lua::CConfigManager>();
+            CConfigValueBase::flushCaches();
+            m_previous    = std::move(g_pHyprOpenGL);
+            g_pHyprOpenGL = UP<CHyprOpenGLImpl>{new CHyprOpenGLImpl(CHyprOpenGLImpl::STestContext{})};
+        }
+        void TearDown() override {
+            if (IsSkipped())
+                return;
+            g_pHyprOpenGL     = std::move(m_previous);
+            Config::mgr()     = std::move(m_previousConfig);
+            Config::watcher() = std::move(m_previousWatcher);
+            if (Config::mgr())
+                CConfigValueBase::flushCaches();
+            g_pCompositor = std::move(m_previousCompositor);
+            Config::Supplementary::Jeremy::flushCachedCfgPath();
+        }
+        void bindCM(const SP<CShader>& shader, PImageDescription target) {
+            const auto settings = CCMSettingsCache{}.get(LINEAR_IMAGE_DESCRIPTION, target, {.sourceTF = CM_TRANSFER_FUNCTION_EXT_LINEAR});
+            g_pHyprOpenGL->passCMUniforms(shader, LINEAR_IMAGE_DESCRIPTION, target, false, -1, settings);
+        }
+        UP<CCompositor>            m_previousCompositor;
+        UP<Config::IConfigManager> m_previousConfig;
+        UP<Config::CConfigWatcher> m_previousWatcher;
+        CShaderCompiler            m_compiler;
+        UP<CHyprOpenGLImpl>        m_previous;
+    };
+
+    static auto rgbProfile(const cmsCIExyYTRIPLE& primaries, double gamma) {
+        const cmsCIExyY white{0.3127, 0.329, 1};
+        const auto      curve    = cmsBuildGamma(nullptr, gamma);
+        cmsToneCurve*   curves[] = {curve, curve, curve};
+        const auto      profile  = cmsCreateRGBProfile(&white, &primaries, curves);
+        cmsFreeToneCurve(curve);
+        return std::unique_ptr<void, decltype(&cmsCloseProfile)>{profile, cmsCloseProfile};
+    }
+
+    TEST_F(CICCSurfaceTest, MatchesLittleCMSOnP3Output) {
+        const auto p3    = rgbProfile({{0.68, 0.32, 1}, {0.265, 0.69, 1}, {0.15, 0.06, 1}}, 2.2);
+        const auto bt709 = rgbProfile({{0.64, 0.33, 1}, {0.30, 0.60, 1}, {0.15, 0.06, 1}}, 1);
+        ASSERT_TRUE(p3 && bt709);
+        const std::unique_ptr<void, decltype(&cmsDeleteTransform)> direct{
+            cmsCreateTransform(bt709.get(), TYPE_RGB_FLT, p3.get(), TYPE_RGB_FLT, INTENT_RELATIVE_COLORIMETRIC, cmsFLAGS_BLACKPOINTCOMPENSATION | cmsFLAGS_HIGHRESPRECALC),
+            cmsDeleteTransform};
+        ASSERT_TRUE(direct);
+        const auto primaries = iccPrimaries(p3.get());
+        ASSERT_TRUE(primaries);
+        SImageDescription target{.primaries = *primaries, .icc = {.present = true}};
+        ASSERT_TRUE(iccBuildLUTData(p3.get(), target));
+        target.icc.lutTexture = makeShared<CGLTexture>(target.icc.lutDataPacked, target.icc.lutSize);
+
+        CShaderLoader loader(SHADER_INCLUDES, FRAG_SHADERS);
+        const auto    shader = makeShared<CShader>();
+        const auto    fragment =
+            loader.getVariantSource(SH_FRAG_SURFACE, {.features = SH_FEAT_CM | SH_FEAT_ICC, .sourceTF = CM_TRANSFER_FUNCTION_EXT_LINEAR, .targetTF = target.transferFunction});
+        ASSERT_TRUE(shader->createProgram(loader.process("tex300.vert"), fragment, true, true));
+        glUseProgram(shader->program());
+        glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
+        shader->setUniformMatrix3fv(SHADER_PROJ, 1, false, {2, 0, 0, 0, 2, 0, -1, -1, 1});
+        bindCM(shader, CImageDescription::from(target));
+        shader->setUniformFloat(SHADER_ALPHA, 1);
+        shader->setUniformInt(SHADER_TEX, 0);
+
+        const std::array<std::array<float, 4>, 4> pixels{{
+            {1, 0, 0, 1},
+            {1.224940f, -0.042057f, -0.019638f, 1},
+            {0.00242f, 0.00242f, 0.00242f, 1},
+            {0.61f, 0.35f, 0.42f, 1},
+        }};
+        GLuint                                    input = 0, output = 0, framebuffer = 0;
+        glGenTextures(1, &input);
+        glBindTexture(GL_TEXTURE_2D, input);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, pixels.size(), 1, 0, GL_RGBA, GL_FLOAT, pixels.data());
+        glGenRenderbuffers(1, &output);
+        glBindRenderbuffer(GL_RENDERBUFFER, output);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, pixels.size(), 1);
+        glGenFramebuffers(1, &framebuffer);
+        glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, output);
+        ASSERT_EQ(glCheckFramebufferStatus(GL_FRAMEBUFFER), GL_FRAMEBUFFER_COMPLETE);
+        glViewport(0, 0, pixels.size(), 1);
+        glDisable(GL_DITHER);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        std::array<std::array<uint8_t, 4>, pixels.size()> actual{};
+        glReadPixels(0, 0, pixels.size(), 1, GL_RGBA, GL_UNSIGNED_BYTE, actual.data());
+        ASSERT_EQ(glGetError(), GL_NO_ERROR);
+        for (size_t i = 0; i < pixels.size(); ++i) {
+            SCOPED_TRACE(i);
+            std::array<float, 3> expected{};
+            cmsDoTransform(direct.get(), pixels[i].data(), expected.data(), 1);
+            for (size_t channel = 0; channel < expected.size(); ++channel)
+                EXPECT_NEAR(actual[i][channel], 255 * std::clamp(expected[channel], 0.f, 1.f), 1.5);
+            EXPECT_EQ(actual[i][3], 255);
+        }
+    }
 }
