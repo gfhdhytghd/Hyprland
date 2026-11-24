@@ -473,10 +473,8 @@ CLinuxDMABufV1Protocol::CLinuxDMABufV1Protocol(const wl_interface* iface, const 
             return;
         }
 
-        m_mainDevice = *dev;
-
         SDMABUFTranche eglTranche = {
-            .device  = m_mainDevice,
+            .device  = *dev,
             .flags   = 0, // renderer isn't for ds so don't set flag.
             .formats = g_pHyprRenderer->getDRMFormats(),
         };
@@ -489,7 +487,7 @@ CLinuxDMABufV1Protocol::CLinuxDMABufV1Protocol(const wl_interface* iface, const 
 
             for (auto const& mon : State::monitorState()->monitors()) {
                 auto tranche = SDMABUFTranche{
-                    .device  = m_mainDevice,
+                    .device  = *dev,
                     .flags   = ZWP_LINUX_DMABUF_FEEDBACK_V1_TRANCHE_FLAGS_SCANOUT,
                     .formats = mon->m_output->getRenderFormats(),
                 };
@@ -515,7 +513,7 @@ CLinuxDMABufV1Protocol::CLinuxDMABufV1Protocol(const wl_interface* iface, const 
         m_formatTable = makeUnique<CDMABUFFormatTable>(eglTranche, tches);
 
         drmDevice* device = nullptr;
-        if (drmGetDeviceFromDevId(m_mainDevice, 0, &device) != 0) {
+        if (drmGetDeviceFromDevId(*dev, 0, &device) != 0) {
             LOG(Log::ERR, "failed to get drm dev, disabling linux dmabuf");
             removeGlobal();
             return;
@@ -531,6 +529,7 @@ CLinuxDMABufV1Protocol::CLinuxDMABufV1Protocol(const wl_interface* iface, const 
                 return;
             }
 
+            m_mainDevice = *dev;
             return; // already using rendernode.
         }
 
@@ -547,6 +546,7 @@ CLinuxDMABufV1Protocol::CLinuxDMABufV1Protocol(const wl_interface* iface, const 
             LOG(Log::ERR, "DRM device {} has no render node, disabling linux dmabuf checks", device->nodes[DRM_NODE_PRIMARY] ? device->nodes[DRM_NODE_PRIMARY] : "null");
             drmFreeDevice(&device);
         }
+        m_mainDevice = *dev;
     });
 }
 

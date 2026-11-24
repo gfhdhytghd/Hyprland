@@ -83,9 +83,10 @@ class CImageCopyCaptureCursorSession {
     SP<CWLPointerResource>                  m_pointer;
 
     // cursor session stuff
-    bool     m_entered = false;
-    Vector2D m_pos     = Vector2D(0, 0);
-    Vector2D m_hotspot = Vector2D(0, 0);
+    bool     m_entered    = false;
+    bool     m_sourceLost = false;
+    Vector2D m_pos        = Vector2D(0, 0);
+    Vector2D m_hotspot    = Vector2D(0, 0);
 
     // capture session stuff
     SP<CExtImageCopyCaptureSessionV1>    m_sessionResource;
@@ -94,6 +95,7 @@ class CImageCopyCaptureCursorSession {
 
     // frame stuff
     SP<CExtImageCopyCaptureFrameV1> m_frameResource;
+    WP<CExtImageCopyCaptureFrameV1> m_pendingFrame;
     bool                            m_captured = false;
     SP<IHLBuffer>                   m_buffer;
 
@@ -101,13 +103,17 @@ class CImageCopyCaptureCursorSession {
         CHyprSignalListener constraintsChanged;
         CHyprSignalListener stopped;
         CHyprSignalListener commit;
+        CHyprSignalListener sourceRemoved;
+        CHyprSignalListener sourceDestroyed;
     } m_listeners;
 
-    void sendCursorEvents();
+    void       onSourceLost();
+    PHLMONITOR sourceMonitor() const;
+    void       sendCursorEvents();
 
-    void createFrame(SP<CExtImageCopyCaptureFrameV1> resource);
-    void destroyCaptureSession();
-    void sendConstraints();
+    void       createFrame(SP<CExtImageCopyCaptureFrameV1> resource);
+    void       destroyCaptureSession();
+    void       sendConstraints();
 };
 
 class CImageCopyCaptureProtocol : public IWaylandProtocol {
