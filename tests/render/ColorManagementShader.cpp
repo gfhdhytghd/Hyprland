@@ -534,7 +534,7 @@ TEST(ColorManagementShader, RoundedMatteKeepsFractionalCoverageThroughTransformA
                     const float origin = std::sqrt(2.F) - 1.75F;
                     glUniform2f(glGetUniformLocation(program, "topLeft"), origin, origin);
                     glUniform2f(glGetUniformLocation(program, "fullSize"), 4.F, 4.F);
-                    glUniform1f(glGetUniformLocation(program, "radius"), 2.F);
+                    glUniform4f(glGetUniformLocation(program, "radius"), 2.F, 2.F, 2.F, 2.F);
                     glUniform1f(glGetUniformLocation(program, "roundingPower"), 2.F);
                 },
             .targetFormat = storage,

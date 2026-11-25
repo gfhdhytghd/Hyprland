@@ -41,7 +41,7 @@ namespace SignalSafe {
                 d *= 10;
             }
 
-            while (num > 0) {
+            while (d > 0) {
                 char c = '0' + (num / d);
                 write(c);
                 num %= d;
@@ -160,7 +160,7 @@ namespace SignalSafe {
                 failmsg += "<execv(";
                 failmsg += cmd;
                 failmsg += ") resulted in errno ";
-                failmsg.write(errno);
+                failmsg.writeNum(errno);
                 failmsg += ">\n";
                 close(pipefd[1]);
                 abort();
