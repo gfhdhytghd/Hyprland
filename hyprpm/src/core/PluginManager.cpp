@@ -597,6 +597,7 @@ bool CPluginManager::addNewPluginRepo(const std::string& url, const std::string&
     repo.url                          = url;
     repo.rev                          = rev;
     repo.hash                         = repohash;
+    repo.compiledAbi                 = HLVER.abiHash;
     for (auto const& p : pManifest->m_plugins) {
         repo.plugins.push_back(SPlugin{p.name, getPluginOutputPath(p.output), false, p.failed});
     }
@@ -1102,7 +1103,8 @@ bool CPluginManager::updatePlugins(bool forceUpdateAll) {
         }
         // a build failure must not record the fetched hash: the next update would consider the
         // repo up-to-date and never retry the build. An empty hash never matches, so it retries.
-        newrepo.hash = anyPluginFailedToBuild ? "" : repohash;
+        newrepo.hash        = anyPluginFailedToBuild ? "" : repohash;
+        newrepo.compiledAbi = HLVER.abiHash;
         for (auto const& p : pManifest->m_plugins) {
             const auto OLDPLUGINIT = std::ranges::find_if(repo.plugins, [&](const auto& other) { return other.name == p.name; });
             newrepo.plugins.emplace_back(SPlugin{
@@ -1133,6 +1135,7 @@ bool CPluginManager::updatePlugins(bool forceUpdateAll) {
     progress.m_szCurrentMessage = "Updating global state...";
     progress.print();
 
+    // Legacy repository entries still use the ABI of the last complete update.
     if (failedRepos.empty()) {
         auto GLOBALSTATE               = DataState::getGlobalState();
         GLOBALSTATE.headersAbiCompiled = HLVER.abiHash;
@@ -1180,7 +1183,8 @@ bool CPluginManager::disablePlugin(const SPluginRepoIdentifier& identifier) {
 }
 
 ePluginLoadStateReturn CPluginManager::ensurePluginsLoadState(bool forceReload) {
-    if (headersValid() != HEADERS_OK) {
+    const auto HEADERSVALID = headersValid();
+    if (HEADERSVALID != HEADERS_OK && HEADERSVALID != HEADERS_ABI_MISMATCH) {
         std::println(stderr, "\n{}", failureString("headers are not up-to-date, please run hyprpm update."));
         return LOADSTATE_HEADERS_OUTDATED;
     }
@@ -1191,7 +1195,14 @@ ePluginLoadStateReturn CPluginManager::ensurePluginsLoadState(bool forceReload) 
         std::println(stderr, "PluginManager: no $HOME or $HYPRLAND_INSTANCE_SIGNATURE");
         return LOADSTATE_FAIL;
     }
+    const auto RUNNING = getHyprlandVersion(true);
+    if (RUNNING.abiHash.empty())
+        return LOADSTATE_FAIL;
+    if (RUNNING.abiHash != getHyprlandVersion(false).abiHash)
+        return LOADSTATE_HYPRLAND_UPDATED;
+
     const auto HYPRPMPATH = DataState::getDataStatePath();
+    const auto GLOBALABI  = DataState::getGlobalState().headersAbiCompiled;
 
     const auto json = glz::read_json<glz::generic::array_t>(NHyprlandSocket::send("j/plugins list"));
     if (!json) {
@@ -1235,25 +1246,22 @@ ePluginLoadStateReturn CPluginManager::ensurePluginsLoadState(bool forceReload) 
         return "";
     };
 
-    // if any of the loadUnloadPlugin calls return false, this is true
-    // bcs that means the header version doesn't match the running version
-    // (and Hyprland needs to restart)
-    bool hyprlandVersionMismatch = false;
+    bool loadFailed = false;
 
     // unload disabled plugins (or all if forceReload is true)
     for (auto const& p : loadedPlugins) {
         if (forceReload || !enabled(p)) {
             // unload
-            if (!loadUnloadPlugin(HYPRPMPATH / repoForName(p) / std::format("{}.so", p), false)) {
-                std::println("{}", infoString("{} will be unloaded after restarting Hyprland", p));
-                hyprlandVersionMismatch = true;
-            } else
+            if (unloadPlugin(HYPRPMPATH / repoForName(p) / std::format("{}.so", p)))
                 std::println("{}", successString("Unloaded {}", p));
         }
     }
 
     // load enabled plugins
     for (auto const& r : REPOS) {
+        // Older cache entries inherit the ABI of the last complete update.
+        const auto& ABI = r.compiledAbi.empty() ? GLOBALABI : r.compiledAbi;
+
         for (auto const& p : r.plugins) {
             if (!p.enabled)
                 continue;
@@ -1266,35 +1274,37 @@ ePluginLoadStateReturn CPluginManager::ensurePluginsLoadState(bool forceReload) 
             if (!forceReload && std::ranges::find_if(loadedPlugins, [&](const auto& other) { return other == p.name; }) != loadedPlugins.end())
                 continue;
 
-            if (!loadUnloadPlugin(HYPRPMPATH / repoForName(p.name) / p.filename, true)) {
-                std::println("{}", infoString("{} will be loaded after restarting Hyprland", p.name));
-                hyprlandVersionMismatch = true;
-            } else
-                std::println("{}", successString("Loaded {}", p.name));
+            if (ABI != RUNNING.abiHash) {
+                std::println("{}", infoString("Not loading {}: it was built for a different Hyprland ABI", p.name));
+                loadFailed = true;
+                continue;
+            }
+
+            const auto PATH  = HYPRPMPATH / r.name / p.filename;
+            const auto REPLY = NHyprlandSocket::send(std::format("/plugin load {}", PATH.string()));
+            if (trim(REPLY) != "ok") {
+                std::println(stderr, "{}", failureString("Failed to load {}: {}", p.name, REPLY));
+                loadFailed = true;
+                continue;
+            }
+
+            std::println("{}", successString("Loaded {}", p.name));
         }
     }
 
-    std::println("{}", successString("Plugin load state ensured"));
+    if (loadFailed)
+        return LOADSTATE_PARTIAL_FAIL;
 
-    return hyprlandVersionMismatch ? LOADSTATE_HYPRLAND_UPDATED : LOADSTATE_OK;
+    std::println("{}", successString("Plugin load state ensured"));
+    return LOADSTATE_OK;
 }
 
-bool CPluginManager::loadUnloadPlugin(const std::string& path, bool load) {
-    auto state = DataState::getGlobalState();
-    auto HLVER = getHyprlandVersion(true);
-
-    if (state.headersAbiCompiled != HLVER.abiHash) {
-        if (load)
-            std::println("{}", infoString("Running Hyprland version ({}) differs from plugin state ({}), please restart Hyprland.", HLVER.hash, state.headersAbiCompiled));
+bool CPluginManager::unloadPlugin(const std::string& path) {
+    const auto RUNNING = getHyprlandVersion(true);
+    if (RUNNING.abiHash.empty() || RUNNING.abiHash != getHyprlandVersion(false).abiHash)
         return false;
-    }
 
-    if (load)
-        NHyprlandSocket::send(std::format("/plugin load {}", path));
-    else
-        NHyprlandSocket::send(std::format("/plugin unload {}", path));
-
-    return true;
+    return trim(NHyprlandSocket::send(std::format("/plugin unload {}", path))) == "ok";
 }
 
 void CPluginManager::listAllPlugins() {

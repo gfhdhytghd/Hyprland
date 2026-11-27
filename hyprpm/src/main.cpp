@@ -166,19 +166,13 @@ int                        main(int argc, char** argv, char** envp) {
         if (headers) {
             const bool pluginsUpdated = g_pPluginManager->updatePlugins(!headersValid || force || COMPILEDOUTDATED);
 
-            if (!pluginsUpdated && COMPILEDOUTDATED) {
-                std::println(stderr, "{}",
-                             failureString("Hyprland's ABI changed and some repositories failed to update: no plugins will be loaded until every repository updates "
-                                           "successfully.\n  Fix or remove the failed repositories, then re-run hyprpm update."));
-                g_pPluginManager->notify(ICON_ERROR, 0, 10000,
-                                         "[hyprpm] Some plugin repos failed to update, no plugins were loaded. Fix or remove them, then re-run hyprpm update.");
-                return 1;
-            }
-
             const auto loadState = g_pPluginManager->ensurePluginsLoadState();
 
             if (loadState == LOADSTATE_HYPRLAND_UPDATED)
                 g_pPluginManager->notify(ICON_INFO, 0, 10000, "[hyprpm] Updated plugins, but Hyprland was updated. Please restart Hyprland.");
+
+            if (!pluginsUpdated && COMPILEDOUTDATED)
+                g_pPluginManager->notify(ICON_ERROR, 0, 10000, "[hyprpm] Some plugin repos failed to update. See hyprpm output for details.");
 
             if (!pluginsUpdated || loadState != LOADSTATE_OK)
                 return 1;

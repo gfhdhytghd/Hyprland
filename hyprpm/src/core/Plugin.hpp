@@ -17,6 +17,7 @@ struct SPluginRepository {
     std::string          author;
     std::vector<SPlugin> plugins;
     std::string          hash;
+    std::string          compiledAbi;
 };
 
 enum ePluginRepoIdentifierType {

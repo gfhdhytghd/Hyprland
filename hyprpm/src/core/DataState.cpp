@@ -123,6 +123,7 @@ void DataState::addNewPluginRepo(const SPluginRepository& repo, bool installFrom
             {"name", repo.name},
             {"author", repo.author},
             {"hash", repo.hash},
+            {"compiled_abi", repo.compiledAbi},
             {"url", repo.url},
             {"rev", repo.rev}
         }}
@@ -184,7 +185,7 @@ void DataState::removePluginRepo(const SPluginRepoIdentifier& identifier) {
                 if (!file.path().string().ends_with(".so"))
                     continue;
 
-                g_pPluginManager->loadUnloadPlugin(std::filesystem::absolute(file.path()), false);
+                g_pPluginManager->unloadPlugin(std::filesystem::absolute(file.path()));
             }
 
             const auto PATH = stateFile.parent_path().string();
@@ -258,11 +259,12 @@ std::vector<SPluginRepository> DataState::getAllRepositories() {
         const auto        HASH   = STATE["repository"]["hash"].value_or("");
 
         SPluginRepository repo;
-        repo.hash   = HASH;
-        repo.name   = NAME;
-        repo.author = AUTHOR;
-        repo.url    = URL;
-        repo.rev    = REV;
+        repo.hash         = HASH;
+        repo.name         = NAME;
+        repo.author       = AUTHOR;
+        repo.url          = URL;
+        repo.rev          = REV;
+        repo.compiledAbi  = STATE["repository"]["compiled_abi"].value_or("");
 
         for (const auto& [key, val] : STATE) {
             if (key == "repository")

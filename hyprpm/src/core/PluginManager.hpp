@@ -62,7 +62,7 @@ class CPluginManager {
     bool                   disablePlugin(const SPluginRepoIdentifier& identifier);
     ePluginLoadStateReturn ensurePluginsLoadState(bool forceReload = false);
 
-    bool                   loadUnloadPlugin(const std::string& path, bool load);
+    bool                   unloadPlugin(const std::string& path);
     SHyprlandVersion       getHyprlandVersion(bool running = true);
 
     void                   notify(const eNotifyIcons icon, uint32_t color, int durationMs, const std::string& message);
